@@ -43,7 +43,7 @@ Edit `config/perps.toml`:
 
 ```toml
 [flash]
-market = "ZEC"          # ZEC, SOL, BTC, ETH, BNB, etc.
+market = "SOL"          # SOL, BTC, ETH, ZEC, BNB, etc.
 leverage = 10.0
 slippage_pct = "0.5"
 
@@ -58,7 +58,7 @@ use_native_tp_sl = true  # On-chain TP/SL via Flash trigger orders
 
 ## Supported Markets
 
-Flash Trade Crypto.1 pool: ZEC, SOL, BTC, ETH, BNB  
+Flash Trade Crypto.1 pool: SOL, BTC, ETH, ZEC, BNB  
 Also: XAU, XAG, EUR, JUP, BONK, WIF, PENGU, FARTCOIN, and more.
 
 ## Architecture
