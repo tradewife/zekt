@@ -4,16 +4,23 @@ Autonomous momentum scalping bot for Flash Trade, a Solana-based perpetuals DEX.
 
 ## Strategy
 
-Zekt polls Flash Trade oracle prices, detects momentum via velocity + consecutive directional moves, and opens leveraged positions with native TP/SL. All parameters are configurable via TOML.
+Zekt is a **liquidity-aware momentum scalper**. It hunts for illiquid perps markets where a single dominant LP provides most of the orderbook depth, then detects when that LP is being consumed in one direction — that's the momentum signal.
+
+This is not about picking the right token. It's about picking the right **market structure**: thin books, concentrated LP, predictable counterparty behavior. On Bulk.Trade that was ZEC. On Flash Trade it could be any low-liquidity market.
 
 **Core loop:**
 ```
-Poll price → Detect momentum → Preview trade → Build Solana tx → Sign + submit → Monitor → Exit on signal
+Find illiquid market → Detect LP consumption / price velocity → Scale in with fixed clips → Ride momentum → Cut losers fast
 ```
 
-**Signals:**
-- **Entry:** Price velocity exceeds threshold + sufficient consecutive directional moves
-- **Exit:** Take profit, stop loss, trailing stop, time stop, momentum loss, reversal detection
+**Entry signals:**
+- Price velocity exceeds threshold over lookback window
+- Consecutive directional moves confirm trend
+- (Future) LP consumption rate from orderbook / position data
+
+**Exit signals:**
+- Take profit, stop loss, trailing stop, time stop
+- Momentum loss or reversal detection
 
 **Risk controls:**
 - Daily loss limit, max drawdown circuit breaker, cooldown after losses
@@ -78,10 +85,10 @@ src/
 
 See `docs/bulktrade-analysis.md` for the full analysis of Bulk.Trade's devnet competition that identified the winning momentum scalper strategy. Key findings:
 
-- 5/10 leaderboard wallets ran the same ZEC momentum scalper bot
-- Net PnL: +$229K combined, 67-83% win rate
-- Strategy: detect momentum → pile in with fixed clips at 40x → ride 2-5% moves → cut losers fast
-- HFT market-making and cross-venue arb strategies were net negative after fees
+- 5/10 leaderboard wallets ran the same momentum scalper bot on ZEC
+- ZEC wasn't special — it was chosen because it was **illiquid with a single dominant LP** (98%+ of fills hit one counterparty)
+- The edge is market structure, not the token: thin book + concentrated LP = detectable momentum via LP consumption
+- Strategy: detect LP being consumed → pile in with fixed clips at high leverage → ride 2-5% moves → cut losers fast
 
 ## Flash Trade API
 

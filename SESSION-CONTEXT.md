@@ -1,10 +1,12 @@
 # Zekt — Session Context
 
 ## What This Is
-Zekt is an autonomous momentum scalping bot for Flash Trade, a Solana-based perpetuals DEX (live on mainnet). It detects price momentum via velocity and consecutive directional moves, then opens leveraged positions with native on-chain TP/SL through Flash Trade's transaction builder API.
+Zekt is a **liquidity-aware momentum scalper** for Flash Trade (Solana perps DEX, live on mainnet). It hunts for illiquid markets where a single dominant LP provides most of the depth, then detects when that LP is being consumed in one direction as a momentum signal.
+
+This is market-structure arbitrage, not token-picking. On Bulk.Trade the vehicle was ZEC (illiquid, single LP). On Flash Trade the right market could be anything — what matters is thin books and concentrated counterparty flow.
 
 ## Origin
-The strategy was reverse-engineered from the Bulk.Trade devnet competition where 5/10 leaderboard wallets ran the same ZEC Momentum Scalper bot, earning $229K combined with 67-83% win rates. See `docs/bulktrade-analysis.md` for the full analysis.
+The strategy was reverse-engineered from the Bulk.Trade devnet competition where 5/10 leaderboard wallets earned $229K combined on ZEC-USD. But ZEC wasn't the point — it was chosen because it had a single dominant LP (2Gg7..v2di) providing 98%+ of fills. The bots detected when that LP was being consumed in one direction (momentum) and rode the move. See `docs/bulktrade-analysis.md` for the full analysis.
 
 ## Architecture
 ```
@@ -96,9 +98,11 @@ pkill -f zekt  # Kill the running bot
 - `docs/bulktrade-analysis.md` — Original Bulk.Trade wallet analysis
 
 ## TODO / Next Steps
+- [ ] **Market scanner** — Rank Flash Trade markets by liquidity concentration (find thin books with dominant LPs, like ZEC was on Bulk)
+- [ ] **LP detection** — Identify dominant counterparties via position changes and fill patterns on Flash
+- [ ] **LP consumption rate signal** — Detect when a large LP is being eaten in one direction (the real edge from Bulk analysis)
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
-- [ ] Multi-market scanning (watch multiple markets simultaneously)
 - [ ] Backtesting engine against historical prices
 - [ ] Adaptive momentum threshold (adjust based on volatility regime)
-- [ ] Fee-awareness (track Flash's hourly borrow rate, avoid high-fee periods)
 - [ ] Scale-in logic (add to winning positions when momentum accelerates)
+- [ ] Fee-awareness (track Flash's hourly borrow rate, avoid high-fee periods)

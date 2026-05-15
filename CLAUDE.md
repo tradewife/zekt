@@ -1,7 +1,7 @@
 # Zekt — Coding Guidelines
 
 ## What This Is
-An autonomous momentum scalping bot for Flash Trade (Solana perps DEX). Rust binary, single crate, no external workspace dependencies. Targets Solana mainnet via Flash Trade's public REST API.
+A **liquidity-aware momentum scalper** for Flash Trade (Solana perps DEX). The edge is market-structure arbitrage: find illiquid markets where a single dominant LP provides most of the depth, detect when that LP is being consumed in one direction, and ride the momentum. Rust binary, single crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
 
 ## Build & Run
 ```bash
