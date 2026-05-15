@@ -36,6 +36,8 @@ clap = { version = "4", features = ["derive"] }
 # Solana
 solana-sdk = "2.2"
 solana-client = "2.2"
+spl-associated-token-account = "6"
+spl-token = "7"
 
 # Encoding
 bs58 = "0.5"
@@ -48,6 +50,7 @@ chrono = { version = "0.4", features = ["serde"] }
 # Utils
 dashmap = "6"
 rand = "0.9"
+ctrlc = "3"
 
 [profile.release]
 opt-level = 3

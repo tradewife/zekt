@@ -3,18 +3,20 @@
 ## What This Is
 Zekt is a **liquidity-aware momentum scalper** for Flash Trade (Solana perps DEX, live on mainnet). It hunts for illiquid markets where a single dominant LP provides most of the depth, then detects when that LP is being consumed in one direction as a momentum signal.
 
-This is market-structure arbitrage, not token-picking. On Bulk.Trade the vehicle was ZEC (illiquid, single LP). On Flash Trade the right market could be anything — what matters is thin books and concentrated counterparty flow.
+This is market-structure arbitrage, not token-picking. On Bulk.Trade the vehicle was ZEC (illiquid, single LP). On Flash Trade the right market could be anything -- what matters is thin books and concentrated counterparty flow.
 
 ## Origin
-The strategy was reverse-engineered from the Bulk.Trade devnet competition where 5/10 leaderboard wallets earned $229K combined on ZEC-USD. But ZEC wasn't the point — it was chosen because it had a single dominant LP (2Gg7..v2di) providing 98%+ of fills. The bots detected when that LP was being consumed in one direction (momentum) and rode the move. See `docs/bulktrade-analysis.md` for the full analysis.
+The strategy was reverse-engineered from the Bulk.Trade devnet competition where 5/10 leaderboard wallets earned $229K combined on ZEC-USD. But ZEC wasn't the point -- it was chosen because it had a single dominant LP (2Gg7..v2di) providing 98%+ of fills. The bots detected when that LP was being consumed in one direction (momentum) and rode the move. See `docs/bulktrade-analysis.md` for the full analysis.
 
 ## Architecture
 ```
 Flash Trade API (prices, positions, tx builder)
-  → Momentum Detector (price velocity + consecutive moves)
-  → Risk Manager (SL/TP/trailing, circuit breaker, cooldown)
-  → Executor (Solana keypair sign + RPC submit)
-  → Trade Journal (JSON log of all closed trades)
+  -> Momentum Detector (price velocity + consecutive moves)
+  -> Risk Manager (SL/TP/trailing, circuit breaker, daily reset, cooldown)
+  -> Executor (Arc<RpcClient>, spawn_blocking, fresh blockhash, USDC balance)
+  -> Trade Journal (atomic JSON log of all closed trades)
+
+Paper mode uses same detector + risk, but simulates fills with live prices.
 ```
 
 ## Commands
@@ -22,7 +24,11 @@ Flash Trade API (prices, positions, tx builder)
 # Build
 cargo build --release
 
-# Dry run (preview only)
+# Paper trading (full lifecycle, simulated PnL, NO real money)
+./target/release/zekt --paper --market SOL
+./target/release/zekt --paper --market BTC --paper-balance 500
+
+# Dry run (single preview, then exit)
 ./target/release/zekt --dry-run
 ./target/release/zekt --dry-run --market BTC
 
@@ -30,7 +36,6 @@ cargo build --release
 export SOLANA_KEYPAIR=~/.config/solana/id.json
 ./scripts/run-zekt.sh
 ./scripts/run-zekt.sh --market SOL
-./scripts/run-zekt.sh --dry-run  # preview mode
 
 # Config
 ./target/release/zekt --config config/perps.toml --keypair ~/.config/solana/id.json
@@ -68,41 +73,59 @@ export SOLANA_KEYPAIR=~/.config/solana/id.json
 SOL, BTC, ETH, ZEC, BNB (+ forex, equities, meme tokens on other pools)
 
 ## Flash Trade API Key Endpoints
-- `GET /prices/{symbol}` → Oracle price (Pyth)
-- `GET /positions/owner/{owner}` → Enriched positions with PnL
-- `POST /transaction-builder/open-position` → Unsigned Solana tx (with optional TP/SL)
-- `POST /transaction-builder/close-position` → Unsigned close tx
-- `POST /transaction-builder/place-trigger-order` → TP/SL trigger orders
+- `GET /prices/{symbol}` -> Oracle price (Pyth)
+- `GET /positions/owner/{owner}` -> Enriched positions with PnL
+- `POST /transaction-builder/open-position` -> Unsigned Solana tx (with optional TP/SL)
+- `POST /transaction-builder/close-position` -> Unsigned close tx
+- `POST /transaction-builder/place-trigger-order` -> TP/SL trigger orders
+- `WS /owner/{owner}/ws` -> Real-time WebSocket streaming (positions, orders, prices)
 - No auth required. API is public. Transactions signed locally.
 
 ## Critical Flash Trade Rules
-- **One position per market per side per wallet** — cannot hold independent positions at different entries
-- **Blockhash expiry ~60s** — sign and submit promptly
+- **One position per market per side per wallet** -- cannot hold independent positions at different entries
+- **Blockhash expiry ~60s** -- fresh blockhash is fetched before every sign
 - **Max 5 trigger orders** (TP/SL) per market position
 - **Min collateral >$10** after fees for trigger orders
 - **SOL positions use JitoSOL** as underlying collateral on-chain
 - **All amounts are UI format** (human-readable) in API requests
+- **Wallet balances NOT available via Flash Trade API** -- use Solana RPC `getTokenAccountsByOwner`
 
-## Emergency Halt
+## Shutdown
 ```bash
-pkill -f zekt  # Kill the running bot
+# Graceful: send SIGINT, engine finishes current tick
+Ctrl+C
+kill -INT <pid>
+
+# Emergency: kill immediately
+kill -9 <pid>
 ```
 
 ## Key Files
-- `src/engine.rs` — Main trading loop (poll → detect → execute → manage)
-- `src/flash_api.rs` — Flash Trade REST client
-- `src/executor.rs` — Solana tx signing and submission
-- `src/signal.rs` — Momentum detector
-- `src/risk.rs` — Risk manager + trade journal
-- `config/perps.toml` — All tunable parameters
-- `docs/bulktrade-analysis.md` — Original Bulk.Trade wallet analysis
+- `src/engine.rs` -- Live trading engine (poll -> detect -> execute -> manage, API error classification)
+- `src/paper.rs` -- Paper trading engine (same loop, simulated PnL, no signing)
+- `src/flash_api.rs` -- Flash Trade REST client
+- `src/executor.rs` -- Solana tx signing (Arc<RpcClient>, spawn_blocking, USDC balance)
+- `src/signal.rs` -- Momentum detector (trailing stop fixed for shorts)
+- `src/risk.rs` -- Risk manager (daily reset, fee tracking, position size validation)
+- `config/perps.toml` -- All tunable parameters
+- `docs/bulktrade-analysis.md` -- Original Bulk.Trade wallet analysis
+
+## Mainnet Audit (v0.3)
+Completed audit addressing 28 issues across P0-P3 severity:
+- P0: USDC balance check (was using SOL), drawdown tracking, fresh blockhash, position re-sync, daily PnL reset
+- P1: Trailing stop for shorts (sign error), consecutive counter fix, fee tracking, position size validation, spawn_blocking
+- P2: Graceful shutdown (ctrlc), atomic trade log writes, API error classification, safe parse_f64
+- Remaining: see TODO below
 
 ## TODO / Next Steps
-- [ ] **Market scanner** — Rank Flash Trade markets by liquidity concentration (find thin books with dominant LPs, like ZEC was on Bulk)
-- [ ] **LP detection** — Identify dominant counterparties via position changes and fill patterns on Flash
-- [ ] **LP consumption rate signal** — Detect when a large LP is being eaten in one direction (the real edge from Bulk analysis)
+- [ ] **Market scanner** -- Rank Flash Trade markets by liquidity concentration (find thin books with dominant LPs, like ZEC was on Bulk)
+- [ ] **LP detection** -- Identify dominant counterparties via position changes and fill patterns on Flash
+- [ ] **LP consumption rate signal** -- Detect when a large LP is being eaten in one direction (the real edge from Bulk analysis)
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Backtesting engine against historical prices
 - [ ] Adaptive momentum threshold (adjust based on volatility regime)
 - [ ] Scale-in logic (add to winning positions when momentum accelerates)
 - [ ] Fee-awareness (track Flash's hourly borrow rate, avoid high-fee periods)
+- [ ] Use `reverse-position` endpoint for momentum reversals
+- [ ] RPC retry with backoff on 429 rate limits
+- [ ] Unit tests for signal detection, risk management, PnL calculations
