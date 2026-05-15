@@ -40,7 +40,7 @@ export SOLANA_KEYPAIR=~/.config/solana/id.json
 - `flash.api_url` = `https://flashapi.trade`
 - `flash.rpc_url` = `https://api.mainnet-beta.solana.com`
 - `flash.keypair_path` = Solana keypair file (JSON array or bs58)
-- `flash.market` = Trading pair (SOL, BTC, ETH, ZEC, BNB, etc.)
+- `flash.market` = Trading pair (ZEC, SOL, BTC, ETH, BNB, etc.)
 - `flash.input_token` = Collateral token (USDC)
 - `flash.leverage` = Leverage multiplier (default 10.0)
 - `flash.slippage_pct` = Slippage tolerance (default "0.5")
@@ -63,7 +63,7 @@ export SOLANA_KEYPAIR=~/.config/solana/id.json
 - `risk.max_drawdown_pct` = 15%
 
 ## Supported Markets (Flash Trade Crypto.1)
-SOL, BTC, ETH, ZEC, BNB (+ forex, equities, meme tokens on other pools)
+ZEC, SOL, BTC, ETH, BNB (+ forex, equities, meme tokens on other pools)
 
 ## Flash Trade API Key Endpoints
 - `GET /prices/{symbol}` → Oracle price (Pyth)
