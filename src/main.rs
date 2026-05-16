@@ -79,25 +79,44 @@ async fn main() -> anyhow::Result<()> {
     let strategy_name = config.strategy.resolve_active(args.strategy.as_deref());
     tracing::info!("Strategy: {}", strategy_name);
 
-    // Validate strategy name and parameters early (before entering any mode)
-    let strategy_params = match config.strategy.get_params(&strategy_name) {
-        Ok(params) => params,
-        Err(e) => {
-            // If it's not a config issue, check if the strategy name itself is unknown
-            if !crate::strategy::available_strategies().contains(&strategy_name.as_str()) {
-                let available = crate::strategy::available_strategies().join(", ");
-                tracing::error!(
-                    "Unknown strategy '{}'. Available strategies: {}",
-                    strategy_name,
-                    available
-                );
-            } else {
-                tracing::error!("{}", e);
+    // Validate strategy name first
+    if !crate::strategy::available_strategies().contains(&strategy_name.as_str()) {
+        let available = crate::strategy::available_strategies().join(", ");
+        tracing::error!(
+            "Unknown strategy '{}'. Available strategies: {}",
+            strategy_name,
+            available
+        );
+        std::process::exit(1);
+    }
+
+    // Validate parameters by attempting to create the strategy (dry run)
+    let sub_table = config.strategy.get_sub_table(&strategy_name);
+    // For strategies that have a sub-table (e.g., lp-consumption), get_params may fail
+    // because they have different parameter schemas. Use flat legacy params as fallback.
+    let fallback_params = config.strategy.get_params(&strategy_name)
+        .unwrap_or_else(|_| {
+            // Create minimal fallback params for validation
+            crate::strategy::StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 60,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 2.5,
+                stop_loss_pct: 1.0,
+                trailing_stop_pct: 0.8,
+                trailing_activation_pct: 1.5,
+                cooldown_after_loss_secs: 300,
+                use_native_tp_sl: true,
             }
-            std::process::exit(1);
-        }
-    };
-    if let Err(e) = strategy_params.validate() {
+        });
+    if let Err(e) = crate::strategy::create_strategy_from_config(
+        &strategy_name,
+        sub_table,
+        fallback_params,
+    ) {
         tracing::error!("Invalid strategy parameters: {}", e);
         std::process::exit(1);
     }

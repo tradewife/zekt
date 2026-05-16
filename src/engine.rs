@@ -25,8 +25,13 @@ impl ScalperEngine {
     pub fn new(config: Config, executor: Executor, strategy_name: Option<&str>) -> anyhow::Result<Self> {
         let flash = FlashClient::new(&config.flash.api_url);
         let resolved_name = config.strategy.resolve_active(strategy_name);
-        let params = config.strategy.get_params(&resolved_name)?;
-        let strategy = strategy::create_strategy(&resolved_name, params)?;
+        let sub_table = config.strategy.get_sub_table(&resolved_name);
+        let fallback_params = config.strategy.get_params(&resolved_name)?;
+        let strategy = strategy::create_strategy_from_config(
+            &resolved_name,
+            sub_table,
+            fallback_params,
+        )?;
         let risk = Arc::new(RiskManager::new(config.risk.clone(), 0.0));
         let trade_log = TradeLog::new("perps-trades.json");
 

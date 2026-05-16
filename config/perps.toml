@@ -13,6 +13,7 @@ leverage = 10.0
 slippage_pct = "0.5"
 
 [strategy]
+active = "momentum-scalper"
 direction_bias = "neutral"
 momentum_threshold_pct = 0.15
 lookback_count = 60
@@ -25,6 +26,37 @@ trailing_stop_pct = 0.8
 trailing_activation_pct = 1.5
 cooldown_after_loss_secs = 300
 use_native_tp_sl = true
+
+# LP Consumption Detector strategy
+# Blueprint source: data/strategy-blueprints/lp-consumer.json
+[strategy.lp-consumption]
+# Entry: detect when a single LP's depth is being consumed in one direction
+# From blueprint: entry.threshold_pct = 0.5
+consumption_velocity_threshold = 0.5
+# From blueprint: entry.confirmation = "consumption_directional >= 70%"
+lp_concentration_min = 0.7
+# Number of consecutive ticks to confirm entry
+confirmation_ticks = 3
+# Don't enter if pool utilization is above this (pool is maxed out)
+max_utilization = 0.9
+# From blueprint: exit section
+direction_bias = "neutral"
+clip_size_usd = 100.0
+max_hold_secs = 3600
+# From blueprint: exit.take_profit_pct = 2.0
+take_profit_pct = 2.0
+# From blueprint: exit.stop_loss_pct = 1.0
+stop_loss_pct = 1.0
+# From blueprint: exit.trailing_stop_pct = 0.8
+trailing_stop_pct = 0.8
+# From blueprint: exit.trailing_activation_pct = 1.2
+trailing_activation_pct = 1.2
+# From blueprint: risk.cooldown_after_loss_secs = 300
+cooldown_after_loss_secs = 300
+use_native_tp_sl = true
+# From blueprint: leverage = 2.5
+leverage = 2.5
+scale_in_clips = 1
 
 [risk]
 max_position_notional_usd = 1000.0

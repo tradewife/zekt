@@ -155,6 +155,12 @@ impl StrategySection {
             )
         }
     }
+
+    /// Get the TOML sub-table for a strategy, if one exists.
+    /// Returns None if the strategy uses the flat legacy config format.
+    pub fn get_sub_table(&self, strategy_name: &str) -> Option<&toml::Value> {
+        self.strategies.get(strategy_name)
+    }
 }
 
 /// Intermediate struct for parsing strategy sub-tables from TOML.
@@ -220,7 +226,30 @@ pub struct RiskConfig {
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        let config: Config = toml::from_str(&content)?;
+        let mut config: Config = toml::from_str(&content)?;
+
+        // Post-process: extract strategy sub-tables from the raw TOML.
+        // TOML sub-tables like [strategy.lp-consumption] are not automatically
+        // picked up by serde's HashMap<String, Value> when the struct also has
+        // named fields. We need to manually extract them.
+        let raw: toml::Value = toml::from_str(&content)?;
+        if let Some(strategy_table) = raw.get("strategy").and_then(|v| v.as_table()) {
+            let known_flat_fields = [
+                "active", "direction_bias", "momentum_threshold_pct", "lookback_count",
+                "scale_in_clips", "clip_size_usd", "max_hold_secs", "take_profit_pct",
+                "stop_loss_pct", "trailing_stop_pct", "trailing_activation_pct",
+                "cooldown_after_loss_secs", "use_native_tp_sl",
+            ];
+            for (key, value) in strategy_table {
+                if !known_flat_fields.contains(&key.as_str()) && value.is_table() {
+                    config.strategy.strategies.insert(
+                        key.clone(),
+                        value.clone(),
+                    );
+                }
+            }
+        }
+
         Ok(config)
     }
 

@@ -62,8 +62,13 @@ impl PaperEngine {
     pub fn new(config: Config, starting_balance: f64, strategy_name: Option<&str>) -> anyhow::Result<Self> {
         let flash = FlashClient::new(&config.flash.api_url);
         let resolved_name = config.strategy.resolve_active(strategy_name);
-        let params = config.strategy.get_params(&resolved_name)?;
-        let strat = strategy::create_strategy(&resolved_name, params)?;
+        let sub_table = config.strategy.get_sub_table(&resolved_name);
+        let fallback_params = config.strategy.get_params(&resolved_name)?;
+        let strat = strategy::create_strategy_from_config(
+            &resolved_name,
+            sub_table,
+            fallback_params,
+        )?;
         let risk = Arc::new(RiskManager::new(config.risk.clone(), starting_balance));
         let trade_log = TradeLog::new("paper-trades.json");
 
