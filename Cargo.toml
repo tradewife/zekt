@@ -10,6 +10,10 @@ license = "MIT"
 name = "zekt"
 path = "src/main.rs"
 
+[[bin]]
+name = "scrape-leaderboards"
+path = "src/bin/scrape-leaderboards.rs"
+
 [dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }
