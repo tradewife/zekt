@@ -223,6 +223,156 @@ impl LpConsumptionParams {
 }
 
 // ---------------------------------------------------------------------------
+// Mean Reversion Strategy Parameters
+// ---------------------------------------------------------------------------
+
+/// Parameters specific to the Mean Reversion Scalper strategy.
+///
+/// Exit parameters derived from: data/strategy-blueprints/swing-trader.json#parameters.exit
+/// (scaled down for scalper timeframes — mean reversion targets smaller moves).
+/// Entry logic based on M1 strategy classification analysis:
+/// oscillating long/short direction, short hold times, tight PnL range.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MeanReversionParams {
+    // --- Entry parameters ---
+    // Mean reversion concept: fade momentum spikes after reversal signals.
+    // Entry fires when price deviates from SMA by threshold, then reversal tick confirmed.
+
+    /// Number of price points to compute the simple moving average (SMA).
+    /// From M1 analysis: mean-reversion wallets showed short hold times,
+    /// indicating quick entries/exits around the mean.
+    pub mean_lookback: usize,
+
+    /// Minimum price deviation from SMA (%) to detect a "spike".
+    /// A spike above SMA → potential SHORT entry.
+    /// A spike below SMA → potential LONG entry.
+    /// From M1 analysis: tight PnL range suggests moderate threshold.
+    pub deviation_threshold_pct: f64,
+
+    /// Number of consecutive ticks moving back toward the mean required
+    /// to confirm a reversal after a spike is detected.
+    /// From M1 analysis: moderate-to-high trade frequency supports quick confirmation.
+    pub reversal_confirmation_ticks: usize,
+
+    // --- Exit parameters ---
+    // From blueprint: data/strategy-blueprints/swing-trader.json#parameters.exit
+    // Scaled for mean reversion: tighter TP, no trailing, shorter holds.
+
+    /// How close to the SMA the price must return (%) for a "mean return" exit.
+    /// This is the primary exit condition for mean reversion.
+    pub mean_tolerance_pct: f64,
+
+    /// Direction bias: "long", "short", or "neutral".
+    #[serde(default = "default_direction_bias")]
+    pub direction_bias: String,
+    /// Position clip size in USD.
+    /// From M1 analysis: mean-reversion wallets used moderate clip sizes.
+    #[serde(default = "default_mr_clip_size_usd")]
+    pub clip_size_usd: f64,
+    /// Maximum hold duration in seconds.
+    /// From blueprint: swing-trader exit.max_hold_secs = 28800 (scaled to 1800 for scalper).
+    #[serde(default = "default_mr_max_hold_secs")]
+    pub max_hold_secs: u64,
+    /// Take-profit threshold percentage.
+    /// From blueprint: swing-trader exit.take_profit_pct = 4.0 (scaled to 1.0 for scalper).
+    #[serde(default = "default_mr_take_profit_pct")]
+    pub take_profit_pct: f64,
+    /// Stop-loss threshold percentage.
+    /// From blueprint: swing-trader exit.stop_loss_pct = 2.0 (scaled to 1.5 for scalper).
+    #[serde(default = "default_mr_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    /// Trailing stop percentage (0.0 = disabled for mean reversion).
+    /// Mean reversion targets a fixed level (the mean), not momentum continuation.
+    #[serde(default)]
+    pub trailing_stop_pct: f64,
+    /// Trailing stop activation percentage (0.0 = disabled).
+    #[serde(default)]
+    pub trailing_activation_pct: f64,
+    /// Cooldown after a losing trade, in seconds.
+    /// From blueprint: swing-trader risk.cooldown_after_loss_secs = 900 (scaled to 300).
+    #[serde(default = "default_cooldown_after_loss_secs")]
+    pub cooldown_after_loss_secs: u64,
+    /// Whether to use native on-chain TP/SL trigger orders.
+    #[serde(default = "default_use_native_tp_sl")]
+    pub use_native_tp_sl: bool,
+    /// Leverage for positions.
+    /// From M1 analysis: mean-reversion wallets used moderate leverage.
+    #[serde(default = "default_mr_leverage")]
+    pub leverage: f64,
+    /// Number of scale-in clips (for multi-clip entry).
+    #[serde(default = "default_scale_in_clips")]
+    pub scale_in_clips: u32,
+}
+
+fn default_mr_clip_size_usd() -> f64 { 100.0 }
+fn default_mr_max_hold_secs() -> u64 { 1800 }
+fn default_mr_take_profit_pct() -> f64 { 1.0 }
+fn default_mr_stop_loss_pct() -> f64 { 1.5 }
+fn default_mr_leverage() -> f64 { 3.0 }
+
+impl MeanReversionParams {
+    /// Validate mean reversion parameters.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.mean_lookback == 0 {
+            return Err("mean_lookback must be > 0".to_string());
+        }
+        if self.deviation_threshold_pct <= 0.0 {
+            return Err(format!(
+                "deviation_threshold_pct must be > 0, got {}",
+                self.deviation_threshold_pct
+            ));
+        }
+        if self.reversal_confirmation_ticks == 0 {
+            return Err("reversal_confirmation_ticks must be > 0".to_string());
+        }
+        if self.mean_tolerance_pct < 0.0 {
+            return Err(format!(
+                "mean_tolerance_pct must be >= 0, got {}",
+                self.mean_tolerance_pct
+            ));
+        }
+        if self.clip_size_usd <= 0.0 {
+            return Err(format!(
+                "clip_size_usd must be > 0, got {}",
+                self.clip_size_usd
+            ));
+        }
+        if self.take_profit_pct <= 0.0 {
+            return Err(format!(
+                "take_profit_pct must be > 0, got {}",
+                self.take_profit_pct
+            ));
+        }
+        if self.stop_loss_pct <= 0.0 {
+            return Err(format!(
+                "stop_loss_pct must be > 0, got {}",
+                self.stop_loss_pct
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert to the generic StrategyParams for use by engine/risk modules
+    /// that need a uniform parameter interface.
+    pub fn to_strategy_params(&self) -> StrategyParams {
+        StrategyParams {
+            direction_bias: self.direction_bias.clone(),
+            momentum_threshold_pct: self.deviation_threshold_pct,
+            lookback_count: self.mean_lookback,
+            scale_in_clips: self.scale_in_clips,
+            clip_size_usd: self.clip_size_usd,
+            max_hold_secs: self.max_hold_secs,
+            take_profit_pct: self.take_profit_pct,
+            stop_loss_pct: self.stop_loss_pct,
+            trailing_stop_pct: self.trailing_stop_pct,
+            trailing_activation_pct: self.trailing_activation_pct,
+            cooldown_after_loss_secs: self.cooldown_after_loss_secs,
+            use_native_tp_sl: self.use_native_tp_sl,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PositionContext
 // ---------------------------------------------------------------------------
 
@@ -706,12 +856,347 @@ fn exit_signal(is_long: bool, reason: crate::signal::ExitReason) -> Signal {
 }
 
 // ---------------------------------------------------------------------------
+// MeanReversionStrategy
+// ---------------------------------------------------------------------------
+
+/// Direction of a detected spike relative to the SMA.
+#[derive(Debug, Clone, PartialEq)]
+enum SpikeDirection {
+    /// Price spiked above SMA → looking for SHORT entry (fade the spike).
+    Above,
+    /// Price spiked below SMA → looking for LONG entry (fade the spike).
+    Below,
+}
+
+/// Mean Reversion Scalper strategy.
+///
+/// Fades momentum spikes by entering in the opposite direction after a sharp
+/// price move away from the mean (SMA) followed by a reversal tick. This is
+/// a contrarian strategy: it bets that extreme deviations from the mean will
+/// revert.
+///
+/// **Entry conditions:**
+/// 1. Sufficient price history (>= mean_lookback prices)
+/// 2. Price deviates from SMA by more than deviation_threshold_pct (spike)
+/// 3. Reversal confirmed: N consecutive ticks moving back toward the mean
+/// 4. Entry direction is opposite to the spike (spike up → SHORT, spike down → LONG)
+///
+/// **Exit conditions (priority order):**
+/// 1. Stop-loss (absolute loss from entry)
+/// 2. Mean return: price returns to within mean_tolerance_pct of the computed SMA
+/// 3. Take-profit (absolute gain from entry)
+/// 4. Time stop (max hold duration exceeded)
+///
+/// Note: No trailing stop — mean reversion targets a fixed level (the mean),
+/// not momentum continuation.
+///
+/// Blueprint source: derived from M1 analysis (mean-reversion wallets) and
+/// data/strategy-blueprints/swing-trader.json for exit/risk parameter ranges.
+pub struct MeanReversionStrategy {
+    params: MeanReversionParams,
+    generic_params: StrategyParams,
+    /// Rolling price buffer for SMA calculation.
+    prices: VecDeque<crate::signal::PricePoint>,
+    /// Current spike state, if any.
+    spike_state: Option<SpikeDirection>,
+    /// Number of consecutive reversal ticks counted after a spike.
+    reversal_ticks: usize,
+}
+
+impl MeanReversionStrategy {
+    pub fn new(params: MeanReversionParams) -> Self {
+        let generic = params.to_strategy_params();
+        let capacity = params.mean_lookback * 2;
+        Self {
+            generic_params: generic,
+            prices: VecDeque::with_capacity(capacity),
+            spike_state: None,
+            reversal_ticks: 0,
+            params,
+        }
+    }
+
+    /// Compute the simple moving average over the last `lookback` prices.
+    /// Returns None if there are fewer than `lookback` prices in the buffer.
+    fn compute_sma(&self, lookback: usize) -> Option<f64> {
+        if self.prices.len() < lookback {
+            return None;
+        }
+        let sum: f64 = self
+            .prices
+            .iter()
+            .rev()
+            .take(lookback)
+            .map(|p| p.price)
+            .sum();
+        Some(sum / lookback as f64)
+    }
+
+    /// Get the previous price (second-to-last in buffer).
+    fn prev_price(&self) -> Option<f64> {
+        if self.prices.len() < 2 {
+            return None;
+        }
+        // prices[len-2] is the second-to-last
+        self.prices.iter().rev().nth(1).map(|p| p.price)
+    }
+
+    /// Get the current (most recent) price.
+    fn current_price(&self) -> Option<f64> {
+        self.prices.back().map(|p| p.price)
+    }
+}
+
+impl Strategy for MeanReversionStrategy {
+    fn name(&self) -> &str {
+        "mean-reversion"
+    }
+
+    fn detect_entry(&mut self, _snapshot: &MomentumSnapshot) -> Signal {
+        let current_price = match self.current_price() {
+            Some(p) => p,
+            None => return Signal::NoSignal,
+        };
+
+        let sma = match self.compute_sma(self.params.mean_lookback) {
+            Some(s) => s,
+            None => {
+                debug!(
+                    "[mean-reversion] Insufficient price history: {}/{} prices",
+                    self.prices.len(),
+                    self.params.mean_lookback
+                );
+                return Signal::NoSignal;
+            }
+        };
+
+        if sma <= 0.0 {
+            return Signal::NoSignal;
+        }
+
+        // Compute deviation from SMA as a percentage
+        let deviation_pct = (current_price - sma) / sma * 100.0;
+
+        // Check for spike detection
+        if deviation_pct > self.params.deviation_threshold_pct {
+            // Spike above SMA → potential SHORT entry
+            if self.spike_state != Some(SpikeDirection::Above) {
+                self.spike_state = Some(SpikeDirection::Above);
+                self.reversal_ticks = 0;
+                debug!(
+                    "[mean-reversion] Spike ABOVE detected: price={:.2}, sma={:.2}, deviation={:.2}% (threshold={:.2}%)",
+                    current_price, sma, deviation_pct, self.params.deviation_threshold_pct
+                );
+            }
+        } else if deviation_pct < -self.params.deviation_threshold_pct {
+            // Spike below SMA → potential LONG entry
+            if self.spike_state != Some(SpikeDirection::Below) {
+                self.spike_state = Some(SpikeDirection::Below);
+                self.reversal_ticks = 0;
+                debug!(
+                    "[mean-reversion] Spike BELOW detected: price={:.2}, sma={:.2}, deviation={:.2}% (threshold={:.2}%)",
+                    current_price, sma, deviation_pct, self.params.deviation_threshold_pct
+                );
+            }
+        }
+
+        // Check for reversal confirmation
+        if let Some(ref spike_dir) = self.spike_state {
+            let prev_price = match self.prev_price() {
+                Some(p) => p,
+                None => return Signal::NoSignal,
+            };
+
+            // Is this tick moving back toward the mean?
+            let moving_toward_mean = match spike_dir {
+                SpikeDirection::Above => {
+                    // Price spiked above, reversal means price is coming down (current < prev)
+                    current_price < prev_price
+                }
+                SpikeDirection::Below => {
+                    // Price spiked below, reversal means price is coming up (current > prev)
+                    current_price > prev_price
+                }
+            };
+
+            if moving_toward_mean {
+                self.reversal_ticks += 1;
+                debug!(
+                    "[mean-reversion] Reversal tick {} (need {}): price={:.2}, prev={:.2}, sma={:.2}",
+                    self.reversal_ticks, self.params.reversal_confirmation_ticks,
+                    current_price, prev_price, sma
+                );
+
+                if self.reversal_ticks >= self.params.reversal_confirmation_ticks {
+                    // CONFIRMED REVERSAL — generate entry signal
+                    // Fading the spike: spike above → SHORT, spike below → LONG
+                    let strength = (deviation_pct.abs() / self.params.deviation_threshold_pct * 50.0)
+                        .min(100.0)
+                        .max(50.0);
+                    let velocity_pct = deviation_pct.abs();
+
+                    // Clone spike_dir before resetting state
+                    let spike_dir_clone = spike_dir.clone();
+
+                    // Reset spike state after generating signal
+                    self.spike_state = None;
+                    self.reversal_ticks = 0;
+
+                    match spike_dir_clone {
+                        SpikeDirection::Above => {
+                            info!(
+                                "[mean-reversion] SHORT signal: price={:.2}, sma={:.2}, deviation={:.2}%, reversal_ticks={}",
+                                current_price, sma, deviation_pct, self.params.reversal_confirmation_ticks
+                            );
+                            Signal::MomentumShort { strength, velocity_pct }
+                        }
+                        SpikeDirection::Below => {
+                            info!(
+                                "[mean-reversion] LONG signal: price={:.2}, sma={:.2}, deviation={:.2}%, reversal_ticks={}",
+                                current_price, sma, deviation_pct, self.params.reversal_confirmation_ticks
+                            );
+                            Signal::MomentumLong { strength, velocity_pct }
+                        }
+                    }
+                } else {
+                    Signal::NoSignal
+                }
+            } else {
+                // Not moving toward mean — if still in deviation zone, keep spike state;
+                // if back within threshold, reset
+                if deviation_pct.abs() <= self.params.deviation_threshold_pct {
+                    debug!(
+                        "[mean-reversion] Spike expired: deviation {:.2}% back within threshold {:.2}%",
+                        deviation_pct, self.params.deviation_threshold_pct
+                    );
+                    self.spike_state = None;
+                    self.reversal_ticks = 0;
+                }
+                // If spike is still active but this tick moved away from mean, don't reset
+                // (allow resumption of reversal counting on next tick)
+                Signal::NoSignal
+            }
+        } else {
+            // No active spike — check if we're in a gradual move (no signal for mean reversion)
+            Signal::NoSignal
+        }
+    }
+
+    fn detect_exit(
+        &self,
+        _snapshot: &MomentumSnapshot,
+        ctx: &PositionContext,
+    ) -> Option<Signal> {
+        let current_price = ctx.current_price;
+
+        // PnL from entry
+        let pnl_pct = if ctx.is_long {
+            (current_price - ctx.entry_price) / ctx.entry_price * 100.0
+        } else {
+            (ctx.entry_price - current_price) / ctx.entry_price * 100.0
+        };
+
+        // 1. Stop loss (highest priority)
+        if pnl_pct <= -ctx.stop_loss_pct {
+            warn!(
+                "[mean-reversion] STOP LOSS: pnl={:.2}%, threshold=-{:.2}%",
+                pnl_pct, ctx.stop_loss_pct
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::StopLoss));
+        }
+
+        // 2. Mean return: price returns to within tolerance of computed mean
+        if let Some(sma) = self.compute_sma(self.params.mean_lookback) {
+            if sma > 0.0 {
+                let deviation_from_mean = (current_price - sma).abs() / sma * 100.0;
+                if deviation_from_mean <= self.params.mean_tolerance_pct {
+                    info!(
+                        "[mean-reversion] MEAN RETURN exit: price={:.2}, sma={:.2}, deviation={:.2}% (tolerance={:.2}%), pnl={:.2}%",
+                        current_price, sma, deviation_from_mean, self.params.mean_tolerance_pct, pnl_pct
+                    );
+                    return Some(exit_signal(
+                        ctx.is_long,
+                        crate::signal::ExitReason::TakeProfit,
+                    ));
+                }
+            }
+        }
+
+        // 3. Take profit (absolute gain from entry)
+        if pnl_pct >= ctx.take_profit_pct {
+            info!(
+                "[mean-reversion] TAKE PROFIT: pnl={:.2}%, threshold={:.2}%",
+                pnl_pct, ctx.take_profit_pct
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TakeProfit));
+        }
+
+        // 4. Time stop
+        if ctx.hold_secs >= ctx.max_hold_secs {
+            warn!(
+                "[mean-reversion] TIME STOP: held {}s, max={}s",
+                ctx.hold_secs, ctx.max_hold_secs
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TimeStop));
+        }
+
+        None
+    }
+
+    fn parameters(&self) -> &StrategyParams {
+        &self.generic_params
+    }
+
+    fn push_price(&mut self, price: f64, timestamp_ms: i64) {
+        self.prices.push_back(crate::signal::PricePoint { price, timestamp_ms });
+        // Keep buffer at 2x mean_lookback to have enough history
+        while self.prices.len() > self.params.mean_lookback * 2 {
+            self.prices.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> MomentumSnapshot {
+        let lookback = self.params.mean_lookback;
+        let sma = self.compute_sma(lookback);
+        let current_price = self.current_price().unwrap_or(0.0);
+
+        let velocity_pct = if let Some(sma) = sma {
+            if sma > 0.0 {
+                (current_price - sma) / sma * 100.0
+            } else {
+                0.0
+            }
+        } else {
+            0.0
+        };
+
+        let direction = if velocity_pct > 0.0 {
+            crate::signal::TradeDirection::Long
+        } else if velocity_pct < 0.0 {
+            crate::signal::TradeDirection::Short
+        } else {
+            crate::signal::TradeDirection::Neutral
+        };
+
+        MomentumSnapshot {
+            price_count: self.prices.len(),
+            current_price,
+            price_velocity_pct: velocity_pct,
+            direction,
+            strength: 0.0,
+            volatility_pct: 0.0,
+            pool_data: None,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Strategy Factory
 // ---------------------------------------------------------------------------
 
 /// Canonical list of all registered strategy names.
 pub fn available_strategies() -> &'static [&'static str] {
-    &["momentum-scalper", "lp-consumption"]
+    &["momentum-scalper", "lp-consumption", "mean-reversion"]
 }
 
 /// Create a strategy instance by name and parameters.
@@ -746,6 +1231,16 @@ pub fn create_lp_consumption_strategy(
         anyhow::bail!("Invalid LP consumption parameters: {}", e);
     }
     Ok(Box::new(LpConsumptionStrategy::new(params)))
+}
+
+/// Create a Mean Reversion strategy from its specific parameters.
+pub fn create_mean_reversion_strategy(
+    params: MeanReversionParams,
+) -> anyhow::Result<Box<dyn Strategy>> {
+    if let Err(e) = params.validate() {
+        anyhow::bail!("Invalid mean reversion parameters: {}", e);
+    }
+    Ok(Box::new(MeanReversionStrategy::new(params)))
 }
 
 /// Create a strategy by name using config-provided TOML sub-table.
@@ -794,6 +1289,37 @@ pub fn create_strategy_from_config(
                 }
             };
             create_lp_consumption_strategy(lp_params)
+        }
+        "mean-reversion" => {
+            let mr_params = if let Some(table) = sub_table {
+                let params: MeanReversionParams = table.clone().try_into().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse [strategy.mean-reversion] sub-table: {}",
+                        e
+                    )
+                })?;
+                params
+            } else {
+                // Use defaults
+                MeanReversionParams {
+                    mean_lookback: 120,
+                    deviation_threshold_pct: 1.5,
+                    reversal_confirmation_ticks: 2,
+                    mean_tolerance_pct: 0.3,
+                    direction_bias: "neutral".to_string(),
+                    clip_size_usd: fallback_params.clip_size_usd,
+                    max_hold_secs: 1800,
+                    take_profit_pct: 1.0,
+                    stop_loss_pct: 1.5,
+                    trailing_stop_pct: 0.0,
+                    trailing_activation_pct: 0.0,
+                    cooldown_after_loss_secs: 300,
+                    use_native_tp_sl: true,
+                    leverage: 3.0,
+                    scale_in_clips: 1,
+                }
+            };
+            create_mean_reversion_strategy(mr_params)
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -1175,7 +1701,7 @@ mod tests {
         // Long velocity = 0.8 (above threshold 0.5), concentration = 80% (above 0.7)
         for _ in 0..3 {
             let snap = snapshot_with_pool(100.0, 0.8, 0.2, 0.3, 0.2);
-            let signal = strategy.detect_entry(&snap);
+            let _signal = strategy.detect_entry(&snap);
             // First two ticks should be NoSignal (need confirmation_ticks=3)
             // Third tick should produce a LONG signal
         }
@@ -1496,5 +2022,398 @@ mod tests {
         // When both are zero, should return 0.5/0.5 (neutral)
         assert!((long_c - 0.5).abs() < 0.01);
         assert!((short_c - 0.5).abs() < 0.01);
+    }
+
+    // ===== Mean Reversion Strategy Tests =====
+
+    /// Helper: create default mean reversion params for testing.
+    fn default_mr_params() -> MeanReversionParams {
+        MeanReversionParams {
+            mean_lookback: 20, // Small for testing
+            deviation_threshold_pct: 1.5,
+            reversal_confirmation_ticks: 2,
+            mean_tolerance_pct: 0.3,
+            direction_bias: "neutral".to_string(),
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+            leverage: 3.0,
+            scale_in_clips: 1,
+        }
+    }
+
+    /// Helper: build a snapshot for mean reversion (no pool data needed).
+    fn mr_snapshot(price: f64) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_count: 20,
+            current_price: price,
+            price_velocity_pct: 0.0,
+            direction: TradeDirection::Neutral,
+            strength: 0.0,
+            volatility_pct: 0.0,
+            pool_data: None,
+        }
+    }
+
+    /// Helper: mean reversion exit context.
+    fn mr_exit_context(
+        is_long: bool,
+        entry_price: f64,
+        current_price: f64,
+        peak_price: f64,
+        hold_secs: u64,
+    ) -> PositionContext {
+        PositionContext {
+            is_long,
+            entry_price,
+            current_price,
+            peak_price,
+            hold_secs,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_entry_long_after_downward_spike_and_reversal() {
+        // Scenario: prices trade around 100, then spike DOWN to 96 (4% below SMA),
+        // then start reversing upward → should generate LONG signal.
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Feed 20 stable prices around 100 to establish SMA
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Spike down: 4% below SMA (100), well above 1.5% threshold
+        // Spike tick: push price to 96
+        strategy.push_price(96.0, 30_000);
+        let snap = mr_snapshot(96.0);
+        let signal = strategy.detect_entry(&snap);
+        // Spike detected but no reversal yet
+        assert_eq!(signal, Signal::NoSignal, "Should not signal on spike without reversal");
+
+        // First reversal tick: price moves back up toward mean
+        strategy.push_price(96.5, 31_000);
+        let snap = mr_snapshot(96.5);
+        let signal = strategy.detect_entry(&snap);
+        // Only 1 reversal tick, need 2
+        assert_eq!(signal, Signal::NoSignal, "Should not signal with only 1 reversal tick");
+
+        // Second reversal tick: price continues up toward mean
+        strategy.push_price(97.0, 32_000);
+        let snap = mr_snapshot(97.0);
+        let signal = strategy.detect_entry(&snap);
+        // Should generate LONG signal (fade the downward spike)
+        match signal {
+            Signal::MomentumLong { strength, .. } => {
+                assert!(strength >= 50.0, "strength should be >= 50, got {}", strength);
+            }
+            other => panic!("Expected MomentumLong after downward spike + reversal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_entry_short_after_upward_spike_and_reversal() {
+        // Scenario: prices trade around 100, then spike UP to 104 (4% above SMA),
+        // then start reversing downward → should generate SHORT signal.
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Feed 20 stable prices around 100 to establish SMA
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Spike up: 4% above SMA
+        strategy.push_price(104.0, 30_000);
+        let snap = mr_snapshot(104.0);
+        let _ = strategy.detect_entry(&snap);
+
+        // First reversal tick: price moves down
+        strategy.push_price(103.5, 31_000);
+        let snap = mr_snapshot(103.5);
+        let _ = strategy.detect_entry(&snap);
+
+        // Second reversal tick: price continues down
+        strategy.push_price(103.0, 32_000);
+        let snap = mr_snapshot(103.0);
+        let signal = strategy.detect_entry(&snap);
+
+        match signal {
+            Signal::MomentumShort { strength, .. } => {
+                assert!(strength >= 50.0);
+            }
+            other => panic!("Expected MomentumShort after upward spike + reversal, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_no_entry_on_gradual_move_without_spike() {
+        // Gradual drift without exceeding deviation threshold → no signal
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Feed 20 stable prices
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Gradual upward drift: 0.1% per tick for 10 ticks = 1% total (below 1.5% threshold)
+        for i in 0..10 {
+            let price = 100.0 * (1.0 + 0.001 * (i as f64));
+            strategy.push_price(price, 20_000 + (i as i64) * 1000);
+            let snap = mr_snapshot(price);
+            let signal = strategy.detect_entry(&snap);
+            assert_eq!(
+                signal, Signal::NoSignal,
+                "Should not signal on gradual move without spike (tick {})",
+                i
+            );
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_exit_on_mean_return() {
+        // Position is LONG, entered at 96 (below SMA of 100).
+        // Price returns to 100 (within tolerance of SMA) → exit.
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Feed 20 stable prices at 100 to establish SMA
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        // Current price is at 100 (exactly at mean)
+        strategy.push_price(100.0, 21_000);
+
+        let snap = mr_snapshot(100.0);
+        let ctx = mr_exit_context(true, 96.0, 100.0, 100.0, 60);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(
+                    reason, ExitReason::TakeProfit,
+                    "Mean return should use TakeProfit exit reason"
+                );
+            }
+            other => panic!("Expected ExitLong(TakeProfit) on mean return, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_exit_on_stop_loss() {
+        // Price drops 2% (SL is 1.5%)
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Need prices for SMA computation
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(98.0, 21_000);
+
+        let snap = mr_snapshot(98.0);
+        let ctx = mr_exit_context(true, 100.0, 98.0, 100.5, 30);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::StopLoss);
+            }
+            other => panic!("Expected ExitLong(StopLoss), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_exit_on_time_stop() {
+        // Held for 2000s, max is 1800s. Price hasn't moved enough for TP or SL.
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        // Push a price far from mean so mean-return exit doesn't fire
+        strategy.push_price(96.3, 21_000);
+
+        let snap = mr_snapshot(96.3);
+        // Entry at 96.0, current at 96.3 → 0.31% gain, below 1.0% TP
+        let ctx = mr_exit_context(true, 96.0, 96.3, 96.5, 2000);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::TimeStop);
+            }
+            other => panic!("Expected ExitLong(TimeStop), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_mean_reversion_no_signal_insufficient_history() {
+        // With fewer prices than mean_lookback, should return NoSignal
+        let params = default_mr_params(); // mean_lookback = 20
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Only 10 prices (less than mean_lookback of 20)
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        let snap = mr_snapshot(100.0);
+        let signal = strategy.detect_entry(&snap);
+        assert_eq!(
+            signal, Signal::NoSignal,
+            "Should return NoSignal when price history is insufficient"
+        );
+
+        // With 0 prices
+        let mut strategy2 = MeanReversionStrategy::new(default_mr_params());
+        let snap2 = mr_snapshot(100.0);
+        let signal2 = strategy2.detect_entry(&snap2);
+        assert_eq!(
+            signal2, Signal::NoSignal,
+            "Should return NoSignal with zero prices"
+        );
+    }
+
+    #[test]
+    fn test_mean_reversion_no_exit_when_price_still_far_from_mean() {
+        // Price is still far from mean, no SL/TP hit, no time stop
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        for i in 0..20 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        // Push price far from mean, still within SL/TP range from entry
+        strategy.push_price(96.3, 21_000);
+
+        let snap = mr_snapshot(96.3);
+        // Entry at 96.0, current at 96.3 → 0.31% gain (below 1.0% TP, above -1.5% SL)
+        // Deviation from SMA ≈ 3.5% (above 0.3% tolerance)
+        let ctx = mr_exit_context(true, 96.0, 96.3, 96.5, 60);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        assert!(
+            result.is_none(),
+            "Expected no exit when price is still far from mean, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_mean_reversion_factory_creates_strategy() {
+        let params = default_mr_params();
+        let strategy = create_mean_reversion_strategy(params).unwrap();
+        assert_eq!(strategy.name(), "mean-reversion");
+    }
+
+    #[test]
+    fn test_mean_reversion_factory_from_config() {
+        let fallback = default_params();
+        let strategy = create_strategy_from_config(
+            "mean-reversion",
+            None, // No sub-table, use defaults
+            fallback,
+        )
+        .unwrap();
+        assert_eq!(strategy.name(), "mean-reversion");
+    }
+
+    #[test]
+    fn test_mean_reversion_factory_from_config_with_table() {
+        let fallback = default_params();
+        let toml_str = r#"
+            mean_lookback = 60
+            deviation_threshold_pct = 2.0
+            reversal_confirmation_ticks = 3
+            mean_tolerance_pct = 0.5
+            clip_size_usd = 50.0
+            take_profit_pct = 1.5
+            stop_loss_pct = 2.0
+            trailing_stop_pct = 0.0
+            trailing_activation_pct = 0.0
+            max_hold_secs = 2400
+            cooldown_after_loss_secs = 120
+            direction_bias = "long"
+        "#;
+        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        let strategy = create_strategy_from_config(
+            "mean-reversion",
+            Some(&value),
+            fallback,
+        )
+        .unwrap();
+        assert_eq!(strategy.name(), "mean-reversion");
+    }
+
+    #[test]
+    fn test_mean_reversion_params_validation_rejects_zero_lookback() {
+        let mut params = default_mr_params();
+        params.mean_lookback = 0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_mean_reversion_params_validation_rejects_zero_deviation() {
+        let mut params = default_mr_params();
+        params.deviation_threshold_pct = 0.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_mean_reversion_params_validation_rejects_zero_reversal_ticks() {
+        let mut params = default_mr_params();
+        params.reversal_confirmation_ticks = 0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_mean_reversion_params_validation_accepts_valid() {
+        let params = default_mr_params();
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_mean_reversion_sma_computation() {
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        // Push 20 prices: 100, 101, 102, ..., 119
+        for i in 0..20 {
+            strategy.push_price(100.0 + i as f64, 1000 + (i as i64) * 1000);
+        }
+
+        let sma = strategy.compute_sma(20).unwrap();
+        // Average of 100..119 = (100+119)/2 = 109.5
+        assert!(
+            (sma - 109.5).abs() < 0.01,
+            "SMA should be 109.5, got {:.2}",
+            sma
+        );
+    }
+
+    #[test]
+    fn test_mean_reversion_sma_insufficient_data() {
+        let params = default_mr_params();
+        let mut strategy = MeanReversionStrategy::new(params);
+
+        strategy.push_price(100.0, 1000);
+        strategy.push_price(101.0, 2000);
+
+        let sma = strategy.compute_sma(20);
+        assert!(sma.is_none(), "SMA should be None with insufficient data");
     }
 }
