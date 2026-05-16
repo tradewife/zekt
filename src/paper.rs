@@ -1,7 +1,8 @@
 use crate::config::Config;
 use crate::flash_api::FlashClient;
 use crate::risk::{RiskManager, TradeLog, TradeRecord};
-use crate::signal::{ExitReason, MomentumDetector, MomentumSnapshot, Signal};
+use crate::signal::{ExitReason, MomentumSnapshot, Signal};
+use crate::strategy::{self, PositionContext, Strategy};
 use chrono::Utc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -18,7 +19,7 @@ const BORROW_FEE_HOURLY: f64 = 0.0001; // 0.01% per hour on position notional
 pub struct PaperEngine {
     config: Config,
     flash: FlashClient,
-    detector: MomentumDetector,
+    strategy: Box<dyn Strategy>,
     risk: Arc<RiskManager>,
     trade_log: TradeLog,
     position: Option<PaperPosition>,
@@ -58,26 +59,28 @@ impl PaperPosition {
 }
 
 impl PaperEngine {
-    pub fn new(config: Config, starting_balance: f64) -> Self {
+    pub fn new(config: Config, starting_balance: f64, strategy_name: Option<&str>) -> anyhow::Result<Self> {
         let flash = FlashClient::new(&config.flash.api_url);
-        let detector = MomentumDetector::new(
-            config.strategy.momentum_threshold_pct,
-            config.strategy.lookback_count,
-        );
+        let resolved_name = config.strategy.resolve_active(strategy_name);
+        let params = config.strategy.get_params(&resolved_name)?;
+        let strat = strategy::create_strategy(&resolved_name, params)?;
         let risk = Arc::new(RiskManager::new(config.risk.clone(), starting_balance));
         let trade_log = TradeLog::new("paper-trades.json");
 
-        Self {
+        info!("Strategy: {} (from {})", strat.name(),
+              if strategy_name.is_some() { "CLI flag" } else { "config" });
+
+        Ok(Self {
             config,
             flash,
-            detector,
+            strategy: strat,
             risk,
             trade_log,
             position: None,
             running: Arc::new(AtomicBool::new(true)),
             sim_balance: starting_balance,
             pending_entry_fee: 0.0,
-        }
+        })
     }
 
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
@@ -88,14 +91,15 @@ impl PaperEngine {
         info!("=== Zekt PAPER Trading Mode ===");
         info!("Market: {}", self.config.flash.market);
         info!("Leverage: {}x", self.config.flash.leverage);
-        info!("Clip: ${:.0}", self.config.strategy.clip_size_usd);
+        let params = self.strategy.parameters();
+        info!("Clip: ${:.0}", params.clip_size_usd);
         info!("Simulated balance: ${:.2}", self.sim_balance);
         info!("Fee estimation: live API preview (entry + exit) + {}%/hr borrow", BORROW_FEE_HOURLY * 100.0);
         warn!("PAPER MODE -- no real transactions will be signed");
 
         let initial_price = self.flash.get_price(&self.config.flash.market).await?;
         info!("Initial price: ${:.2}", initial_price);
-        self.detector.push_price(initial_price, now_ms());
+        self.strategy.push_price(initial_price, now_ms());
 
         loop {
             if !self.running.load(Ordering::Relaxed) {
@@ -140,9 +144,9 @@ impl PaperEngine {
     async fn tick(&mut self) -> anyhow::Result<()> {
         let market = &self.config.flash.market;
         let price = self.flash.get_price(market).await?;
-        self.detector.push_price(price, now_ms());
+        self.strategy.push_price(price, now_ms());
 
-        let snapshot = self.detector.analyze();
+        let snapshot = self.strategy.snapshot();
 
         debug!(
             "[{}] prices={} velocity={:.4}% dir={:?} strength={:.0}",
@@ -172,7 +176,7 @@ impl PaperEngine {
             return Ok(());
         }
 
-        let clip = self.config.strategy.clip_size_usd;
+        let clip = self.strategy.parameters().clip_size_usd;
         let notional = clip * self.config.flash.leverage;
         if let Err(e) = self.risk.check_position_size(notional) {
             warn!("{}", e);
@@ -184,9 +188,9 @@ impl PaperEngine {
             return Ok(());
         }
 
-        let bias = self.config.strategy.direction_bias.to_lowercase();
+        let bias = self.strategy.parameters().direction_bias.to_lowercase();
         let leverage = self.config.flash.leverage;
-        let signal = self.detector.detect_signal(snapshot);
+        let signal = self.strategy.detect_entry(snapshot);
 
         match signal {
             Signal::MomentumLong { strength, velocity_pct } if bias != "short" => {
@@ -277,19 +281,21 @@ impl PaperEngine {
         };
         pos.update_price(current_price);
 
-        let exit_signal = self.detector.detect_exit(
-            snapshot,
-            pos.inner.is_long,
-            pos.inner.entry_price,
+        let params = self.strategy.parameters();
+        let ctx = PositionContext {
+            is_long: pos.inner.is_long,
+            entry_price: pos.inner.entry_price,
             current_price,
-            pos.inner.peak_price,
-            pos.inner.hold_duration_secs(),
-            self.config.strategy.max_hold_secs,
-            self.config.strategy.take_profit_pct,
-            self.config.strategy.stop_loss_pct,
-            self.config.strategy.trailing_stop_pct,
-            self.config.strategy.trailing_activation_pct,
-        );
+            peak_price: pos.inner.peak_price,
+            hold_secs: pos.inner.hold_duration_secs(),
+            max_hold_secs: params.max_hold_secs,
+            take_profit_pct: params.take_profit_pct,
+            stop_loss_pct: params.stop_loss_pct,
+            trailing_stop_pct: params.trailing_stop_pct,
+            trailing_activation_pct: params.trailing_activation_pct,
+        };
+
+        let exit_signal = self.strategy.detect_exit(snapshot, &ctx);
 
         match exit_signal {
             Some(Signal::ExitLong { reason } | Signal::ExitShort { reason }) => {
@@ -374,7 +380,8 @@ impl PaperEngine {
         });
 
         if net_pnl < 0.0 {
-            self.risk.set_cooldown(self.config.strategy.cooldown_after_loss_secs);
+            let cooldown = self.strategy.parameters().cooldown_after_loss_secs;
+            self.risk.set_cooldown(cooldown);
         }
 
         info!("[PAPER] Simulated balance: ${:.2}", self.sim_balance);

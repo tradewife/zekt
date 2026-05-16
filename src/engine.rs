@@ -2,7 +2,8 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::flash_api::{FlashClient, FlashPosition};
 use crate::risk::{Position, RiskManager, TradeLog, TradeRecord};
-use crate::signal::{ExitReason, MomentumDetector, MomentumSnapshot, Signal};
+use crate::signal::{ExitReason, MomentumSnapshot, Signal};
+use crate::strategy::{self, PositionContext, Strategy};
 use chrono::Utc;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +14,7 @@ pub struct ScalperEngine {
     config: Config,
     flash: FlashClient,
     executor: Executor,
-    detector: MomentumDetector,
+    strategy: Box<dyn Strategy>,
     risk: Arc<RiskManager>,
     trade_log: TradeLog,
     position: Option<Position>,
@@ -21,25 +22,27 @@ pub struct ScalperEngine {
 }
 
 impl ScalperEngine {
-    pub fn new(config: Config, executor: Executor) -> Self {
+    pub fn new(config: Config, executor: Executor, strategy_name: Option<&str>) -> anyhow::Result<Self> {
         let flash = FlashClient::new(&config.flash.api_url);
-        let detector = MomentumDetector::new(
-            config.strategy.momentum_threshold_pct,
-            config.strategy.lookback_count,
-        );
+        let resolved_name = config.strategy.resolve_active(strategy_name);
+        let params = config.strategy.get_params(&resolved_name)?;
+        let strategy = strategy::create_strategy(&resolved_name, params)?;
         let risk = Arc::new(RiskManager::new(config.risk.clone(), 0.0));
         let trade_log = TradeLog::new("perps-trades.json");
 
-        Self {
+        info!("Strategy: {} (from {})", strategy.name(),
+              if strategy_name.is_some() { "CLI flag" } else { "config" });
+
+        Ok(Self {
             config,
             flash,
             executor,
-            detector,
+            strategy,
             risk,
             trade_log,
             position: None,
             running: Arc::new(AtomicBool::new(true)),
-        }
+        })
     }
 
     pub fn shutdown_handle(&self) -> Arc<AtomicBool> {
@@ -53,10 +56,10 @@ impl ScalperEngine {
         info!("Clip: ${:.0}", self.config.strategy.clip_size_usd);
         info!("Wallet: {}", self.executor.wallet_pubkey());
 
-        // Fetch initial price to seed detector
+        // Fetch initial price to seed strategy
         let initial_price = self.flash.get_price(&self.config.flash.market).await?;
         info!("Initial price: ${:.2}", initial_price);
-        self.detector.push_price(initial_price, now_ms());
+        self.strategy.push_price(initial_price, now_ms());
 
         // Fetch real USDC balance for risk manager
         let usdc_balance = self.executor.get_usdc_balance().unwrap_or(0.0);
@@ -173,9 +176,9 @@ impl ScalperEngine {
 
         // Fetch current price
         let price = self.flash.get_price(market).await?;
-        self.detector.push_price(price, now_ms());
+        self.strategy.push_price(price, now_ms());
 
-        let snapshot = self.detector.analyze();
+        let snapshot = self.strategy.snapshot();
 
         debug!(
             "[{}] prices={} velocity={:.4}% dir={:?} strength={:.0}",
@@ -209,7 +212,7 @@ impl ScalperEngine {
         }
 
         // Validate position size against max
-        let clip = self.config.strategy.clip_size_usd;
+        let clip = self.strategy.parameters().clip_size_usd;
         let notional = clip * self.config.flash.leverage;
         if let Err(e) = self.risk.check_position_size(notional) {
             warn!("{}", e);
@@ -222,10 +225,10 @@ impl ScalperEngine {
             return Ok(());
         }
 
-        let bias = self.config.strategy.direction_bias.to_lowercase();
+        let bias = self.strategy.parameters().direction_bias.to_lowercase();
         let leverage = self.config.flash.leverage;
 
-        let signal = self.detector.detect_signal(snapshot);
+        let signal = self.strategy.detect_entry(snapshot);
 
         match signal {
             Signal::MomentumLong { strength, velocity_pct } if bias != "short" => {
@@ -279,8 +282,9 @@ impl ScalperEngine {
 
         // Build transaction with optional native TP/SL
         let wallet = self.executor.wallet_pubkey();
-        let tp_price = if self.config.strategy.use_native_tp_sl {
-            let tp_pct = self.config.strategy.take_profit_pct / 100.0;
+        let params = self.strategy.parameters();
+        let tp_price = if params.use_native_tp_sl {
+            let tp_pct = params.take_profit_pct / 100.0;
             Some(if is_long {
                 current_price * (1.0 + tp_pct)
             } else {
@@ -289,8 +293,8 @@ impl ScalperEngine {
         } else {
             None
         };
-        let sl_price = if self.config.strategy.use_native_tp_sl {
-            let sl_pct = self.config.strategy.stop_loss_pct / 100.0;
+        let sl_price = if params.use_native_tp_sl {
+            let sl_pct = params.stop_loss_pct / 100.0;
             Some(if is_long {
                 current_price * (1.0 - sl_pct)
             } else {
@@ -373,19 +377,21 @@ impl ScalperEngine {
         };
         pos.update_price(current_price);
 
-        let exit_signal = self.detector.detect_exit(
-            snapshot,
-            pos.is_long,
-            pos.entry_price,
+        let params = self.strategy.parameters();
+        let ctx = PositionContext {
+            is_long: pos.is_long,
+            entry_price: pos.entry_price,
             current_price,
-            pos.peak_price,
-            pos.hold_duration_secs(),
-            self.config.strategy.max_hold_secs,
-            self.config.strategy.take_profit_pct,
-            self.config.strategy.stop_loss_pct,
-            self.config.strategy.trailing_stop_pct,
-            self.config.strategy.trailing_activation_pct,
-        );
+            peak_price: pos.peak_price,
+            hold_secs: pos.hold_duration_secs(),
+            max_hold_secs: params.max_hold_secs,
+            take_profit_pct: params.take_profit_pct,
+            stop_loss_pct: params.stop_loss_pct,
+            trailing_stop_pct: params.trailing_stop_pct,
+            trailing_activation_pct: params.trailing_activation_pct,
+        };
+
+        let exit_signal = self.strategy.detect_exit(snapshot, &ctx);
 
         match exit_signal {
             Some(Signal::ExitLong { reason } | Signal::ExitShort { reason }) => {
@@ -504,7 +510,8 @@ impl ScalperEngine {
                 });
 
                 if settled_pnl < 0.0 {
-                    self.risk.set_cooldown(self.config.strategy.cooldown_after_loss_secs);
+                    let cooldown = self.strategy.parameters().cooldown_after_loss_secs;
+                    self.risk.set_cooldown(cooldown);
                 }
             }
             Err(e) => {

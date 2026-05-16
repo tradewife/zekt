@@ -5,6 +5,7 @@ mod flash_api;
 mod paper;
 mod risk;
 mod signal;
+mod strategy;
 
 use clap::Parser;
 use std::path::PathBuf;
@@ -24,6 +25,10 @@ struct Args {
     /// Market to trade (overrides config)
     #[arg(short, long)]
     market: Option<String>,
+
+    /// Strategy to use (overrides config [strategy] active field)
+    #[arg(short, long)]
+    strategy: Option<String>,
 
     /// Dry run mode -- single preview, no signing, then exit
     #[arg(long, default_value_t = false)]
@@ -70,6 +75,33 @@ async fn main() -> anyhow::Result<()> {
     tracing::info!("Config: {}", config_path.display());
     tracing::info!("Market: {}", config.flash.market);
 
+    // Resolve strategy name from CLI flag or config, validate early
+    let strategy_name = config.strategy.resolve_active(args.strategy.as_deref());
+    tracing::info!("Strategy: {}", strategy_name);
+
+    // Validate strategy name and parameters early (before entering any mode)
+    let strategy_params = match config.strategy.get_params(&strategy_name) {
+        Ok(params) => params,
+        Err(e) => {
+            // If it's not a config issue, check if the strategy name itself is unknown
+            if !crate::strategy::available_strategies().contains(&strategy_name.as_str()) {
+                let available = crate::strategy::available_strategies().join(", ");
+                tracing::error!(
+                    "Unknown strategy '{}'. Available strategies: {}",
+                    strategy_name,
+                    available
+                );
+            } else {
+                tracing::error!("{}", e);
+            }
+            std::process::exit(1);
+        }
+    };
+    if let Err(e) = strategy_params.validate() {
+        tracing::error!("Invalid strategy parameters: {}", e);
+        std::process::exit(1);
+    }
+
     match (args.dry_run, args.paper) {
         (true, false) => {
             tracing::warn!("DRY RUN -- single preview, then exit");
@@ -77,21 +109,21 @@ async fn main() -> anyhow::Result<()> {
         }
         (false, true) => {
             tracing::warn!("PAPER TRADING -- full loop, simulated PnL, NO real transactions");
-            run_paper(config, args.paper_balance).await
+            run_paper(config, args.paper_balance, args.strategy.as_deref()).await
         }
         (true, true) => {
             anyhow::bail!("Cannot use --dry-run and --paper together");
         }
         (false, false) => {
             tracing::warn!("LIVE TRADING -- real transactions with real funds");
-            run_live(config).await
+            run_live(config, args.strategy.as_deref()).await
         }
     }
 }
 
-async fn run_live(config: config::Config) -> anyhow::Result<()> {
+async fn run_live(config: config::Config, strategy_name: Option<&str>) -> anyhow::Result<()> {
     let executor = executor::Executor::new(&config.flash.rpc_url, &config.flash.keypair_path)?;
-    let mut engine = engine::ScalperEngine::new(config, executor);
+    let mut engine = engine::ScalperEngine::new(config, executor, strategy_name)?;
 
     let running = engine.shutdown_handle();
     let _ = ctrlc::set_handler(move || {
@@ -102,8 +134,8 @@ async fn run_live(config: config::Config) -> anyhow::Result<()> {
     engine.run().await
 }
 
-async fn run_paper(config: config::Config, starting_balance: f64) -> anyhow::Result<()> {
-    let mut engine = paper::PaperEngine::new(config, starting_balance);
+async fn run_paper(config: config::Config, starting_balance: f64, strategy_name: Option<&str>) -> anyhow::Result<()> {
+    let mut engine = paper::PaperEngine::new(config, starting_balance, strategy_name)?;
 
     let running = engine.shutdown_handle();
     let _ = ctrlc::set_handler(move || {
