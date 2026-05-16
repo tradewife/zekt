@@ -373,6 +373,151 @@ impl MeanReversionParams {
 }
 
 // ---------------------------------------------------------------------------
+// Trend Follower Strategy Parameters
+// ---------------------------------------------------------------------------
+
+/// Parameters specific to the Trend Follower strategy.
+///
+/// This strategy enters on confirmed momentum breakouts with wider stops,
+/// trailing exits, and longer holds than scalper strategies. It accepts a
+/// lower win rate in exchange for larger average winners.
+///
+/// Entry logic: price velocity must exceed a *higher* threshold than the
+/// momentum scalper ( breakout confirmation ), AND the trend must be
+/// confirmed over multiple consecutive ticks.
+///
+/// Exit logic: wider trailing stop, generous time stop. No mean-return exit.
+///
+/// Sensible defaults are used since M1 blueprints did not identify a
+/// dedicated trend-following pattern. Parameters are tuned for Flash Trade
+/// perp markets with 5-second polling.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TrendFollowerParams {
+    // --- Entry parameters ---
+
+    /// Velocity threshold (%) for a "breakout" — higher than the momentum scalper's
+    /// threshold. A true breakout should show sustained, strong directional momentum.
+    /// Default 0.25 %/tick (vs 0.15 for the scalper).
+    pub breakout_threshold_pct: f64,
+
+    /// Number of consecutive ticks above breakout threshold required to confirm entry.
+    /// This filters out brief spikes that don't become sustained trends.
+    /// Default 4 ticks (20 seconds at 5s poll interval).
+    pub confirmation_ticks: usize,
+
+    /// Minimum number of price points required before any entry signal is generated.
+    /// The strategy needs enough history to compute a reliable trend.
+    /// Default 30.
+    pub min_price_count: usize,
+
+    // --- Exit parameters ---
+
+    /// Direction bias: "long", "short", or "neutral".
+    #[serde(default = "default_direction_bias")]
+    pub direction_bias: String,
+    /// Position clip size in USD.
+    #[serde(default = "default_tf_clip_size_usd")]
+    pub clip_size_usd: f64,
+    /// Maximum hold duration in seconds — longer than scalper (7200 vs 1800).
+    #[serde(default = "default_tf_max_hold_secs")]
+    pub max_hold_secs: u64,
+    /// Take-profit threshold percentage — wider than scalper (5.0 vs 2.5).
+    #[serde(default = "default_tf_take_profit_pct")]
+    pub take_profit_pct: f64,
+    /// Stop-loss threshold percentage — wider than scalper (2.0 vs 1.0).
+    #[serde(default = "default_tf_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    /// Trailing stop percentage — wider than scalper (1.5 vs 0.8).
+    #[serde(default = "default_tf_trailing_stop_pct")]
+    pub trailing_stop_pct: f64,
+    /// Trailing stop activation percentage — when to start trailing (2.5 vs 1.5).
+    #[serde(default = "default_tf_trailing_activation_pct")]
+    pub trailing_activation_pct: f64,
+    /// Cooldown after a losing trade, in seconds.
+    #[serde(default = "default_cooldown_after_loss_secs")]
+    pub cooldown_after_loss_secs: u64,
+    /// Whether to use native on-chain TP/SL trigger orders.
+    #[serde(default = "default_use_native_tp_sl")]
+    pub use_native_tp_sl: bool,
+    /// Leverage for positions.
+    #[serde(default = "default_tf_leverage")]
+    pub leverage: f64,
+    /// Number of scale-in clips (for multi-clip entry).
+    #[serde(default = "default_scale_in_clips")]
+    pub scale_in_clips: u32,
+}
+
+fn default_tf_clip_size_usd() -> f64 { 100.0 }
+fn default_tf_max_hold_secs() -> u64 { 7200 }
+fn default_tf_take_profit_pct() -> f64 { 5.0 }
+fn default_tf_stop_loss_pct() -> f64 { 2.0 }
+fn default_tf_trailing_stop_pct() -> f64 { 1.5 }
+fn default_tf_trailing_activation_pct() -> f64 { 2.5 }
+fn default_tf_leverage() -> f64 { 5.0 }
+
+impl TrendFollowerParams {
+    /// Validate trend follower parameters.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.breakout_threshold_pct <= 0.0 {
+            return Err(format!(
+                "breakout_threshold_pct must be > 0, got {}",
+                self.breakout_threshold_pct
+            ));
+        }
+        if self.confirmation_ticks == 0 {
+            return Err("confirmation_ticks must be > 0".to_string());
+        }
+        if self.min_price_count == 0 {
+            return Err("min_price_count must be > 0".to_string());
+        }
+        if self.clip_size_usd <= 0.0 {
+            return Err(format!(
+                "clip_size_usd must be > 0, got {}",
+                self.clip_size_usd
+            ));
+        }
+        if self.take_profit_pct <= 0.0 {
+            return Err(format!(
+                "take_profit_pct must be > 0, got {}",
+                self.take_profit_pct
+            ));
+        }
+        if self.stop_loss_pct <= 0.0 {
+            return Err(format!(
+                "stop_loss_pct must be > 0, got {}",
+                self.stop_loss_pct
+            ));
+        }
+        if self.trailing_stop_pct < 0.0 {
+            return Err(format!(
+                "trailing_stop_pct must be >= 0, got {}",
+                self.trailing_stop_pct
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert to the generic StrategyParams for use by engine/risk modules
+    /// that need a uniform parameter interface.
+    pub fn to_strategy_params(&self) -> StrategyParams {
+        StrategyParams {
+            direction_bias: self.direction_bias.clone(),
+            momentum_threshold_pct: self.breakout_threshold_pct,
+            lookback_count: self.min_price_count,
+            scale_in_clips: self.scale_in_clips,
+            clip_size_usd: self.clip_size_usd,
+            max_hold_secs: self.max_hold_secs,
+            take_profit_pct: self.take_profit_pct,
+            stop_loss_pct: self.stop_loss_pct,
+            trailing_stop_pct: self.trailing_stop_pct,
+            trailing_activation_pct: self.trailing_activation_pct,
+            cooldown_after_loss_secs: self.cooldown_after_loss_secs,
+            use_native_tp_sl: self.use_native_tp_sl,
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // PositionContext
 // ---------------------------------------------------------------------------
 
@@ -1191,12 +1336,295 @@ impl Strategy for MeanReversionStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// TrendFollowerStrategy
+// ---------------------------------------------------------------------------
+
+/// Trend Follower strategy.
+///
+/// Enters on confirmed momentum breakouts with wider stops and trailing exits.
+/// Designed for longer holds than scalper strategies — accepts a lower win rate
+/// but aims for larger average winners.
+///
+/// **Entry conditions:**
+/// 1. Sufficient price history (>= min_price_count)
+/// 2. Price velocity exceeds breakout_threshold_pct (higher than scalper threshold)
+/// 3. Velocity sustained for confirmation_ticks consecutive ticks
+/// 4. Direction matches the breakout direction
+///
+/// **Exit conditions (priority order):**
+/// 1. Stop-loss (wider than scalper)
+/// 2. Take-profit (wider than scalper)
+/// 3. Trailing stop (after activation threshold — wider activation & trail)
+/// 4. Time stop (much longer than scalper)
+/// 5. Trend exhaustion (velocity drops near zero while in position)
+///
+/// Sensible defaults are used since M1 blueprints did not produce a dedicated
+/// trend-following pattern. The parameters are tuned for Flash Trade perp markets
+/// with 5-second polling.
+pub struct TrendFollowerStrategy {
+    params: TrendFollowerParams,
+    generic_params: StrategyParams,
+    /// Internal momentum detector for price-based signal computation.
+    detector: MomentumDetector,
+    /// Rolling price buffer for independent velocity calculation.
+    prices: VecDeque<crate::signal::PricePoint>,
+    /// Number of consecutive ticks with velocity above breakout threshold.
+    /// Positive = upward breakout, negative = downward breakout.
+    consecutive_breakout: i32,
+    /// Previous velocity reading for trend exhaustion detection.
+    prev_velocity_pct: f64,
+}
+
+impl TrendFollowerStrategy {
+    pub fn new(params: TrendFollowerParams) -> Self {
+        let generic = params.to_strategy_params();
+        let detector = MomentumDetector::new(
+            params.breakout_threshold_pct,
+            params.min_price_count,
+        );
+        Self {
+            generic_params: generic,
+            detector,
+            prices: VecDeque::with_capacity(params.min_price_count * 2),
+            consecutive_breakout: 0,
+            prev_velocity_pct: 0.0,
+            params,
+        }
+    }
+
+    /// Compute price velocity over the recent lookback window.
+    /// Returns (velocity_pct, is_sufficient_data).
+    fn compute_velocity(&self) -> (f64, bool) {
+        let lookback = self.params.min_price_count;
+        if self.prices.len() < lookback {
+            return (0.0, false);
+        }
+
+        let recent: Vec<_> = self.prices.iter().rev().take(lookback).collect();
+        let current_price = recent[0].price;
+        let oldest_price = recent.last().unwrap().price;
+
+        if oldest_price <= 0.0 {
+            return (0.0, true);
+        }
+
+        let velocity_pct = (current_price - oldest_price) / oldest_price * 100.0;
+        (velocity_pct, true)
+    }
+
+    /// Get the current (most recent) price.
+    #[allow(dead_code)]
+    fn current_price(&self) -> Option<f64> {
+        self.prices.back().map(|p| p.price)
+    }
+}
+
+impl Strategy for TrendFollowerStrategy {
+    fn name(&self) -> &str {
+        "trend-follower"
+    }
+
+    fn detect_entry(&mut self, _snapshot: &MomentumSnapshot) -> Signal {
+        // Need sufficient price history
+        if self.prices.len() < self.params.min_price_count {
+            debug!(
+                "[trend-follower] Insufficient price history: {}/{} prices",
+                self.prices.len(),
+                self.params.min_price_count
+            );
+            return Signal::NoSignal;
+        }
+
+        let (velocity_pct, sufficient) = self.compute_velocity();
+        if !sufficient {
+            return Signal::NoSignal;
+        }
+
+        let threshold = self.params.breakout_threshold_pct;
+
+        // Track consecutive breakout ticks
+        if velocity_pct > threshold {
+            // Upward breakout
+            if self.consecutive_breakout > 0 {
+                self.consecutive_breakout += 1;
+            } else {
+                self.consecutive_breakout = 1;
+            }
+        } else if velocity_pct < -threshold {
+            // Downward breakout
+            if self.consecutive_breakout < 0 {
+                self.consecutive_breakout -= 1;
+            } else {
+                self.consecutive_breakout = -1;
+            }
+        } else {
+            // Velocity within range — reset consecutive count
+            if self.consecutive_breakout != 0 {
+                debug!(
+                    "[trend-follower] Breakout reset: velocity={:.3}% within threshold ±{:.3}%",
+                    velocity_pct, threshold
+                );
+            }
+            self.consecutive_breakout = 0;
+        }
+
+        self.prev_velocity_pct = velocity_pct;
+
+        let consec_count = self.consecutive_breakout.abs() as usize;
+        debug!(
+            "[trend-follower] Velocity: {:.3}%, threshold: ±{:.3}%, consecutive: {} (need {})",
+            velocity_pct, threshold, consec_count, self.params.confirmation_ticks
+        );
+
+        // Check confirmation — need N consecutive ticks above threshold
+        if consec_count < self.params.confirmation_ticks {
+            return Signal::NoSignal;
+        }
+
+        // ENTRY SIGNAL
+        let strength = (velocity_pct.abs() / threshold * 50.0)
+            .min(100.0)
+            .max(50.0);
+
+        if self.consecutive_breakout > 0 {
+            info!(
+                "[trend-follower] LONG breakout confirmed: velocity={:.3}% (threshold={:.3}%), consecutive={}, strength={:.1}",
+                velocity_pct, threshold, consec_count, strength
+            );
+            Signal::MomentumLong {
+                strength,
+                velocity_pct,
+            }
+        } else {
+            info!(
+                "[trend-follower] SHORT breakout confirmed: velocity={:.3}% (threshold={:.3}%), consecutive={}, strength={:.1}",
+                velocity_pct, threshold, consec_count, strength
+            );
+            Signal::MomentumShort {
+                strength,
+                velocity_pct,
+            }
+        }
+    }
+
+    fn detect_exit(
+        &self,
+        _snapshot: &MomentumSnapshot,
+        ctx: &PositionContext,
+    ) -> Option<Signal> {
+        let pnl_pct = if ctx.is_long {
+            (ctx.current_price - ctx.entry_price) / ctx.entry_price * 100.0
+        } else {
+            (ctx.entry_price - ctx.current_price) / ctx.entry_price * 100.0
+        };
+
+        let peak_profit_pct = if ctx.entry_price > 0.0 {
+            if ctx.is_long {
+                (ctx.peak_price - ctx.entry_price) / ctx.entry_price * 100.0
+            } else {
+                (ctx.entry_price - ctx.peak_price) / ctx.entry_price * 100.0
+            }
+        } else {
+            0.0
+        };
+
+        let retracement_pct = if ctx.peak_price > 0.0 && peak_profit_pct > 0.0 {
+            if ctx.is_long {
+                (ctx.peak_price - ctx.current_price) / ctx.peak_price * 100.0
+            } else {
+                (ctx.current_price - ctx.peak_price) / ctx.peak_price * 100.0
+            }
+        } else {
+            0.0
+        };
+
+        // 1. Stop loss (highest priority)
+        if pnl_pct <= -ctx.stop_loss_pct {
+            warn!(
+                "[trend-follower] STOP LOSS: pnl={:.2}%, threshold=-{:.2}%",
+                pnl_pct, ctx.stop_loss_pct
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::StopLoss));
+        }
+
+        // 2. Take profit
+        if pnl_pct >= ctx.take_profit_pct {
+            info!(
+                "[trend-follower] TAKE PROFIT: pnl={:.2}%, threshold={:.2}%",
+                pnl_pct, ctx.take_profit_pct
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TakeProfit));
+        }
+
+        // 3. Trailing stop (after activation threshold)
+        if peak_profit_pct >= ctx.trailing_activation_pct
+            && retracement_pct >= ctx.trailing_stop_pct
+        {
+            warn!(
+                "[trend-follower] TRAILING STOP: retracement={:.2}%, trail={:.2}%, peak_profit={:.2}%",
+                retracement_pct, ctx.trailing_stop_pct, peak_profit_pct
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TrailingStop));
+        }
+
+        // 4. Time stop
+        if ctx.hold_secs >= ctx.max_hold_secs {
+            warn!(
+                "[trend-follower] TIME STOP: held {}s, max={}s",
+                ctx.hold_secs, ctx.max_hold_secs
+            );
+            return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TimeStop));
+        }
+
+        // 5. Trend exhaustion: velocity has dropped to near zero while in position.
+        // Only fire if we've been in the trade long enough to establish a trend (>= 60s)
+        // and the trend is clearly fading (velocity near zero or reversing).
+        if ctx.hold_secs >= 60 {
+            let (velocity_pct, sufficient) = self.compute_velocity();
+            if sufficient && velocity_pct.abs() < self.params.breakout_threshold_pct * 0.2 {
+                // Trend has faded to less than 20% of breakout threshold
+                debug!(
+                    "[trend-follower] Trend exhaustion: velocity={:.3}% (< 20% of threshold {:.3}%)",
+                    velocity_pct,
+                    self.params.breakout_threshold_pct * 0.2
+                );
+                // Only exit if we've captured some profit or held a long time
+                if pnl_pct > 0.0 || ctx.hold_secs > ctx.max_hold_secs / 2 {
+                    return Some(exit_signal(
+                        ctx.is_long,
+                        crate::signal::ExitReason::MomentumLost,
+                    ));
+                }
+            }
+        }
+
+        None
+    }
+
+    fn parameters(&self) -> &StrategyParams {
+        &self.generic_params
+    }
+
+    fn push_price(&mut self, price: f64, timestamp_ms: i64) {
+        self.detector.push_price(price, timestamp_ms);
+        self.prices.push_back(crate::signal::PricePoint { price, timestamp_ms });
+        while self.prices.len() > self.params.min_price_count * 2 {
+            self.prices.pop_front();
+        }
+    }
+
+    fn snapshot(&self) -> MomentumSnapshot {
+        self.detector.analyze()
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Strategy Factory
 // ---------------------------------------------------------------------------
 
 /// Canonical list of all registered strategy names.
 pub fn available_strategies() -> &'static [&'static str] {
-    &["momentum-scalper", "lp-consumption", "mean-reversion"]
+    &["momentum-scalper", "lp-consumption", "mean-reversion", "trend-follower"]
 }
 
 /// Create a strategy instance by name and parameters.
@@ -1241,6 +1669,16 @@ pub fn create_mean_reversion_strategy(
         anyhow::bail!("Invalid mean reversion parameters: {}", e);
     }
     Ok(Box::new(MeanReversionStrategy::new(params)))
+}
+
+/// Create a Trend Follower strategy from its specific parameters.
+pub fn create_trend_follower_strategy(
+    params: TrendFollowerParams,
+) -> anyhow::Result<Box<dyn Strategy>> {
+    if let Err(e) = params.validate() {
+        anyhow::bail!("Invalid trend follower parameters: {}", e);
+    }
+    Ok(Box::new(TrendFollowerStrategy::new(params)))
 }
 
 /// Create a strategy by name using config-provided TOML sub-table.
@@ -1320,6 +1758,36 @@ pub fn create_strategy_from_config(
                 }
             };
             create_mean_reversion_strategy(mr_params)
+        }
+        "trend-follower" => {
+            let tf_params = if let Some(table) = sub_table {
+                let params: TrendFollowerParams = table.clone().try_into().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse [strategy.trend-follower] sub-table: {}",
+                        e
+                    )
+                })?;
+                params
+            } else {
+                // Use sensible defaults (no M1 blueprint available)
+                TrendFollowerParams {
+                    breakout_threshold_pct: 0.25,
+                    confirmation_ticks: 4,
+                    min_price_count: 30,
+                    direction_bias: "neutral".to_string(),
+                    clip_size_usd: fallback_params.clip_size_usd,
+                    max_hold_secs: 7200,
+                    take_profit_pct: 5.0,
+                    stop_loss_pct: 2.0,
+                    trailing_stop_pct: 1.5,
+                    trailing_activation_pct: 2.5,
+                    cooldown_after_loss_secs: 300,
+                    use_native_tp_sl: true,
+                    leverage: 5.0,
+                    scale_in_clips: 1,
+                }
+            };
+            create_trend_follower_strategy(tf_params)
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -2415,5 +2883,487 @@ mod tests {
 
         let sma = strategy.compute_sma(20);
         assert!(sma.is_none(), "SMA should be None with insufficient data");
+    }
+
+    // ===== Trend Follower Strategy Tests =====
+
+    /// Helper: create default trend follower params for testing.
+    fn default_tf_params() -> TrendFollowerParams {
+        TrendFollowerParams {
+            breakout_threshold_pct: 0.25,
+            confirmation_ticks: 3, // Small for testing
+            min_price_count: 10,   // Small for testing
+            direction_bias: "neutral".to_string(),
+            clip_size_usd: 100.0,
+            max_hold_secs: 7200,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 2.0,
+            trailing_stop_pct: 1.5,
+            trailing_activation_pct: 2.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+            leverage: 5.0,
+            scale_in_clips: 1,
+        }
+    }
+
+    /// Helper: build a snapshot for trend follower (no pool data needed).
+    fn tf_snapshot(price: f64) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_count: 30,
+            current_price: price,
+            price_velocity_pct: 0.0,
+            direction: TradeDirection::Neutral,
+            strength: 0.0,
+            volatility_pct: 0.0,
+            pool_data: None,
+        }
+    }
+
+    /// Helper: trend follower exit context.
+    fn tf_exit_context(
+        is_long: bool,
+        entry_price: f64,
+        current_price: f64,
+        peak_price: f64,
+        hold_secs: u64,
+    ) -> PositionContext {
+        PositionContext {
+            is_long,
+            entry_price,
+            current_price,
+            peak_price,
+            hold_secs,
+            max_hold_secs: 7200,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 2.0,
+            trailing_stop_pct: 1.5,
+            trailing_activation_pct: 2.5,
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_entry_long_on_breakout() {
+        // Feed rising prices that produce a sustained upward breakout.
+        // Start stable, then rapid rise to exceed breakout_threshold_pct = 0.25%.
+        let params = default_tf_params(); // confirmation_ticks = 3, min_price_count = 10
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed 10 stable prices around 100 (to meet min_price_count)
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Now feed strongly rising prices to trigger breakout.
+        // Each tick adds +0.3% from the initial price, building a strong trend.
+        // Need to call detect_entry on each tick to accumulate consecutive_breakout count.
+        for i in 0..5 {
+            let price = 100.0 * (1.0 + 0.003 * ((i + 1) as f64));
+            strategy.push_price(price, 20_000 + (i as i64) * 1000);
+            let snap = tf_snapshot(price);
+            let _signal = strategy.detect_entry(&snap);
+        }
+
+        // After 5 ticks of upward breakout (need 3 consecutive), should produce LONG
+        let last_price = 100.0 * (1.0 + 0.003 * 6.0);
+        strategy.push_price(last_price, 25_000);
+        let snap = tf_snapshot(last_price);
+        let signal = strategy.detect_entry(&snap);
+
+        match signal {
+            Signal::MomentumLong { strength, velocity_pct } => {
+                assert!(strength >= 50.0, "strength should be >= 50, got {}", strength);
+                assert!(velocity_pct > 0.25, "velocity should exceed breakout threshold");
+            }
+            other => panic!("Expected MomentumLong on upward breakout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_entry_short_on_breakout() {
+        // Feed falling prices that produce a sustained downward breakout.
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed 10 stable prices around 100
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Now feed strongly falling prices
+        for i in 0..5 {
+            let price = 100.0 * (1.0 - 0.003 * ((i + 1) as f64));
+            strategy.push_price(price, 20_000 + (i as i64) * 1000);
+            let snap = tf_snapshot(price);
+            let _signal = strategy.detect_entry(&snap);
+        }
+
+        let last_price = 100.0 * (1.0 - 0.003 * 6.0);
+        strategy.push_price(last_price, 25_000);
+        let snap = tf_snapshot(last_price);
+        let signal = strategy.detect_entry(&snap);
+
+        match signal {
+            Signal::MomentumShort { strength, velocity_pct } => {
+                assert!(strength >= 50.0);
+                assert!(velocity_pct < -0.25, "velocity should be below negative breakout threshold");
+            }
+            other => panic!("Expected MomentumShort on downward breakout, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_no_signal_insufficient_prices() {
+        let params = default_tf_params(); // min_price_count = 10
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Only 5 prices, below min_price_count
+        for i in 0..5 {
+            strategy.push_price(100.0 + (i as f64) * 0.5, 1000 + (i as i64) * 1000);
+        }
+
+        let snap = tf_snapshot(strategy.current_price().unwrap());
+        let signal = strategy.detect_entry(&snap);
+        assert_eq!(
+            signal, Signal::NoSignal,
+            "Should return NoSignal with insufficient price history"
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_no_signal_flat_prices() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed 15 flat prices (no breakout)
+        for i in 0..15 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        let snap = tf_snapshot(100.0);
+        let signal = strategy.detect_entry(&snap);
+        assert_eq!(
+            signal, Signal::NoSignal,
+            "Should not signal on flat prices"
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_no_signal_below_threshold() {
+        // Velocity slightly below breakout threshold
+        let params = default_tf_params(); // threshold = 0.25
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed 10 stable prices
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Rising but only 0.1% per tick (below 0.25% threshold)
+        for i in 0..5 {
+            let price = 100.0 * (1.0 + 0.001 * ((i + 1) as f64));
+            strategy.push_price(price, 20_000 + (i as i64) * 1000);
+        }
+
+        let snap = tf_snapshot(strategy.current_price().unwrap());
+        let signal = strategy.detect_entry(&snap);
+        assert_eq!(
+            signal, Signal::NoSignal,
+            "Should not signal when velocity is below breakout threshold"
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_no_signal_without_confirmation() {
+        // One big spike but not enough consecutive ticks
+        let params = default_tf_params(); // confirmation_ticks = 3
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+
+        // Only 1 tick with high velocity
+        strategy.push_price(100.5, 20_000); // 0.5% jump, above 0.25% threshold
+
+        let snap = tf_snapshot(100.5);
+        let signal = strategy.detect_entry(&snap);
+        assert_eq!(
+            signal, Signal::NoSignal,
+            "Should not signal with only 1 breakout tick (need 3)"
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_exit_stop_loss() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Need price history for velocity computation in exit
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(97.5, 20_000);
+
+        let snap = tf_snapshot(97.5);
+        let ctx = tf_exit_context(true, 100.0, 97.5, 100.5, 30);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::StopLoss);
+            }
+            other => panic!("Expected ExitLong(StopLoss), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_exit_take_profit() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(106.0, 20_000);
+
+        let snap = tf_snapshot(106.0);
+        let ctx = tf_exit_context(true, 100.0, 106.0, 106.0, 120);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::TakeProfit);
+            }
+            other => panic!("Expected ExitLong(TakeProfit), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_exit_trailing_stop() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(103.0, 20_000);
+
+        // Peak was at 104 (4% gain, above activation of 2.5%).
+        // Current is 103 (1% retracement from peak, but retracement from entry: 4% - 3% = 1% pnl).
+        // Retracement from peak: (104 - 103) / 104 * 100 = 0.96% — below 1.5% trailing.
+        // Need bigger retracement.
+        let snap = tf_snapshot(102.0);
+        // Peak at 105 (5% gain, above activation 2.5%), current at 102 (2% gain).
+        // Retracement from peak: (105 - 102) / 105 * 100 = 2.86% > 1.5% trailing.
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 102.0,
+            peak_price: 105.0,
+            hold_secs: 300,
+            max_hold_secs: 7200,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 2.0,
+            trailing_stop_pct: 1.5,
+            trailing_activation_pct: 2.5,
+        };
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::TrailingStop);
+            }
+            other => panic!("Expected ExitLong(TrailingStop), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_exit_time_stop() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(100.5, 20_000);
+
+        let snap = tf_snapshot(100.5);
+        // Held 8000s, max is 7200s
+        let ctx = tf_exit_context(true, 100.0, 100.5, 100.5, 8000);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(reason, ExitReason::TimeStop);
+            }
+            other => panic!("Expected ExitLong(TimeStop), got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_exit_on_trend_exhaustion() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed stable prices (velocity ≈ 0%, well below threshold)
+        for i in 0..10 {
+            strategy.push_price(100.0, 1000 + (i as i64) * 1000);
+        }
+        // Push current price that makes velocity very low
+        strategy.push_price(100.01, 20_000);
+
+        let snap = tf_snapshot(100.01);
+        // In profit, held long enough for exhaustion check
+        let ctx = tf_exit_context(true, 100.0, 100.01, 100.5, 300);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        match result {
+            Some(Signal::ExitLong { reason }) => {
+                assert_eq!(
+                    reason, ExitReason::MomentumLost,
+                    "Should exit on trend exhaustion when velocity drops"
+                );
+            }
+            other => panic!("Expected ExitLong(MomentumLost) on trend exhaustion, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_trend_follower_no_exit_when_position_stable() {
+        let params = default_tf_params();
+        let mut strategy = TrendFollowerStrategy::new(params);
+
+        // Feed prices with some upward trend (velocity above threshold)
+        for i in 0..10 {
+            strategy.push_price(100.0 + (i as f64) * 0.1, 1000 + (i as i64) * 1000);
+        }
+        strategy.push_price(101.5, 20_000);
+
+        let snap = tf_snapshot(101.5);
+        // Small profit, well within all exit thresholds, trend still active
+        let ctx = tf_exit_context(true, 100.0, 101.5, 101.5, 60);
+
+        let result = strategy.detect_exit(&snap, &ctx);
+        assert!(
+            result.is_none(),
+            "Expected no exit for stable trending position, got {:?}",
+            result
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_factory_creates_strategy() {
+        let params = default_tf_params();
+        let strategy = create_trend_follower_strategy(params).unwrap();
+        assert_eq!(strategy.name(), "trend-follower");
+    }
+
+    #[test]
+    fn test_trend_follower_factory_from_config() {
+        let fallback = default_params();
+        let strategy = create_strategy_from_config(
+            "trend-follower",
+            None, // No sub-table, use defaults
+            fallback,
+        )
+        .unwrap();
+        assert_eq!(strategy.name(), "trend-follower");
+    }
+
+    #[test]
+    fn test_trend_follower_factory_from_config_with_table() {
+        let fallback = default_params();
+        let toml_str = r#"
+            breakout_threshold_pct = 0.35
+            confirmation_ticks = 5
+            min_price_count = 40
+            clip_size_usd = 50.0
+            take_profit_pct = 6.0
+            stop_loss_pct = 2.5
+            trailing_stop_pct = 2.0
+            trailing_activation_pct = 3.0
+            max_hold_secs = 10800
+            cooldown_after_loss_secs = 120
+            direction_bias = "long"
+        "#;
+        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        let strategy = create_strategy_from_config(
+            "trend-follower",
+            Some(&value),
+            fallback,
+        )
+        .unwrap();
+        assert_eq!(strategy.name(), "trend-follower");
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_threshold() {
+        let mut params = default_tf_params();
+        params.breakout_threshold_pct = 0.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_confirmation() {
+        let mut params = default_tf_params();
+        params.confirmation_ticks = 0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_min_price_count() {
+        let mut params = default_tf_params();
+        params.min_price_count = 0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_clip_size() {
+        let mut params = default_tf_params();
+        params.clip_size_usd = 0.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_tp() {
+        let mut params = default_tf_params();
+        params.take_profit_pct = 0.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_rejects_zero_sl() {
+        let mut params = default_tf_params();
+        params.stop_loss_pct = 0.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_trend_follower_params_validation_accepts_valid() {
+        let params = default_tf_params();
+        assert!(params.validate().is_ok());
+    }
+
+    #[test]
+    fn test_trend_follower_available_in_strategies_list() {
+        let strategies = available_strategies();
+        assert!(
+            strategies.contains(&"trend-follower"),
+            "trend-follower should be in available_strategies"
+        );
+    }
+
+    #[test]
+    fn test_trend_follower_unknown_strategy_lists_trend_follower() {
+        let params = default_params();
+        let result = create_strategy("nonexistent", params);
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(
+            err.contains("trend-follower"),
+            "Error message should list trend-follower as available, got: {}",
+            err
+        );
     }
 }
