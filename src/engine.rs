@@ -455,6 +455,12 @@ impl ScalperEngine {
                     hold_secs: pos.hold_duration_secs(),
                     exit_reason: format!("{:?}", reason),
                     timestamp: Utc::now(),
+                    strategy: String::new(),
+                    market: String::new(),
+                    entry_fee: 0.0,
+                    exit_fee: 0.0,
+                    borrow_fee: 0.0,
+                    gross_pnl: estimated_pnl,
                 });
                 return Ok(());
             }
@@ -512,6 +518,12 @@ impl ScalperEngine {
                     hold_secs,
                     exit_reason: format!("{:?}", reason),
                     timestamp: Utc::now(),
+                    strategy: String::new(),
+                    market: String::new(),
+                    entry_fee: 0.0,
+                    exit_fee: 0.0,
+                    borrow_fee: 0.0,
+                    gross_pnl: settled_pnl,
                 });
 
                 if settled_pnl < 0.0 {

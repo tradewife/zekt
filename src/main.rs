@@ -22,13 +22,23 @@ struct Args {
     #[arg(short, long)]
     keypair: Option<String>,
 
-    /// Market to trade (overrides config)
+    /// Market to trade (overrides config). For multi-market paper trading, use --markets instead.
     #[arg(short, long)]
     market: Option<String>,
 
-    /// Strategy to use (overrides config [strategy] active field)
+    /// Strategy to use (overrides config [strategy] active field). For multi-strategy, use --strategies.
     #[arg(short, long)]
     strategy: Option<String>,
+
+    /// Comma-separated list of strategies for multi-strategy paper trading
+    /// (e.g., --strategies momentum-scalper,lp-consumption)
+    #[arg(long)]
+    strategies: Option<String>,
+
+    /// Comma-separated list of markets for multi-market paper trading
+    /// (e.g., --markets SOL,BTC,ETH)
+    #[arg(long)]
+    markets: Option<String>,
 
     /// Dry run mode -- single preview, no signing, then exit
     #[arg(long, default_value_t = false)]
@@ -41,6 +51,10 @@ struct Args {
     /// Starting balance for paper trading (USD), defaults to 1000
     #[arg(long, default_value_t = 1000.0)]
     paper_balance: f64,
+
+    /// Output directory for paper trading results (default: data/paper-results)
+    #[arg(long, default_value = "data/paper-results")]
+    paper_output: String,
 }
 
 #[tokio::main]
@@ -127,8 +141,27 @@ async fn main() -> anyhow::Result<()> {
             run_dry(config).await
         }
         (false, true) => {
-            tracing::warn!("PAPER TRADING -- full loop, simulated PnL, NO real transactions");
-            run_paper(config, args.paper_balance, args.strategy.as_deref()).await
+            // Determine if this is multi-strategy multi-market mode
+            let strategies_list = args.strategies.as_deref()
+                .map(|s| s.split(',').map(|s| s.trim()).collect::<Vec<_>>());
+            let markets_list = args.markets.as_deref()
+                .map(|s| s.split(',').map(|s| s.trim().to_uppercase()).collect::<Vec<_>>());
+
+            if strategies_list.is_some() || markets_list.is_some() {
+                tracing::warn!("PAPER TRADING (MULTI) -- multi-strategy multi-market mode");
+                let resolved_strategies = strategies_list.unwrap_or_else(|| vec![strategy_name.as_str()]);
+                let resolved_markets = markets_list.unwrap_or_else(|| vec![config.flash.market.clone()]);
+                run_multi_paper(
+                    config,
+                    args.paper_balance,
+                    resolved_strategies,
+                    resolved_markets,
+                    &args.paper_output,
+                ).await
+            } else {
+                tracing::warn!("PAPER TRADING -- full loop, simulated PnL, NO real transactions");
+                run_paper(config, args.paper_balance, args.strategy.as_deref()).await
+            }
         }
         (true, true) => {
             anyhow::bail!("Cannot use --dry-run and --paper together");
@@ -155,6 +188,30 @@ async fn run_live(config: config::Config, strategy_name: Option<&str>) -> anyhow
 
 async fn run_paper(config: config::Config, starting_balance: f64, strategy_name: Option<&str>) -> anyhow::Result<()> {
     let mut engine = paper::PaperEngine::new(config, starting_balance, strategy_name)?;
+
+    let running = engine.shutdown_handle();
+    let _ = ctrlc::set_handler(move || {
+        tracing::info!("Received shutdown signal, finishing current tick...");
+        running.store(false, Ordering::Relaxed);
+    });
+
+    engine.run().await
+}
+
+async fn run_multi_paper(
+    config: config::Config,
+    starting_balance: f64,
+    strategy_names: Vec<&str>,
+    markets: Vec<String>,
+    output_dir: &str,
+) -> anyhow::Result<()> {
+    let mut engine = paper::MultiPaperEngine::new(
+        config,
+        starting_balance,
+        strategy_names,
+        markets,
+        output_dir,
+    )?;
 
     let running = engine.shutdown_handle();
     let _ = ctrlc::set_handler(move || {
