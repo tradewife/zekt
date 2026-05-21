@@ -2,7 +2,7 @@ use crate::config::Config;
 use crate::executor::Executor;
 use crate::flash_api::{FlashClient, FlashPosition};
 use crate::risk::{Position, RiskManager, TradeLog, TradeRecord};
-use crate::signal::{ExitReason, MomentumSnapshot, Signal};
+use crate::signal::{ExitReason, MomentumSnapshot, PoolStateTracker, Signal};
 use crate::strategy::{self, PositionContext, Strategy};
 use chrono::Utc;
 use std::sync::Arc;
@@ -19,6 +19,7 @@ pub struct ScalperEngine {
     trade_log: TradeLog,
     position: Option<Position>,
     running: Arc<AtomicBool>,
+    pool_tracker: PoolStateTracker,
 }
 
 impl ScalperEngine {
@@ -47,6 +48,7 @@ impl ScalperEngine {
             trade_log,
             position: None,
             running: Arc::new(AtomicBool::new(true)),
+            pool_tracker: PoolStateTracker::new(),
         })
     }
 
@@ -183,7 +185,31 @@ impl ScalperEngine {
         let price = self.flash.get_price(market).await?;
         self.strategy.push_price(price, now_ms());
 
-        let snapshot = self.strategy.snapshot();
+        let mut snapshot = self.strategy.snapshot();
+
+        // Fetch pool data and inject into snapshot
+        match self.flash.get_pool_snapshot_for_market(market).await {
+            Ok(Some(raw)) => {
+                let pool_snap = self.pool_tracker.compute_snapshot(
+                    raw.aum_usd,
+                    raw.long_utilization,
+                    raw.short_utilization,
+                );
+                debug!(
+                    "[{}] pool_data: aum=${:.0} long_util={:.3} short_util={:.3} long_vel={:.4} short_vel={:.4}",
+                    market, pool_snap.aum_usd, pool_snap.long_utilization,
+                    pool_snap.short_utilization, pool_snap.long_utilization_velocity,
+                    pool_snap.short_utilization_velocity,
+                );
+                snapshot.pool_data = Some(pool_snap);
+            }
+            Ok(None) => {
+                debug!("[{}] No pool data available for market", market);
+            }
+            Err(e) => {
+                debug!("[{}] Pool data fetch failed: {:#}", market, e);
+            }
+        }
 
         debug!(
             "[{}] prices={} velocity={:.4}% dir={:?} strength={:.0}",

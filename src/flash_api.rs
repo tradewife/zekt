@@ -172,6 +172,15 @@ struct PoolDataWrapper {
     pools: Vec<serde_json::Value>,
 }
 
+/// Parsed pool info for a single market, extracted from the raw `/pool-data` response.
+/// Contains utilization for both long and short sides plus total AUM.
+#[derive(Debug, Clone)]
+pub struct RawPoolInfo {
+    pub aum_usd: f64,
+    pub long_utilization: f64,
+    pub short_utilization: f64,
+}
+
 impl FlashClient {
     pub fn new(base_url: &str) -> Self {
         let client = Client::builder()
@@ -370,6 +379,15 @@ impl FlashClient {
         Ok(wrapper.pools)
     }
 
+    /// Fetch pool data and extract parsed info for a specific market.
+    ///
+    /// Parses the raw `/pool-data` response to find long/short utilization and AUM
+    /// for the given market symbol. Returns `None` if no matching data is found.
+    pub async fn get_pool_snapshot_for_market(&self, market: &str) -> Result<Option<RawPoolInfo>> {
+        let pools = self.get_pool_data().await?;
+        Ok(parse_pool_data_for_market(&pools, market))
+    }
+
     // --- Preview Endpoints ---
 
     /// Preview exit fee for closing a position. Returns the fee amount in USD.
@@ -399,5 +417,269 @@ impl FlashClient {
             .or_else(|| data.get("fee").and_then(|v| v.as_f64()))
             .or_else(|| data.get("fees").and_then(|v| v.as_f64()))
             .ok_or_else(|| anyhow::anyhow!("could not parse exit fee from preview response: {:?}", data))
+    }
+}
+
+/// Parse raw pool data entries to extract utilization for a specific market.
+///
+/// Handles two common Flash Trade API formats:
+/// 1. Flat entries with `asset`/`symbol` + `side` + `utilization` fields (per-custody)
+/// 2. Pool entries with nested `custodies` array
+///
+/// Returns `None` if no matching entries are found.
+fn parse_pool_data_for_market(pools: &[serde_json::Value], market: &str) -> Option<RawPoolInfo> {
+    let market_lower = market.to_lowercase();
+
+    let mut aum_usd = 0.0_f64;
+    let mut long_utilization = 0.0_f64;
+    let mut short_utilization = 0.0_f64;
+    let mut found_long = false;
+    let mut found_short = false;
+    let mut found_aum = false;
+
+    // Pass 1: flat entries with side field (per-custody format)
+    for pool in pools {
+        let asset = pool
+            .get("asset")
+            .or_else(|| pool.get("symbol"))
+            .or_else(|| pool.get("name"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        if asset.to_lowercase() != market_lower {
+            continue;
+        }
+
+        // Extract AUM
+        if !found_aum {
+            if let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd")) {
+                if let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64()) {
+                    aum_usd = v;
+                    found_aum = true;
+                }
+            }
+        }
+
+        let side = pool
+            .get("side")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_lowercase();
+
+        let util = pool
+            .get("utilization")
+            .and_then(|v| {
+                v.as_str()
+                    .and_then(|s| s.parse::<f64>().ok())
+                    .or_else(|| v.as_f64())
+            })
+            .unwrap_or(0.0);
+
+        if side == "long" {
+            long_utilization = util;
+            found_long = true;
+        } else if side == "short" {
+            short_utilization = util;
+            found_short = true;
+        }
+    }
+
+    // Pass 2: nested custodies format
+    if !found_long || !found_short {
+        for pool in pools {
+            let asset = pool
+                .get("asset")
+                .or_else(|| pool.get("symbol"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+
+            if asset.to_lowercase() != market_lower {
+                continue;
+            }
+
+            if let Some(custodies) = pool.get("custodies").and_then(|v| v.as_array()) {
+                for custody in custodies {
+                    let side = custody
+                        .get("side")
+                        .and_then(|v| v.as_str())
+                        .unwrap_or("")
+                        .to_lowercase();
+                    let util = custody
+                        .get("utilization")
+                        .and_then(|v| {
+                            v.as_str()
+                                .and_then(|s| s.parse::<f64>().ok())
+                                .or_else(|| v.as_f64())
+                        })
+                        .unwrap_or(0.0);
+
+                    if side == "long" {
+                        long_utilization = util;
+                        found_long = true;
+                    } else if side == "short" {
+                        short_utilization = util;
+                        found_short = true;
+                    }
+                }
+            }
+
+            if !found_aum {
+                if let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd")) {
+                    if let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64()) {
+                        aum_usd = v;
+                        found_aum = true;
+                    }
+                }
+            }
+        }
+    }
+
+    if found_long || found_short {
+        Some(RawPoolInfo {
+            aum_usd,
+            long_utilization,
+            short_utilization,
+        })
+    } else {
+        None
+    }
+}
+
+#[cfg(test)]
+mod pool_parser_tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_flat_per_custody_format() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "SOL",
+                "side": "Long",
+                "utilization": "0.45",
+                "aumUsd": "5000000.0"
+            }),
+            serde_json::json!({
+                "asset": "SOL",
+                "side": "Short",
+                "utilization": "0.30",
+            }),
+            serde_json::json!({
+                "asset": "BTC",
+                "side": "Long",
+                "utilization": "0.60",
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "SOL");
+        assert!(result.is_some(), "Should find pool data for SOL");
+        let info = result.unwrap();
+        assert!((info.aum_usd - 5_000_000.0).abs() < 0.01);
+        assert!((info.long_utilization - 0.45).abs() < 0.001);
+        assert!((info.short_utilization - 0.30).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_nested_custodies_format() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "SOL",
+                "aumUsd": "3000000.0",
+                "custodies": [
+                    {"side": "Long", "utilization": "0.55"},
+                    {"side": "Short", "utilization": "0.25"}
+                ]
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "SOL");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert!((info.aum_usd - 3_000_000.0).abs() < 0.01);
+        assert!((info.long_utilization - 0.55).abs() < 0.001);
+        assert!((info.short_utilization - 0.25).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_returns_none_for_unknown_market() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "SOL",
+                "side": "Long",
+                "utilization": "0.45",
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "ETH");
+        assert!(result.is_none(), "Should return None for market not in data");
+    }
+
+    #[test]
+    fn test_parse_case_insensitive_market_match() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "sol",
+                "side": "Long",
+                "utilization": "0.40",
+            }),
+            serde_json::json!({
+                "asset": "sol",
+                "side": "Short",
+                "utilization": "0.20",
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "SOL");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert!((info.long_utilization - 0.40).abs() < 0.001);
+        assert!((info.short_utilization - 0.20).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_parse_handles_numeric_utilization() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "BTC",
+                "side": "Long",
+                "utilization": 0.65,
+                "aumUsd": "10000000.0"
+            }),
+            serde_json::json!({
+                "asset": "BTC",
+                "side": "Short",
+                "utilization": 0.35,
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "BTC");
+        assert!(result.is_some());
+        let info = result.unwrap();
+        assert!((info.long_utilization - 0.65).abs() < 0.001);
+        assert!((info.short_utilization - 0.35).abs() < 0.001);
+        assert!((info.aum_usd - 10_000_000.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_parse_empty_pools() {
+        let raw: Vec<serde_json::Value> = vec![];
+        let result = parse_pool_data_for_market(&raw, "SOL");
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_parse_partial_data_only_long() {
+        let raw = vec![
+            serde_json::json!({
+                "asset": "SOL",
+                "side": "Long",
+                "utilization": "0.45",
+            }),
+        ];
+
+        let result = parse_pool_data_for_market(&raw, "SOL");
+        assert!(result.is_some(), "Should return data even with only long side");
+        let info = result.unwrap();
+        assert!((info.long_utilization - 0.45).abs() < 0.001);
+        assert!((info.short_utilization - 0.0).abs() < 0.001, "Missing short should default to 0.0");
     }
 }

@@ -1,7 +1,7 @@
 use crate::config::Config;
 use crate::flash_api::FlashClient;
 use crate::risk::{RiskManager, TradeLog, TradeRecord};
-use crate::signal::{ExitReason, MomentumSnapshot, Signal};
+use crate::signal::{ExitReason, MomentumSnapshot, PoolStateTracker, Signal};
 use crate::strategy::{self, PositionContext, Strategy};
 use chrono::{DateTime, Utc};
 use std::collections::HashMap;
@@ -28,6 +28,8 @@ pub struct PaperEngine {
     sim_balance: f64,
     /// Entry fee captured from live API preview at open time
     pending_entry_fee: f64,
+    /// Pool data tracker for computing utilization velocity
+    pool_tracker: PoolStateTracker,
 }
 
 /// Extended position with fee tracking for paper trades.
@@ -81,6 +83,7 @@ impl PaperEngine {
             running: Arc::new(AtomicBool::new(true)),
             sim_balance: starting_balance,
             pending_entry_fee: 0.0,
+            pool_tracker: PoolStateTracker::new(),
         })
     }
 
@@ -147,7 +150,31 @@ impl PaperEngine {
         let price = self.flash.get_price(market).await?;
         self.strategy.push_price(price, now_ms());
 
-        let snapshot = self.strategy.snapshot();
+        let mut snapshot = self.strategy.snapshot();
+
+        // Fetch pool data and inject into snapshot
+        match self.flash.get_pool_snapshot_for_market(market).await {
+            Ok(Some(raw)) => {
+                let pool_snap = self.pool_tracker.compute_snapshot(
+                    raw.aum_usd,
+                    raw.long_utilization,
+                    raw.short_utilization,
+                );
+                debug!(
+                    "[{}] pool_data: aum=${:.0} long_util={:.3} short_util={:.3} long_vel={:.4} short_vel={:.4}",
+                    market, pool_snap.aum_usd, pool_snap.long_utilization,
+                    pool_snap.short_utilization, pool_snap.long_utilization_velocity,
+                    pool_snap.short_utilization_velocity,
+                );
+                snapshot.pool_data = Some(pool_snap);
+            }
+            Ok(None) => {
+                debug!("[{}] No pool data available for market", market);
+            }
+            Err(e) => {
+                debug!("[{}] Pool data fetch failed: {:#}", market, e);
+            }
+        }
 
         debug!(
             "[{}] prices={} velocity={:.4}% dir={:?} strength={:.0}",
@@ -641,6 +668,8 @@ pub struct MultiPaperEngine {
 
     /// Risk manager (shared across all cells for circuit breaker).
     risk: Arc<RiskManager>,
+    /// Pool data trackers per market for computing utilization velocity.
+    pool_trackers: HashMap<String, PoolStateTracker>,
 }
 
 impl MultiPaperEngine {
@@ -731,6 +760,12 @@ impl MultiPaperEngine {
         info!("Markets: {}", markets.join(", "));
         info!("Simulated balance: ${:.2}", starting_balance);
 
+        // Initialize pool data trackers for each market
+        let mut pool_trackers = HashMap::new();
+        for market in &markets {
+            pool_trackers.insert(market.clone(), PoolStateTracker::new());
+        }
+
         Ok(Self {
             config,
             flash,
@@ -747,6 +782,7 @@ impl MultiPaperEngine {
             start_time: Utc::now(),
             last_hourly_log: Utc::now(),
             risk,
+            pool_trackers,
         })
     }
 
@@ -823,6 +859,35 @@ impl MultiPaperEngine {
             }
         }
 
+        // Fetch pool data for all markets
+        let mut pool_snapshots: HashMap<String, crate::signal::PoolSnapshot> = HashMap::new();
+        for market in &self.markets {
+            match self.flash.get_pool_snapshot_for_market(market).await {
+                Ok(Some(raw)) => {
+                    if let Some(tracker) = self.pool_trackers.get_mut(market) {
+                        let snap = tracker.compute_snapshot(
+                            raw.aum_usd,
+                            raw.long_utilization,
+                            raw.short_utilization,
+                        );
+                        debug!(
+                            "[{}] pool: aum=${:.0} long_util={:.3} short_util={:.3} long_vel={:.4} short_vel={:.4}",
+                            market, snap.aum_usd, snap.long_utilization,
+                            snap.short_utilization, snap.long_utilization_velocity,
+                            snap.short_utilization_velocity,
+                        );
+                        pool_snapshots.insert(market.clone(), snap);
+                    }
+                }
+                Ok(None) => {
+                    debug!("[{}] No pool data available", market);
+                }
+                Err(e) => {
+                    debug!("[{}] Pool data fetch failed: {:#}", market, e);
+                }
+            }
+        }
+
         // Process each cell
         let keys: Vec<CellKey> = self.strategies.keys().cloned().collect();
         for key in keys {
@@ -836,13 +901,16 @@ impl MultiPaperEngine {
                 strat.push_price(price, now_ms());
             }
 
+            // Get pool snapshot for this cell's market
+            let pool_snap = pool_snapshots.get(&key.market).cloned();
+
             // Check if cell has an open position
             let has_position = self.positions.contains_key(&key);
 
             if has_position {
-                self.manage_cell(&key, price).await?;
+                self.manage_cell(&key, price, pool_snap).await?;
             } else {
-                self.handle_no_position_cell(&key, price).await?;
+                self.handle_no_position_cell(&key, price, pool_snap).await?;
             }
         }
 
@@ -853,6 +921,7 @@ impl MultiPaperEngine {
         &mut self,
         key: &CellKey,
         current_price: f64,
+        pool_snap: Option<crate::signal::PoolSnapshot>,
     ) -> anyhow::Result<()> {
         // Check per-cell cooldown (position may be a cooldown marker)
         if let Some(pos) = self.positions.get(key) {
@@ -923,7 +992,11 @@ impl MultiPaperEngine {
         }
 
         let bias = params.direction_bias.to_lowercase();
-        let snapshot = strat.snapshot();
+        let mut snapshot = strat.snapshot();
+        // Inject pool data into snapshot if available
+        if pool_snap.is_some() && snapshot.pool_data.is_none() {
+            snapshot.pool_data = pool_snap;
+        }
         let signal = strat.detect_entry(&snapshot);
 
         match signal {
@@ -1015,6 +1088,7 @@ impl MultiPaperEngine {
         &mut self,
         key: &CellKey,
         current_price: f64,
+        pool_snap: Option<crate::signal::PoolSnapshot>,
     ) -> anyhow::Result<()> {
         // Update position price (and accrue borrow fee)
         let poll_secs = self.config.agent.poll_interval_secs;
@@ -1047,7 +1121,11 @@ impl MultiPaperEngine {
             }
         };
 
-        let snapshot = strat.snapshot();
+        let mut snapshot = strat.snapshot();
+        // Inject pool data into snapshot if available
+        if pool_snap.is_some() && snapshot.pool_data.is_none() {
+            snapshot.pool_data = pool_snap;
+        }
         let exit_signal = strat.detect_exit(&snapshot, &ctx);
 
         match exit_signal {
@@ -1860,5 +1938,116 @@ mod multi_tests {
         // New position of $1500 → total would be $9500
         // With max = $10000, allowed
         assert!(total + 1500.0 <= 10000.0);
+    }
+
+    #[test]
+    fn test_pool_state_tracker_integrates_with_snapshot() {
+        // Verify that PoolStateTracker produces valid PoolSnapshots
+        // that can be injected into a MomentumSnapshot
+        use crate::signal::PoolStateTracker;
+
+        let mut tracker = PoolStateTracker::new();
+
+        // First tick: velocity is 0
+        let pool_snap = tracker.compute_snapshot(1_000_000.0, 0.4, 0.2);
+        assert!((pool_snap.long_utilization_velocity).abs() < 0.001);
+        assert!((pool_snap.short_utilization_velocity).abs() < 0.001);
+        assert!((pool_snap.aum_usd - 1_000_000.0).abs() < 0.01);
+
+        // Second tick: velocity reflects change
+        let pool_snap = tracker.compute_snapshot(1_000_000.0, 0.6, 0.15);
+        assert!((pool_snap.long_utilization_velocity - 0.2).abs() < 0.001);
+        assert!((pool_snap.short_utilization_velocity - (-0.05)).abs() < 0.001);
+
+        // Can be injected into MomentumSnapshot
+        let snapshot = MomentumSnapshot {
+            price_count: 10,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: crate::signal::TradeDirection::Neutral,
+            strength: 50.0,
+            volatility_pct: 1.0,
+            pool_data: Some(pool_snap.clone()),
+        };
+        assert!(snapshot.pool_data.is_some());
+        let pd = snapshot.pool_data.unwrap();
+        assert!((pd.long_utilization - 0.6).abs() < 0.001);
+        assert!((pd.long_utilization_velocity - 0.2).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_pool_data_injection_unblocks_lp_consumption() {
+        // Verify that injecting pool data into a snapshot allows the
+        // LP Consumption strategy to process entries instead of returning
+        // NoSignal due to missing pool data.
+        use crate::strategy::{create_strategy_from_config, Strategy, StrategyParams};
+        use crate::signal::PoolSnapshot;
+
+        let fallback = StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+
+        let mut strategy = create_strategy_from_config(
+            "lp-consumption",
+            None,
+            fallback,
+        ).unwrap();
+
+        // Without pool data → NoSignal
+        let snap_no_pool = MomentumSnapshot {
+            price_count: 10,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: crate::signal::TradeDirection::Neutral,
+            strength: 50.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+        };
+        let signal = strategy.detect_entry(&snap_no_pool);
+        assert!(matches!(signal, crate::signal::Signal::NoSignal),
+            "LP Consumption should return NoSignal without pool data");
+
+        // With pool data showing strong long-side consumption
+        let snap_with_pool = MomentumSnapshot {
+            price_count: 10,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: crate::signal::TradeDirection::Neutral,
+            strength: 50.0,
+            volatility_pct: 1.0,
+            pool_data: Some(PoolSnapshot {
+                aum_usd: 1_000_000.0,
+                long_utilization: 0.8,
+                short_utilization: 0.1,
+                long_utilization_velocity: 0.8,
+                short_utilization_velocity: 0.1,
+            }),
+        };
+
+        // Feed enough consecutive ticks to reach confirmation threshold (3)
+        let mut signal = crate::signal::Signal::NoSignal;
+        for _ in 0..3 {
+            signal = strategy.detect_entry(&snap_with_pool);
+        }
+
+        // After 3 consecutive ticks with strong consumption, should fire
+        assert!(
+            matches!(signal,
+                crate::signal::Signal::MomentumLong { .. } |
+                crate::signal::Signal::MomentumShort { .. }),
+            "LP Consumption should fire entry signal with populated pool data, got {:?}",
+            signal
+        );
     }
 }
