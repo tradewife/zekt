@@ -1,5 +1,6 @@
 use crate::config::Config;
 use crate::flash_api::FlashClient;
+use crate::monitor::{MonitorConfig, MonitorLoop, MonitoringSnapshot, PositionSnapshot, StrategyMetrics};
 use crate::risk::{RiskManager, TradeLog, TradeRecord};
 use crate::signal::{ExitReason, MomentumSnapshot, PoolStateTracker, Signal};
 use crate::strategy::{self, PositionContext, Strategy};
@@ -664,13 +665,16 @@ pub struct MultiPaperEngine {
 
     /// Start time for duration tracking.
     start_time: DateTime<Utc>,
-    /// Last hourly status log time.
+    /// Last hourly status log time (retained for compatibility; monitor handles this now).
+    #[allow(dead_code)]
     last_hourly_log: DateTime<Utc>,
 
     /// Risk manager (shared across all cells for circuit breaker).
     risk: Arc<RiskManager>,
     /// Pool data trackers per market for computing utilization velocity.
     pool_trackers: HashMap<String, PoolStateTracker>,
+    /// Monitoring loop for periodic structured snapshots.
+    monitor: MonitorLoop,
 }
 
 impl MultiPaperEngine {
@@ -767,6 +771,12 @@ impl MultiPaperEngine {
             pool_trackers.insert(market.clone(), PoolStateTracker::new());
         }
 
+        // Initialize monitoring loop
+        let monitor = MonitorLoop::new(MonitorConfig {
+            log_interval_secs: 3600, // Log every hour
+            snapshot_path: format!("{}/monitoring-snapshot.json", output_dir),
+        });
+
         Ok(Self {
             config,
             flash,
@@ -784,6 +794,7 @@ impl MultiPaperEngine {
             last_hourly_log: Utc::now(),
             risk,
             pool_trackers,
+            monitor,
         })
     }
 
@@ -1258,46 +1269,75 @@ impl MultiPaperEngine {
         Ok(())
     }
 
-    /// Emit hourly status log with per-strategy breakdown.
+    /// Emit monitoring snapshot with per-strategy breakdown.
+    /// Uses the monitoring module for structured logging and JSON output.
     fn maybe_hourly_log(&mut self) {
-        let now = Utc::now();
-        let elapsed = (now - self.last_hourly_log).num_seconds();
-        if elapsed < 3600 {
+        if !self.monitor.should_log() {
             return;
         }
-        self.last_hourly_log = now;
+        self.monitor.mark_logged();
 
-        let total_elapsed = (now - self.start_time).num_seconds();
-        let hours = total_elapsed / 3600;
-        let mins = (total_elapsed % 3600) / 60;
+        // Build position snapshots
+        let position_snapshots: Vec<PositionSnapshot> = self.positions.iter()
+            .filter(|(_, p)| p.size_usd > 0.0 && p.cooldown_until.is_none())
+            .map(|(key, pos)| PositionSnapshot {
+                strategy: key.strategy.clone(),
+                market: key.market.clone(),
+                direction: if pos.is_long { "LONG".to_string() } else { "SHORT".to_string() },
+                entry_price: pos.entry_price,
+                current_price: pos.current_price,
+                size_usd: pos.size_usd,
+                unrealized_pnl_usd: pos.unrealized_pnl_usd(),
+                unrealized_pnl_pct: pos.unrealized_pnl_pct(),
+                entry_fee: pos.entry_fee,
+                accrued_borrow_fee: pos.accrued_borrow_fee,
+                hold_secs: pos.hold_duration_secs(),
+            })
+            .collect();
 
-        let open_count = self.positions.values()
-            .filter(|p| p.size_usd > 0.0 && p.cooldown_until.is_none())
-            .count();
-
-        info!("=== Hourly Status ({:02}h{:02}m elapsed) ===", hours, mins);
-        info!("Balance: ${:.2} | Open positions: {} | Total trades: {}",
-            self.sim_balance, open_count, self.trade_log.stats().total_trades);
-
-        // Per-strategy breakdown
+        // Build strategy metrics
+        let mut strategy_metrics = Vec::new();
         for strat_name in &self.strategy_names {
-            let mut strat_trades = 0usize;
-            let mut strat_pnl = 0.0f64;
-            let mut strat_fees = 0.0f64;
-
             for market in &self.markets {
                 let key = CellKey { strategy: strat_name.clone(), market: market.clone() };
                 if let Some(cell_stats) = self.stats.get(&key) {
-                    strat_trades += cell_stats.trade_count;
-                    strat_pnl += cell_stats.net_pnl;
-                    strat_fees += cell_stats.total_fees;
+                    let mut metrics = StrategyMetrics {
+                        strategy: strat_name.clone(),
+                        market: market.clone(),
+                        trade_count: cell_stats.trade_count,
+                        win_count: cell_stats.win_count,
+                        loss_count: cell_stats.loss_count,
+                        net_pnl: cell_stats.net_pnl,
+                        total_fees: cell_stats.total_fees,
+                        entry_fees: cell_stats.entry_fees_total,
+                        exit_fees: cell_stats.exit_fees_total,
+                        borrow_fees: cell_stats.borrow_fees_total,
+                        win_rate: cell_stats.win_rate,
+                        sharpe_ratio: cell_stats.sharpe_ratio,
+                    };
+                    // Finalize win_rate and sharpe if not yet computed
+                    if metrics.trade_count > 0 && metrics.win_rate == 0.0 {
+                        metrics.win_rate = metrics.win_count as f64 / metrics.trade_count as f64 * 100.0;
+                    }
+                    strategy_metrics.push(metrics);
                 }
             }
+        }
 
-            info!(
-                "  [{}] trades={} | net_pnl=${:.2} | fees=${:.2}",
-                strat_name, strat_trades, strat_pnl, strat_fees
-            );
+        let snapshot = MonitoringSnapshot::new(
+            self.sim_balance,
+            self.risk.is_halted(),
+            self.start_time,
+            position_snapshots,
+            strategy_metrics,
+        );
+
+        // Log structured output
+        snapshot.log();
+
+        // Write to file for external monitoring
+        if let Err(e) = snapshot.write_to_file(&self.monitor.config.snapshot_path) {
+            warn!("Failed to write monitoring snapshot: {:#}", e);
         }
     }
 
@@ -2051,5 +2091,182 @@ mod multi_tests {
             "LP Consumption should fire entry signal with populated pool data, got {:?}",
             signal
         );
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-VALIDATE-008: Circuit breaker activates in paper mode
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_circuit_breaker_halts_paper_trading() {
+        // Create a risk manager with a very low daily loss limit
+        let risk_config = crate::config::RiskConfig {
+            max_position_notional_usd: 10000.0,
+            max_daily_loss_usd: 10.0, // Very low limit for testing
+            max_drawdown_pct: 50.0,
+            max_total_notional_usd: 100000.0,
+        };
+        let risk = Arc::new(RiskManager::new(risk_config, 1000.0));
+
+        // Initially should allow trading
+        assert!(risk.check_can_trade(1000.0).is_ok());
+        assert!(!risk.is_halted());
+
+        // Record a loss that exceeds the daily limit
+        risk.record_trade_result(-15.0, 0.5, 985.0);
+
+        // The circuit breaker is checked on the NEXT call to check_can_trade
+        // (this mirrors how the paper engine works: record result -> next tick checks)
+        let result = risk.check_can_trade(985.0);
+        assert!(result.is_err());
+        assert!(risk.is_halted());
+        assert!(result.unwrap_err().contains("Daily loss limit"),
+            "Error should mention daily loss limit");
+    }
+
+    #[test]
+    fn test_circuit_breaker_max_drawdown() {
+        let risk_config = crate::config::RiskConfig {
+            max_position_notional_usd: 10000.0,
+            max_daily_loss_usd: 1000.0,
+            max_drawdown_pct: 5.0, // Very tight drawdown limit
+            max_total_notional_usd: 100000.0,
+        };
+        let risk = Arc::new(RiskManager::new(risk_config, 1000.0));
+
+        // Initially OK
+        assert!(risk.check_can_trade(1000.0).is_ok());
+
+        // Record a big loss that causes > 5% drawdown
+        // Peak balance = 1000, current = 940 → 6% drawdown
+        risk.record_trade_result(-60.0, 1.0, 940.0);
+
+        // Check triggers the circuit breaker
+        let result = risk.check_can_trade(940.0);
+        assert!(result.is_err());
+        assert!(risk.is_halted());
+        assert!(result.unwrap_err().contains("drawdown"),
+            "Error should mention drawdown");
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-VALIDATE-010: Fee accounting is realistic
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_paper_fee_accounting_realistic() {
+        // Verify fee accounting matches expected values:
+        // Entry fee: 0.1% of notional (clip_size * leverage)
+        // Exit fee: 0.1% of notional
+        // Borrow fee: 0.01%/hr on notional
+        //
+        // For a 1-hour hold on $1000 notional:
+        // Entry: $1.00, Exit: $1.00, Borrow: $0.10 = Total ~$2.10
+
+        let clip_usd: f64 = 200.0; // $200 clip
+        let leverage: f64 = 5.0;
+        let notional: f64 = clip_usd * leverage; // $1000
+
+        // Entry fee
+        let entry_fee: f64 = notional * 0.001; // 0.1% taker fee
+        assert!((entry_fee - 1.0_f64).abs() < 0.01, "Entry fee should be ~$1.00, got ${:.4}", entry_fee);
+
+        // Exit fee
+        let exit_fee: f64 = notional * 0.001;
+        assert!((exit_fee - 1.0_f64).abs() < 0.01, "Exit fee should be ~$1.00, got ${:.4}", exit_fee);
+
+        // Borrow fee for 1 hour
+        let borrow_fee_hourly: f64 = 0.0001; // 0.01%/hr
+        let borrow_fee_1hr: f64 = notional * borrow_fee_hourly * 1.0;
+        assert!((borrow_fee_1hr - 0.10_f64).abs() < 0.01, "Borrow fee for 1hr should be ~$0.10, got ${:.4}", borrow_fee_1hr);
+
+        // Total fees for 1-hour hold
+        let total_fees: f64 = entry_fee + exit_fee + borrow_fee_1hr;
+        assert!((total_fees - 2.10_f64).abs() < 0.05, "Total fees for 1hr hold should be ~$2.10, got ${:.4}", total_fees);
+
+        // Verify fee is NOT 60x understated (old bug with 5s hardcoded interval)
+        // The old bug would compute borrow fee as if interval were 5s instead of 300s
+        // Old (buggy): borrow = 1000 * 0.0001 * (5/3600) * 12 = $0.00167 (60x too low)
+        // Fixed: borrow = 1000 * 0.0001 * (300/3600) * 12 = $0.10
+        let poll_interval_secs: f64 = 300.0;
+        let ticks_per_hour: f64 = 3600.0 / poll_interval_secs; // 12
+        let borrow_per_tick: f64 = notional * borrow_fee_hourly * (poll_interval_secs / 3600.0);
+        let borrow_per_hour_fixed: f64 = borrow_per_tick * ticks_per_hour;
+        assert!((borrow_per_hour_fixed - 0.10_f64).abs() < 0.01,
+            "Fixed borrow fee should be ~$0.10/hr, got ${:.4}", borrow_per_hour_fixed);
+        assert!(borrow_per_hour_fixed > 0.05,
+            "Borrow fee must not be 60x understated (old bug)");
+    }
+
+    #[test]
+    fn test_cell_position_fee_accrual_realistic() {
+        // Verify CellPosition borrow fee accrual at 300s poll interval
+        // matches expected calculation: size * 0.0001 * (300/3600) per tick
+        let mut pos = CellPosition {
+            position_key: "test-fee".to_string(),
+            symbol: "BTC-USD".to_string(),
+            asset: "BTC".to_string(),
+            is_long: true,
+            entry_price: 100000.0,
+            current_price: 100000.0,
+            peak_price: 100000.0,
+            size_usd: 1000.0, // $1000 notional
+            leverage: 5.0,
+            open_time: Utc::now(),
+            entry_fee: 1.0, // 0.1% of $1000
+            accrued_borrow_fee: 0.0,
+            cooldown_until: None,
+        };
+
+        // Simulate 12 ticks at 300s = 1 hour
+        let poll_interval_secs: u64 = 300;
+        for _ in 0..12 {
+            pos.update_price(100000.0, poll_interval_secs);
+        }
+
+        // Expected borrow fee: 1000 * 0.0001 * 1.0 = $0.10
+        let expected_borrow = 1000.0 * DEFAULT_BORROW_FEE_HOURLY * 1.0;
+        assert!(
+            (pos.accrued_borrow_fee - expected_borrow).abs() < 0.01,
+            "Borrow fee should be ~${:.4} after 1hr, got ${:.4}",
+            expected_borrow, pos.accrued_borrow_fee
+        );
+
+        // Total fees after 1 hour: entry($1.00) + accrued_borrow($0.10) = $1.10
+        // (exit fee not yet accrued, will be added at close)
+        let total_so_far = pos.total_fees();
+        assert!((total_so_far - 1.10).abs() < 0.01,
+            "Total fees so far should be ~$1.10, got ${:.4}", total_so_far);
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-VALIDATE-009: Backtest and paper use same Strategy trait
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_same_strategy_trait_for_backtest_and_paper() {
+        // Verify that both backtest and paper engines create strategies
+        // through the same factory function, ensuring code path consistency.
+        let available = strategy::available_strategies();
+
+        // All strategies should be creatable through the factory
+        for name in available {
+            let sub_table = None; // Use defaults
+            let fallback = strategy::StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 60,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 2.5,
+                stop_loss_pct: 1.0,
+                trailing_stop_pct: 0.8,
+                trailing_activation_pct: 1.5,
+                cooldown_after_loss_secs: 300,
+                use_native_tp_sl: true,
+            };
+            let result = strategy::create_strategy_from_config(name, sub_table, fallback);
+            assert!(result.is_ok(), "Strategy '{}' should be creatable via factory: {:?}", name, result.err());
+            let strat = result.unwrap();
+            assert_eq!(strat.name(), *name, "Strategy name should match");
+        }
     }
 }

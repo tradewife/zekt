@@ -3,6 +3,7 @@ mod config;
 mod engine;
 mod executor;
 mod flash_api;
+mod monitor;
 mod paper;
 mod risk;
 mod signal;
