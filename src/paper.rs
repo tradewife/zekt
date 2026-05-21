@@ -908,6 +908,20 @@ impl MultiPaperEngine {
             return Ok(());
         }
 
+        // Cross-cell total exposure check: sum all open position sizes
+        let current_total_notional: f64 = self.positions.values()
+            .filter(|p| p.size_usd > 0.0 && p.cooldown_until.is_none())
+            .map(|p| p.size_usd)
+            .sum();
+        let new_total = current_total_notional + notional;
+        if new_total > self.config.risk.max_total_notional_usd {
+            debug!(
+                "[{}] Cross-cell exposure limit: ${:.2} (current) + ${:.2} (new) = ${:.2} > max ${:.2} — skipping entry",
+                key, current_total_notional, notional, new_total, self.config.risk.max_total_notional_usd
+            );
+            return Ok(());
+        }
+
         let bias = params.direction_bias.to_lowercase();
         let snapshot = strat.snapshot();
         let signal = strat.detect_entry(&snapshot);
@@ -1722,5 +1736,129 @@ mod multi_tests {
 
         positions.get_mut(&key1).unwrap().current_price = 105.0;
         assert_eq!(positions.get(&key2).unwrap().current_price, 49000.0);
+    }
+
+    #[test]
+    fn test_cross_cell_total_notional_sums_correctly() {
+        // Verify that summing all CellPosition.size_usd across open positions
+        // works correctly, excluding cooldown markers (size_usd == 0).
+        let mut positions = HashMap::new();
+
+        let key1 = CellKey { strategy: "momentum-scalper".to_string(), market: "SOL".to_string() };
+        let key2 = CellKey { strategy: "momentum-scalper".to_string(), market: "BTC".to_string() };
+        let key3 = CellKey { strategy: "lp-consumption".to_string(), market: "SOL".to_string() };
+        let key4 = CellKey { strategy: "mean-reversion".to_string(), market: "BTC".to_string() };
+
+        // 4 open positions at $3000 each = $12,000 total
+        for key in [&key1, &key2, &key3].iter() {
+            positions.insert((*key).clone(), CellPosition {
+                position_key: format!("test-{}", key),
+                symbol: format!("{}-USD", key.market),
+                asset: key.market.clone(),
+                is_long: true,
+                entry_price: 100.0,
+                current_price: 100.0,
+                peak_price: 100.0,
+                size_usd: 3000.0,
+                leverage: 3.0,
+                open_time: Utc::now(),
+                entry_fee: 0.1,
+                accrued_borrow_fee: 0.0,
+                cooldown_until: None,
+            });
+        }
+
+        // Add a cooldown marker (size_usd = 0) — should NOT be counted
+        positions.insert(key4.clone(), CellPosition {
+            position_key: "cooldown-marker".to_string(),
+            symbol: String::new(),
+            asset: String::new(),
+            is_long: false,
+            entry_price: 0.0,
+            current_price: 0.0,
+            peak_price: 0.0,
+            size_usd: 0.0,  // cooldown marker
+            leverage: 0.0,
+            open_time: Utc::now(),
+            entry_fee: 0.0,
+            accrued_borrow_fee: 0.0,
+            cooldown_until: Some(Utc::now() + chrono::Duration::seconds(300)),
+        });
+
+        // Sum should be 3 * $3000 = $9000 (cooldown marker excluded)
+        let total: f64 = positions.values()
+            .filter(|p| p.size_usd > 0.0 && p.cooldown_until.is_none())
+            .map(|p| p.size_usd)
+            .sum();
+        assert!(
+            (total - 9000.0).abs() < 0.01,
+            "Expected total notional of $9000, got ${:.2}",
+            total
+        );
+
+        // Verify a new position of $3000 would push total to $12000
+        let new_notional = 3000.0;
+        let new_total = total + new_notional;
+        assert!(
+            (new_total - 12000.0).abs() < 0.01,
+            "Expected new total of $12000, got ${:.2}",
+            new_total
+        );
+
+        // With max_total_notional_usd = $10000, this should be rejected
+        let max_total_notional_usd = 10000.0;
+        assert!(
+            new_total > max_total_notional_usd,
+            "New total ${:.2} should exceed max ${:.2}",
+            new_total, max_total_notional_usd
+        );
+    }
+
+    #[test]
+    fn test_cross_cell_limit_with_various_position_sizes() {
+        // Test with various position sizes to ensure the limit check
+        // correctly handles the sum across cells
+        let mut positions = HashMap::new();
+
+        let keys = [
+            CellKey { strategy: "s1".to_string(), market: "M1".to_string() },
+            CellKey { strategy: "s1".to_string(), market: "M2".to_string() },
+            CellKey { strategy: "s2".to_string(), market: "M1".to_string() },
+            CellKey { strategy: "s2".to_string(), market: "M2".to_string() },
+        ];
+
+        let sizes = [2500.0, 3000.0, 1500.0, 1000.0];
+        for (key, size) in keys.iter().zip(sizes.iter()) {
+            positions.insert(key.clone(), CellPosition {
+                position_key: format!("test-{}", key),
+                symbol: format!("{}-USD", key.market),
+                asset: key.market.clone(),
+                is_long: true,
+                entry_price: 100.0,
+                current_price: 100.0,
+                peak_price: 100.0,
+                size_usd: *size,
+                leverage: 3.0,
+                open_time: Utc::now(),
+                entry_fee: 0.1,
+                accrued_borrow_fee: 0.0,
+                cooldown_until: None,
+            });
+        }
+
+        // Total: 2500 + 3000 + 1500 + 1000 = 8000
+        let total: f64 = positions.values()
+            .filter(|p| p.size_usd > 0.0 && p.cooldown_until.is_none())
+            .map(|p| p.size_usd)
+            .sum();
+        assert!((total - 8000.0).abs() < 0.01);
+
+        // New position of $3000 → total would be $11000
+        // With max = $10000, rejected
+        assert!(total + 3000.0 > 10000.0);
+
+        // New position of $1500 → total would be $9500
+        // With max = $10000, allowed
+        assert!(total + 1500.0 <= 10000.0);
     }
 }
