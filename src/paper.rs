@@ -41,17 +41,12 @@ struct PaperPosition {
 }
 
 impl PaperPosition {
-    fn update_price(&mut self, price: f64) {
+    fn update_price(&mut self, price: f64, poll_interval_secs: u64) {
         self.inner.update_price(price);
         // Accrue borrow fee: hourly rate on notional, pro-rated per tick
         // This is called each tick so we accrue incrementally
-        let hours_held = 1.0 / 3600.0 * (self.config_poll_interval_secs() as f64);
+        let hours_held = poll_interval_secs as f64 / 3600.0;
         self.accrued_borrow_fee += self.inner.size_usd * BORROW_FEE_HOURLY * hours_held;
-    }
-
-    fn config_poll_interval_secs(&self) -> u64 {
-        // Default 5s; can't easily access config here, so hardcode
-        5
     }
 
     fn total_fees(&self) -> f64 {
@@ -285,7 +280,7 @@ impl PaperEngine {
             Some(p) => p,
             None => return Ok(()),
         };
-        pos.update_price(current_price);
+        pos.update_price(current_price, self.config.agent.poll_interval_secs);
 
         let params = self.strategy.parameters();
         let ctx = PositionContext {
@@ -1498,6 +1493,53 @@ mod multi_tests {
             (pos.accrued_borrow_fee - expected_borrow).abs() < 0.005,
             "accrued_borrow_fee should be ~${:.4}, got ${:.4}",
             expected_borrow, pos.accrued_borrow_fee
+        );
+    }
+
+    #[test]
+    fn test_paper_position_borrow_accrual_uses_config_interval() {
+        // PaperPosition::update_price must use the poll_interval from config (300s),
+        // NOT the old hardcoded 5s. At 300s interval, 12 ticks = 1 hour.
+        // Expected accrual per tick = size_usd * BORROW_FEE_HOURLY * (300.0 / 3600.0)
+        let mut pos = PaperPosition {
+            inner: crate::risk::Position {
+                position_key: "test-paper".to_string(),
+                symbol: "SOL-USD".to_string(),
+                asset: "SOL".to_string(),
+                is_long: true,
+                entry_price: 100.0,
+                current_price: 100.0,
+                peak_price: 100.0,
+                size_usd: 1000.0,
+                leverage: 10.0,
+                open_time: Utc::now(),
+            },
+            entry_fee: 0.0,
+            accrued_borrow_fee: 0.0,
+        };
+
+        // Simulate 12 ticks of 300 seconds = 1 hour (config poll_interval_secs = 300)
+        let poll_interval_secs: u64 = 300;
+        for _ in 0..12 {
+            pos.update_price(100.0, poll_interval_secs);
+        }
+
+        // Expected: 1000 * 0.0001 * 1.0 = $0.10
+        let expected_borrow = 1000.0 * BORROW_FEE_HOURLY * 1.0;
+        assert!(
+            (pos.accrued_borrow_fee - expected_borrow).abs() < 0.005,
+            "accrued_borrow_fee at 300s interval should be ~${:.4}, got ${:.4} (expected {} * {} * (300/3600) * 12)",
+            expected_borrow, pos.accrued_borrow_fee,
+            1000.0, BORROW_FEE_HOURLY
+        );
+
+        // Also verify per-tick accrual is correct (not 60x understated)
+        let per_tick = 1000.0 * BORROW_FEE_HOURLY * (300.0 / 3600.0);
+        let expected_total = per_tick * 12.0;
+        assert!(
+            (pos.accrued_borrow_fee - expected_total).abs() < 0.005,
+            "per-tick accrual at 300s should be ~${:.6}, total ~${:.4}, got ${:.4}",
+            per_tick, expected_total, pos.accrued_borrow_fee
         );
     }
 
