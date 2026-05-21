@@ -4,6 +4,7 @@ use serde::{Deserialize, Serialize};
 use std::time::Duration;
 use tracing::{debug, warn};
 
+#[allow(dead_code)]
 const FLASH_API: &str = "https://flashapi.trade";
 
 #[derive(Debug, Clone)]
@@ -15,6 +16,7 @@ pub struct FlashClient {
 // --- Price ---
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PriceData {
     pub price: u64,
     pub exponent: i32,
@@ -28,6 +30,7 @@ pub struct PriceData {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct FlashPosition {
     pub position_key: String,
     pub owner: String,
@@ -53,6 +56,7 @@ pub struct FlashPosition {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct FlashMarket {
     pub pool: String,
     pub name: String,
@@ -90,6 +94,7 @@ pub struct OpenPositionRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct OpenPositionResponse {
     pub new_leverage: Option<String>,
     pub new_entry_price: Option<String>,
@@ -106,6 +111,7 @@ pub struct OpenPositionResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct TriggerQuote {
     pub exit_price_ui: Option<String>,
     pub profit_usd_ui: Option<String>,
@@ -127,6 +133,7 @@ pub struct ClosePositionRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct ClosePositionResponse {
     pub receive_token_amount_ui: Option<String>,
     pub mark_price: Option<String>,
@@ -141,6 +148,7 @@ pub struct ClosePositionResponse {
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct PlaceTriggerRequest {
     pub owner: String,
     pub position_key: String,
@@ -151,6 +159,7 @@ pub struct PlaceTriggerRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct PlaceTriggerResponse {
     pub transaction_base64: Option<String>,
     pub err: Option<String>,
@@ -160,6 +169,7 @@ pub struct PlaceTriggerResponse {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+#[allow(dead_code)]
 pub struct PoolData {
     pub pool_pubkey: Option<String>,
     pub aum_usd: Option<String>,
@@ -203,6 +213,7 @@ impl FlashClient {
         Ok(data.price_ui)
     }
 
+    #[allow(dead_code)]
     pub async fn get_prices(&self) -> Result<Vec<PriceData>> {
         let url = format!("{}/prices", self.base_url);
         let resp = self.client.get(&url).send().await?;
@@ -226,6 +237,7 @@ impl FlashClient {
         Ok(data)
     }
 
+    #[allow(dead_code)]
     pub async fn get_position_for_market(
         &self,
         owner: &str,
@@ -240,6 +252,7 @@ impl FlashClient {
 
     // --- Markets ---
 
+    #[allow(dead_code)]
     pub async fn get_markets(&self) -> Result<Vec<FlashMarket>> {
         let url = format!("{}/raw/markets", self.base_url);
         let resp = self.client.get(&url).send().await?;
@@ -264,6 +277,7 @@ impl FlashClient {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub async fn build_open_position(
         &self,
         input_token: &str,
@@ -286,6 +300,7 @@ impl FlashClient {
         .await
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn open_position_inner(
         &self,
         input_token: &str,
@@ -346,6 +361,7 @@ impl FlashClient {
 
     // --- Trigger Orders ---
 
+    #[allow(dead_code)]
     pub async fn build_trigger_order(
         &self,
         owner: &str,
@@ -410,7 +426,7 @@ impl FlashClient {
             .or_else(|| data.get("fees"))
             .and_then(|v| v.as_str().or_else(|| v.as_f64().map(|_| "ok")))
             .and_then(|s| {
-                if let Some(f) = s.parse::<f64>().ok() { return Some(f); }
+                if let Ok(f) = s.parse::<f64>() { return Some(f); }
                 // might be nested
                 None
             })
@@ -451,13 +467,12 @@ fn parse_pool_data_for_market(pools: &[serde_json::Value], market: &str) -> Opti
         }
 
         // Extract AUM
-        if !found_aum {
-            if let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd")) {
-                if let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64()) {
-                    aum_usd = v;
-                    found_aum = true;
-                }
-            }
+        if !found_aum
+            && let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd"))
+            && let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64())
+        {
+            aum_usd = v;
+            found_aum = true;
         }
 
         let side = pool
@@ -523,13 +538,12 @@ fn parse_pool_data_for_market(pools: &[serde_json::Value], market: &str) -> Opti
                 }
             }
 
-            if !found_aum {
-                if let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd")) {
-                    if let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64()) {
-                        aum_usd = v;
-                        found_aum = true;
-                    }
-                }
+            if !found_aum
+                && let Some(aum_val) = pool.get("aumUsd").or_else(|| pool.get("aum_usd"))
+                && let Some(v) = aum_val.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| aum_val.as_f64())
+            {
+                aum_usd = v;
+                found_aum = true;
             }
         }
     }

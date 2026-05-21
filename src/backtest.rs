@@ -6,9 +6,9 @@
 //! as the paper trading engine.
 
 use crate::config::Config;
-use crate::signal::{ExitReason, MomentumSnapshot, Signal};
-use crate::strategy::{self, PositionContext, Strategy};
-use chrono::{DateTime, TimeZone, Utc};
+use crate::signal::{ExitReason, Signal};
+use crate::strategy::{self, PositionContext};
+use chrono::DateTime;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
@@ -19,6 +19,7 @@ use tracing::{debug, info, warn};
 // ---------------------------------------------------------------------------
 
 const HL_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
+#[allow(dead_code)]
 const MAX_CANDLES_PER_REQUEST: usize = 5000;
 
 /// A single OHLCV candle from Hyperliquid.
@@ -206,6 +207,7 @@ fn parse_interval_ms(interval: &str) -> anyhow::Result<i64> {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct BtPosition {
     symbol: String,
     is_long: bool,
@@ -255,6 +257,7 @@ impl BtPosition {
         self.accrued_borrow_fee += self.size_usd * self.borrow_rate_hourly * hours;
     }
 
+    #[allow(dead_code)]
     fn total_fees(&self) -> f64 {
         self.entry_fee + self.accrued_borrow_fee
     }
@@ -367,7 +370,7 @@ impl BacktestEngine {
         // Validate strategy names
         let available = strategy::available_strategies();
         for name in &bt_config.strategies {
-            if !available.iter().any(|a| *a == name.as_str()) {
+            if !available.contains(&name.as_str()) {
                 anyhow::bail!(
                     "Unknown strategy '{}'. Available: {}",
                     name,
@@ -495,6 +498,7 @@ impl BacktestEngine {
         let mut strat = strategy::create_strategy_from_config(strategy_name, sub_table, fallback_params)?;
         let params = strat.parameters().clone();
         let interval_secs = parse_interval_ms(&self.bt_config.interval)? as f64 / 1000.0;
+        let interval_ms = parse_interval_ms(&self.bt_config.interval)?;
 
         let mut position: Option<BtPosition> = None;
         let mut stats = BacktestCellStats {
@@ -610,8 +614,12 @@ impl BacktestEngine {
                         stats.win_count += 1;
                     } else {
                         stats.loss_count += 1;
-                        cooldown_until_ms = candle.t + (params.cooldown_after_loss_secs as i64 * 1000);
                     }
+                    // Post-exit lockout: don't re-enter for at least N bars after any exit.
+                    // This prevents the exit→re-enter→exit→re-enter death spiral.
+                    let lockout_ticks = 6; // 6 bars = 30 min at 5m interval
+                    let lockout_ms = lockout_ticks * interval_ms;
+                    cooldown_until_ms = candle.t + lockout_ms;
 
                     if net_pnl > stats.best_trade_pnl {
                         stats.best_trade_pnl = net_pnl;
@@ -720,7 +728,7 @@ impl BacktestEngine {
             let net_pnl = gross_pnl - exit_fee - pos.accrued_borrow_fee;
             let total_fees = pos.entry_fee + exit_fee + pos.accrued_borrow_fee;
 
-            cell_balance += net_pnl;
+            let _ = cell_balance;
 
             stats.trade_count += 1;
             stats.gross_pnl += gross_pnl;
@@ -1108,7 +1116,7 @@ max_drawdown_pct = 20.0
             });
         }
 
-        let (stats, trades) = engine.run_cell("momentum-scalper", "BTC", &candles).unwrap();
+        let (stats, _trades) = engine.run_cell("momentum-scalper", "BTC", &candles).unwrap();
         // Even with no trades, stats should be valid
         assert_eq!(stats.strategy, "momentum-scalper");
         assert_eq!(stats.market, "BTC");
@@ -1151,7 +1159,7 @@ max_drawdown_pct = 20.0
             });
         }
 
-        let (stats, trades) = engine.run_cell("momentum-scalper", "SOL", &candles).unwrap();
+        let (stats, _trades) = engine.run_cell("momentum-scalper", "SOL", &candles).unwrap();
         assert_eq!(stats.total_candles, 120);
         assert_eq!(stats.strategy, "momentum-scalper");
         // With a momentum spike, we expect at least some activity

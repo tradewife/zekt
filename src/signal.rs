@@ -48,6 +48,7 @@ impl PoolStateTracker {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+#[allow(clippy::enum_variant_names)]
 pub enum Signal {
     MomentumLong { strength: f64, velocity_pct: f64 },
     MomentumShort { strength: f64, velocity_pct: f64 },
@@ -67,6 +68,7 @@ pub enum ExitReason {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct PricePoint {
     pub price: f64,
     pub timestamp_ms: i64,
@@ -80,6 +82,7 @@ pub struct MomentumDetector {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct MomentumSnapshot {
     pub price_count: usize,
     pub current_price: f64,
@@ -268,6 +271,7 @@ impl MomentumDetector {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub fn detect_exit(
         &self,
         snapshot: &MomentumSnapshot,

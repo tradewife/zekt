@@ -73,8 +73,8 @@ struct Args {
     #[arg(long, default_value = "5m")]
     backtest_interval: String,
 
-    /// Backtest fee rate as decimal per side (default: 0.005 = 0.5%, matching Flash Trade taker fee)
-    #[arg(long, default_value_t = 0.005)]
+    /// Backtest fee rate as decimal per side (default: 0.001 = 0.1%, matching Flash Trade base taker fee)
+    #[arg(long, default_value_t = 0.001)]
     backtest_fee_rate: f64,
 }
 
@@ -301,6 +301,7 @@ async fn run_dry(config: config::Config) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_backtest(
     config: config::Config,
     strategies: Option<&str>,
@@ -311,7 +312,7 @@ async fn run_backtest(
     starting_balance: f64,
     fee_rate: f64,
 ) -> anyhow::Result<()> {
-    use chrono::{TimeZone, Utc};
+    use chrono::Utc;
 
     tracing::warn!("BACKTEST -- replaying Hyperliquid historical data through strategies");
 

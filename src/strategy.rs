@@ -797,7 +797,7 @@ impl Strategy for LpConsumptionStrategy {
         }
 
         // Track consecutive direction
-        let prev_dir = self.consecutive_consumption.signum() as i32;
+        let prev_dir = self.consecutive_consumption.signum();
         if prev_dir == direction {
             self.consecutive_consumption += direction;
         } else {
@@ -810,7 +810,7 @@ impl Strategy for LpConsumptionStrategy {
             self.velocity_history.pop_front();
         }
 
-        let consec_count = self.consecutive_consumption.abs() as usize;
+        let consec_count = self.consecutive_consumption.unsigned_abs();
         debug!(
             "[lp-consumption] Consecutive ticks: {} (need {}), velocity={:.4}, \
              long_conc={:.2}, short_conc={:.2}, utilization={:.2}",
@@ -819,14 +819,13 @@ impl Strategy for LpConsumptionStrategy {
         );
 
         // Check confirmation — need N consecutive ticks of directional consumption
-        if consec_count < self.params.confirmation_ticks {
+        if (consec_count as usize) < self.params.confirmation_ticks {
             return Signal::NoSignal;
         }
 
         // ENTRY SIGNAL
         let strength = (max_velocity / self.params.consumption_velocity_threshold * 50.0)
-            .min(100.0)
-            .max(50.0);
+            .clamp(50.0, 100.0);
 
         if direction > 0 {
             info!(
@@ -1176,8 +1175,7 @@ impl Strategy for MeanReversionStrategy {
                     // CONFIRMED REVERSAL — generate entry signal
                     // Fading the spike: spike above → SHORT, spike below → LONG
                     let strength = (deviation_pct.abs() / self.params.deviation_threshold_pct * 50.0)
-                        .min(100.0)
-                        .max(50.0);
+                        .clamp(50.0, 100.0);
                     let velocity_pct = deviation_pct.abs();
 
                     // Clone spike_dir before resetting state
@@ -1251,19 +1249,19 @@ impl Strategy for MeanReversionStrategy {
         }
 
         // 2. Mean return: price returns to within tolerance of computed mean
-        if let Some(sma) = self.compute_sma(self.params.mean_lookback) {
-            if sma > 0.0 {
-                let deviation_from_mean = (current_price - sma).abs() / sma * 100.0;
-                if deviation_from_mean <= self.params.mean_tolerance_pct {
-                    info!(
-                        "[mean-reversion] MEAN RETURN exit: price={:.2}, sma={:.2}, deviation={:.2}% (tolerance={:.2}%), pnl={:.2}%",
-                        current_price, sma, deviation_from_mean, self.params.mean_tolerance_pct, pnl_pct
-                    );
-                    return Some(exit_signal(
-                        ctx.is_long,
-                        crate::signal::ExitReason::TakeProfit,
-                    ));
-                }
+        if let Some(sma) = self.compute_sma(self.params.mean_lookback)
+            && sma > 0.0
+        {
+            let deviation_from_mean = (current_price - sma).abs() / sma * 100.0;
+            if deviation_from_mean <= self.params.mean_tolerance_pct {
+                info!(
+                    "[mean-reversion] MEAN RETURN exit: price={:.2}, sma={:.2}, deviation={:.2}% (tolerance={:.2}%), pnl={:.2}%",
+                    current_price, sma, deviation_from_mean, self.params.mean_tolerance_pct, pnl_pct
+                );
+                return Some(exit_signal(
+                    ctx.is_long,
+                    crate::signal::ExitReason::TakeProfit,
+                ));
             }
         }
 
@@ -1470,21 +1468,20 @@ impl Strategy for TrendFollowerStrategy {
 
         self.prev_velocity_pct = velocity_pct;
 
-        let consec_count = self.consecutive_breakout.abs() as usize;
+        let consec_count = self.consecutive_breakout.unsigned_abs();
         debug!(
             "[trend-follower] Velocity: {:.3}%, threshold: ±{:.3}%, consecutive: {} (need {})",
             velocity_pct, threshold, consec_count, self.params.confirmation_ticks
         );
 
         // Check confirmation — need N consecutive ticks above threshold
-        if consec_count < self.params.confirmation_ticks {
+        if (consec_count as usize) < self.params.confirmation_ticks {
             return Signal::NoSignal;
         }
 
         // ENTRY SIGNAL
         let strength = (velocity_pct.abs() / threshold * 50.0)
-            .min(100.0)
-            .max(50.0);
+            .clamp(50.0, 100.0);
 
         if self.consecutive_breakout > 0 {
             info!(
@@ -1631,6 +1628,7 @@ pub fn available_strategies() -> &'static [&'static str] {
 ///
 /// This is the single point where strategy names are mapped to concrete types.
 /// Both `ScalperEngine` and `PaperEngine` should use this function.
+#[allow(dead_code)]
 pub fn create_strategy(name: &str, params: StrategyParams) -> anyhow::Result<Box<dyn Strategy>> {
     match name {
         "momentum-scalper" => {

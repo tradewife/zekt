@@ -453,6 +453,7 @@ impl std::fmt::Display for CellKey {
 
 /// Per-cell position with full fee tracking.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct CellPosition {
     position_key: String,
     symbol: String,
@@ -689,7 +690,7 @@ impl MultiPaperEngine {
         // Validate all strategy names
         let available = strategy::available_strategies();
         for name in &strategy_names_owned {
-            if !available.iter().any(|a| *a == name.as_str()) {
+            if !available.contains(&name.as_str()) {
                 anyhow::bail!(
                     "Unknown strategy '{}'. Available strategies: {}",
                     name,
@@ -924,16 +925,16 @@ impl MultiPaperEngine {
         pool_snap: Option<crate::signal::PoolSnapshot>,
     ) -> anyhow::Result<()> {
         // Check per-cell cooldown (position may be a cooldown marker)
-        if let Some(pos) = self.positions.get(key) {
-            if pos.size_usd == 0.0 {
-                // This is a cooldown marker
-                if let Some(until) = pos.cooldown_until {
-                    if Utc::now() < until {
-                        return Ok(());
-                    } else {
-                        // Cooldown expired — remove the marker
-                        // We need to do this after the borrow, so just note it
-                    }
+        if let Some(pos) = self.positions.get(key)
+            && pos.size_usd == 0.0
+        {
+            // This is a cooldown marker
+            if let Some(until) = pos.cooldown_until {
+                if Utc::now() < until {
+                    return Ok(());
+                } else {
+                    // Cooldown expired — remove the marker
+                    // We need to do this after the borrow, so just note it
                 }
             }
         }
@@ -941,7 +942,7 @@ impl MultiPaperEngine {
         // Remove expired cooldown markers
         let should_remove_cooldown = {
             if let Some(pos) = self.positions.get(key) {
-                pos.size_usd == 0.0 && pos.cooldown_until.map_or(false, |u| Utc::now() >= u)
+                pos.size_usd == 0.0 && pos.cooldown_until.is_some_and(|u| Utc::now() >= u)
             } else {
                 false
             }
@@ -1012,6 +1013,7 @@ impl MultiPaperEngine {
         Ok(())
     }
 
+    #[allow(clippy::too_many_arguments)]
     async fn cell_open(
         &mut self,
         key: &CellKey,
@@ -1370,11 +1372,11 @@ impl MultiPaperEngine {
             let mut best_pnl = f64::NEG_INFINITY;
             for market in &self.markets {
                 let key = CellKey { strategy: strat_name.clone(), market: market.clone() };
-                if let Some(cell_stats) = self.stats.get(&key) {
-                    if cell_stats.net_pnl > best_pnl {
-                        best_pnl = cell_stats.net_pnl;
-                        best_market = market.clone();
-                    }
+                if let Some(cell_stats) = self.stats.get(&key)
+                    && cell_stats.net_pnl > best_pnl
+                {
+                    best_pnl = cell_stats.net_pnl;
+                    best_market = market.clone();
                 }
             }
             if !best_market.is_empty() {
@@ -1980,7 +1982,7 @@ mod multi_tests {
         // Verify that injecting pool data into a snapshot allows the
         // LP Consumption strategy to process entries instead of returning
         // NoSignal due to missing pool data.
-        use crate::strategy::{create_strategy_from_config, Strategy, StrategyParams};
+        use crate::strategy::{create_strategy_from_config, StrategyParams};
         use crate::signal::PoolSnapshot;
 
         let fallback = StrategyParams {

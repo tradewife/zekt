@@ -157,6 +157,7 @@ impl ScalperEngine {
 
     /// Re-verify local position state against on-chain state.
     /// Returns true if position still exists on-chain.
+    #[allow(dead_code)]
     async fn verify_position_on_chain(&mut self) -> bool {
         if let Some(ref pos) = self.position {
             let wallet = self.executor.wallet_pubkey();
