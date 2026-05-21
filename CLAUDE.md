@@ -1,20 +1,30 @@
+<coding_guidelines>
 # Zekt -- Coding Guidelines
 
 ## What This Is
-A **multi-strategy trading system** for Flash Trade (Solana perps DEX). Originally a liquidity-aware momentum scalper, evolved via the Alpha Hunter mission into a pluggable multi-strategy platform with backtesting (Hyperliquid data) and paper trading. Rust binary, single crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
+An **autonomous strategy poaching system** that discovers profitable Hyperliquid wallets, reverse-engineers their strategies from fill-level data (the Bulk.Trade methodology), and replicates them on Flash Trade (Solana perps). Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence. Single Rust crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
 
-**4 strategies:** momentum-scalper, lp-consumption, mean-reversion, trend-follower. All implement the `Strategy` trait in `strategy.rs`. Strategy blueprints were reverse-engineered from profitable wallets scraped from perp DEX leaderboards (see `docs/MISSION-ALPHA-HUNTER.md`).
+**Pipeline:** Research on Hyperliquid (rich data via QuickNode HyperCore API) → Execute on Flash Trade (Solana perps). Semi-autonomous: poach, analyze, and paper trade automatically; require human approval before live execution.
+
+**4 strategies (current, being replaced with data-driven versions):** momentum-scalper, lp-consumption, mean-reversion, trend-follower. All implement the `Strategy` trait in `strategy.rs`. Strategy blueprints are generated from fill-level analysis of profitable HL wallets (see `analysis/` directory).
 
 ## Recommended Pipeline
 ```
-Backtest (Hyperliquid historical candles) → Paper Trade (live prices) → Live (real money)
+1. Discover  → Scrape HL leaderboards via QuickNode HyperCore API for profitable wallets
+2. Analyze   → Python pipeline: position clustering → metrics → classification → blueprints
+3. Implement → Rust Strategy trait with parameters from blueprint JSON
+4. Backtest  → Validate on HL historical candles (must pass Sharpe ≥ 1.0 threshold)
+5. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
+6. Live      → Execute with real capital (requires human approval)
 ```
-Always backtest first to validate strategy parameters, then paper trade to confirm against live prices with real fee estimates, then go live.
 
 ## Build & Run
 ```bash
-cargo build --release                          # Build
-cargo test                                     # Run 140 unit tests
+cargo build --release                          # Build Rust binary
+cargo test                                     # Run 140 Rust unit tests
+
+# Python analysis tests
+python -m pytest analysis/tests/ -v            # Run Python analysis module tests
 
 # Backtest against Hyperliquid historical data
 ./target/release/zekt --backtest --strategies momentum-scalper --markets BTC,SOL \
@@ -29,9 +39,18 @@ cargo test                                     # Run 140 unit tests
 
 # Live (requires funded Solana wallet with USDC)
 ./target/release/zekt --keypair ~/.config/solana/id.json --market SOL
+
+# Wallet discovery (requires QuickNode endpoint)
+QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
+  cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --output data/wallets-hl.json
+
+# Wallet analysis
+cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
 ```
 
 ## Architecture
+
+### Rust (Trading Infrastructure)
 ```
 main.rs         CLI (clap) + graceful shutdown (ctrlc) -- routes to backtest, paper, dry-run, or live mode
 config.rs       TOML config (agent, flash, strategy, risk sections + strategy sub-tables)
@@ -44,8 +63,27 @@ risk.rs         Risk manager -- SL/TP/trailing, circuit breaker, daily reset, fe
 engine.rs       Live trading loop -- poll price -> detect -> preview -> build tx -> sign -> monitor
 paper.rs        Paper trading -- single + MultiPaperEngine (strategy x market matrix, 14 tests)
 src/bin/
-  scrape-leaderboards.rs   CLI: scrape profitable wallets from perp DEX leaderboards (8 tests)
+  scrape-leaderboards.rs   CLI: discover profitable wallets via QuickNode HyperCore API + leaderboards (8 tests)
   analyze-wallet.rs        CLI: classify wallet strategies and generate blueprints (24 tests)
+```
+
+### Python (Analysis Pipeline)
+```
+analysis/
+  position_clustering.py     Cluster individual fills into open→close position cycles
+  wallet_metrics.py          Per-wallet metrics: clip consistency, hold time, win rate, PnL distribution,
+                             fill interval stats, scale-in count, active hours, fee-adjusted PnL
+  strategy_classifier.py     Classify wallets into strategy types with confidence and evidence
+  entry_reconstruction.py    Fetch HL candles before entries; find common trigger patterns
+  cluster_analysis.py        Find groups of wallets running identical strategies
+  blueprint_generator.py     Generate strategy blueprints with data-derived parameters (cluster medians)
+  tests/
+    test_position_clustering.py
+    test_wallet_metrics.py
+    test_strategy_classifier.py
+    test_entry_reconstruction.py
+    test_cluster_analysis.py
+    test_blueprint_generator.py
 ```
 
 ## Strategy Trait
@@ -61,15 +99,45 @@ fn snapshot(&self) -> MomentumSnapshot;
 Strategies are created via `create_strategy_from_config(name, sub_table, fallback_params)`. Available names: `["momentum-scalper", "lp-consumption", "mean-reversion", "trend-follower"]` (see `available_strategies()`).
 
 ## Key Dependencies
+
+### Rust
 - `solana-sdk` / `solana-client` -- Keypair, Transaction, RPC
 - `spl-associated-token-account` / `spl-token` -- USDC balance queries
-- `reqwest` -- HTTP client for Flash Trade API + Hyperliquid API
+- `reqwest` -- HTTP client for Flash Trade API + Hyperliquid API + QuickNode
 - `tokio` -- Async runtime
 - `clap` -- CLI argument parsing
 - `ctrlc` -- Graceful shutdown on SIGINT/SIGTERM
 - `chrono` -- Timestamps
 - `serde` / `serde_json` / `toml` -- Serialization
 - `base64` / `bs58` / `bincode` -- Encoding
+
+### Python
+- `requests` -- HTTP client for Hyperliquid API
+- `numpy` -- Numerical computation
+- `pandas` -- Data manipulation (fill records, position clusters)
+- `scikit-learn` -- Clustering algorithms for wallet group analysis
+- `pytest` -- Testing framework for analysis modules
+
+## QuickNode Integration (HyperCore API)
+
+QuickNode provides the primary data source for Hyperliquid wallet discovery and fill-level analysis.
+
+**Configuration:**
+```bash
+# Environment variable (recommended, gitignored)
+export QUICKNODE_HL_URL="https://your-endpoint.quiknode.pro/your-token/"
+
+# Or CLI flag
+--quicknode-url "https://your-endpoint.quiknode.pro/..."
+```
+
+**QuickNode HyperCore Methods Used:**
+- `hl_batchClearinghouseStates` — Batch wallet position scanning (efficient for 100+ wallets)
+- `hl_batchPortfolioStates` — Portfolio snapshots for multiple wallets
+- `userFills` / `userFillsByTime` — Per-wallet fill records (coin, side, px, sz, fee, closedPnl, time, dir, hash, startPosition)
+- `candleSnapshot` — Historical OHLCV candles for backtesting and entry reconstruction
+
+**Fallback:** Direct Hyperliquid Info API (`api.hyperliquid.xyz/info`) for userFills, userFillsByTime, clearinghouseState, candleSnapshot when QuickNode is not configured.
 
 ## Flash Trade API
 Base URL: `https://flashapi.trade`
@@ -81,15 +149,19 @@ Base URL: `https://flashapi.trade`
 - API errors are classified via `classify_api_error()` (insufficient balance, rate limited, etc.)
 - MCP server available: `npx flash-trade-mcp` for AI agent integration
 
-## Hyperliquid API (Backtesting)
+## Hyperliquid API (Backtesting + Fill Analysis)
 Base URL: `https://api.hyperliquid.xyz/info`
 - `POST` with `{"type": "candleSnapshot", "req": {"coin": "BTC", "interval": "5m", "startTime": ..., "endTime": ...}}`
 - Returns OHLCV candles: `t`, `T`, `s`, `i`, `o`, `c`, `h`, `l`, `v`, `n`
 - Max 5000 candles per request, auto-paginated in `HlCandleFetcher`
 - Intervals: 1m, 5m, 15m, 1h, 4h, 1d, 1w
 - No auth required. Rate limit: 1200 weight/min/IP.
+- Fill endpoints: `userFills` (2000 fills), `userFillsByTime` (10K recent, time-filtered)
+- Wallet state: `clearinghouseState` (positions, leverage, uPnL)
 
 ## Coding Conventions
+
+### Rust
 - `tracing` for all logging (info/warn/error/debug), never `println`
 - `anyhow::Result` for error handling in application code
 - `parse_f64_safe(s, field_name)` for string-to-f64 parsing (returns Result with context, never silent 0.0)
@@ -99,6 +171,14 @@ Base URL: `https://api.hyperliquid.xyz/info`
 - Position state is held in `engine.rs` (Option<Position>) or `paper.rs` (HashMap<CellKey, CellPosition>)
 - Trade journal uses atomic writes (write to .tmp then rename) to `perps-trades.json`
 - Backtest results use atomic writes to `data/backtest-results/summary.json` and `data/backtest-trades.json`
+
+### Python
+- `logging` module for all output (never `print()`)
+- Functions accept dicts/DataFrames, return structured results
+- Handle network errors gracefully (retry with backoff)
+- Each module has a corresponding `tests/test_<module>.py`
+- Tests use synthetic fill data (don't require API calls)
+- Tests run with `pytest`
 
 ## Runtime Safety
 - `Arc<RpcClient>` wraps Solana RPC client for sharing across spawn_blocking closures
@@ -118,13 +198,17 @@ Base URL: `https://api.hyperliquid.xyz/info`
 - Trailing stop for shorts correctly tracks lowest price (peak_price = best price for direction)
 - Time stop closes positions that exceed max hold duration
 - Position size validated against `max_position_notional_usd` config
+- Cross-cell position limit enforced via `max_total_notional_usd` config (sums all CellPosition.size_usd)
 
 ## Config Format
 TOML with 4 main sections: `[agent]`, `[flash]`, `[strategy]`, `[risk]`
 Strategy sub-tables: `[strategy.lp-consumption]`, `[strategy.mean-reversion]`, `[strategy.trend-follower]`
+QuickNode configuration: `QUICKNODE_HL_URL` env var or `--quicknode-url` CLI flag (not in TOML, gitignored)
 See `config/perps.toml` for the full schema with defaults.
 
 ## Testing
+
+### Rust Tests
 140 unit tests across all modules. Run with `cargo test`.
 - `strategy.rs`: 63 tests (entry/exit for each strategy, parameter validation, factory)
 - `paper.rs`: 14 tests (MultiPaperEngine, position matrix, fee accounting)
@@ -132,3 +216,11 @@ See `config/perps.toml` for the full schema with defaults.
 - `src/bin/analyze-wallet.rs`: 24 tests (wallet classification, blueprint generation)
 - `src/bin/scrape-leaderboards.rs`: 8 tests (API parsing, deduplication)
 - Use `--dry-run` for integration testing against live API without signing.
+
+### Python Tests
+Run with `python -m pytest analysis/tests/ -v`.
+- Each module has its own test file: `test_position_clustering.py`, `test_wallet_metrics.py`, etc.
+- Use synthetic fill data for unit tests (no API calls required)
+- Edge cases: <10 trades, empty fills, single-market wallets
+- At least 3 tests per module covering happy path + edge cases
+</coding_guidelines>
