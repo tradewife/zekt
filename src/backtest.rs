@@ -878,6 +878,9 @@ fn strategy_source_path(name: &str) -> String {
     match name {
         "blueprint-scalper" => "data/blueprints/cluster-001.json".to_string(),
         "blueprint-mean-revert" => "data/blueprints/cluster-004.json".to_string(),
+        s if s.starts_with("blueprint-cluster-") => {
+            format!("data/blueprints/{}.json", s.strip_prefix("blueprint-").unwrap())
+        }
         _ => String::new(), // Built-in strategies have no blueprint source
     }
 }
