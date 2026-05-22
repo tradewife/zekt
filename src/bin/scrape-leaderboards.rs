@@ -67,6 +67,14 @@ struct Args {
     /// Batch size for QuickNode batch API calls (5 for free plan)
     #[arg(long, default_value_t = 5)]
     batch_size: usize,
+
+    /// Minimum net PnL in USD to include a wallet (filters out marginal profitability)
+    #[arg(long, default_value_t = 500.0)]
+    min_pnl_usd: f64,
+
+    /// Path to existing wallet file for comparison (outputs wallet-changes.json)
+    #[arg(long)]
+    output_comparison: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, clap::ValueEnum)]
@@ -158,6 +166,89 @@ pub struct FillRecord {
     pub dir: String,
     /// Transaction hash
     pub hash: String,
+}
+
+// ── Wallet Comparison (v1 vs v2) ─────────────────────────────────────────────
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WalletChanges {
+    /// New wallets not in the existing set
+    pub new: Vec<HlWalletOutput>,
+    /// Wallets still profitable in both sets
+    pub still_profitable: Vec<HlWalletComparison>,
+    /// Wallets that were profitable before but no longer are
+    pub decayed: Vec<HlWalletComparison>,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct HlWalletComparison {
+    pub address: String,
+    pub old_pnl: f64,
+    pub new_pnl: f64,
+    pub pnl_delta: f64,
+    pub old_fills: u64,
+    pub new_fills: u64,
+}
+
+/// Compare new wallets against existing wallet file, categorizing into new/still_profitable/decayed.
+fn compare_wallets(
+    new_wallets: &[HlWalletOutput],
+    existing_path: &PathBuf,
+) -> Result<WalletChanges> {
+    let existing_data = fs::read_to_string(existing_path)
+        .context(format!("Failed to read existing wallet file: {}", existing_path.display()))?;
+    let existing: Vec<HlWalletOutput> = serde_json::from_str(&existing_data)
+        .context("Failed to parse existing wallet file as HlWalletOutput array")?;
+
+    let existing_map: HashMap<String, &HlWalletOutput> = existing
+        .iter()
+        .map(|w| (w.address.to_lowercase(), w))
+        .collect();
+    let new_map: HashMap<String, &HlWalletOutput> = new_wallets
+        .iter()
+        .map(|w| (w.address.to_lowercase(), w))
+        .collect();
+
+    let mut changes = WalletChanges {
+        new: Vec::new(),
+        still_profitable: Vec::new(),
+        decayed: Vec::new(),
+    };
+
+    // Find new wallets (not in existing)
+    for w in new_wallets {
+        if !existing_map.contains_key(&w.address.to_lowercase()) {
+            changes.new.push(w.clone());
+        }
+    }
+
+    // Categorize existing wallets
+    for old in &existing {
+        let key = old.address.to_lowercase();
+        if let Some(new_w) = new_map.get(&key) {
+            // Still in the new set — still profitable
+            changes.still_profitable.push(HlWalletComparison {
+                address: old.address.clone(),
+                old_pnl: old.net_pnl,
+                new_pnl: new_w.net_pnl,
+                pnl_delta: new_w.net_pnl - old.net_pnl,
+                old_fills: old.total_fills,
+                new_fills: new_w.total_fills,
+            });
+        } else {
+            // Was profitable before but not in new set — decayed
+            changes.decayed.push(HlWalletComparison {
+                address: old.address.clone(),
+                old_pnl: old.net_pnl,
+                new_pnl: 0.0,
+                pnl_delta: -old.net_pnl,
+                old_fills: old.total_fills,
+                new_fills: 0,
+            });
+        }
+    }
+
+    Ok(changes)
 }
 
 // ── QuickNode JSON-RPC types ─────────────────────────────────────────────────
@@ -892,11 +983,12 @@ async fn fetch_wallet_fills(
     Ok(fills)
 }
 
-/// Apply wallet filters: >50 fills, positive net PnL, active in last 30 days.
+/// Apply wallet filters: >50 fills, positive net PnL, active in last N days, minimum PnL threshold.
 fn apply_wallet_filters(
     wallets: &mut Vec<HlWalletOutput>,
     min_fills: u64,
     active_days: i64,
+    min_pnl_usd: f64,
 ) {
     let cutoff_ms = Utc::now()
         .checked_sub_signed(chrono::Duration::days(active_days))
@@ -908,9 +1000,9 @@ fn apply_wallet_filters(
             debug!(address = %w.address, fills = w.total_fills, "Filtered: insufficient fills");
             return false;
         }
-        // Filter 2: positive net PnL
-        if w.net_pnl <= 0.0 {
-            debug!(address = %w.address, pnl = w.net_pnl, "Filtered: non-positive PnL");
+        // Filter 2: positive net PnL above minimum threshold
+        if w.net_pnl < min_pnl_usd {
+            debug!(address = %w.address, pnl = w.net_pnl, "Filtered: below min PnL threshold (${:.0})", min_pnl_usd);
             return false;
         }
         // Filter 3: active within cutoff
@@ -932,6 +1024,7 @@ async fn scrape_hyperliquid_quicknode(
     discover_markets: usize,
     batch_size: usize,
     max_wallets: usize,
+    min_pnl_usd: f64,
     output: &PathBuf,
 ) -> Result<Vec<HlWalletOutput>> {
     let now = Utc::now().to_rfc3339();
@@ -1015,8 +1108,8 @@ async fn scrape_hyperliquid_quicknode(
 
     info!(pre_filter = hl_wallets.len(), "Wallets with fills fetched");
 
-    // Step 5: Apply filters (>50 fills, positive PnL, active <30 days)
-    apply_wallet_filters(&mut hl_wallets, 50, 30);
+    // Step 5: Apply filters (>50 fills, PnL >= min_pnl_usd, active <30 days)
+    apply_wallet_filters(&mut hl_wallets, 50, 30, min_pnl_usd);
     info!(post_filter = hl_wallets.len(), "Wallets after filtering");
 
     // Sort by net_pnl descending
@@ -1265,6 +1358,7 @@ async fn main() -> Result<()> {
             args.discover_markets,
             args.batch_size,
             args.max_wallets,
+            args.min_pnl_usd,
             &hl_output_path,
         )
         .await;
@@ -1278,6 +1372,29 @@ async fn main() -> Result<()> {
                 );
                 if wallets.is_empty() {
                     anyhow::bail!("No qualifying wallets found after filtering");
+                }
+
+                // Run comparison if requested
+                if let Some(ref comparison_path) = args.output_comparison {
+                    match compare_wallets(&wallets, comparison_path) {
+                        Ok(changes) => {
+                            let changes_path = PathBuf::from("data/wallet-changes.json");
+                            let changes_json = serde_json::to_string_pretty(&changes)
+                                .context("Failed to serialize wallet changes")?;
+                            fs::write(&changes_path, &changes_json)
+                                .context("Failed to write wallet-changes.json")?;
+                            info!(
+                                new = changes.new.len(),
+                                still_profitable = changes.still_profitable.len(),
+                                decayed = changes.decayed.len(),
+                                path = %changes_path.display(),
+                                "Wallet comparison written"
+                            );
+                        }
+                        Err(e) => {
+                            warn!(error = %e, "Failed to compare wallets against existing file");
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -1672,7 +1789,7 @@ mod tests {
             },
         ];
 
-        apply_wallet_filters(&mut wallets, 50, 30);
+        apply_wallet_filters(&mut wallets, 50, 30, 500.0);
         assert_eq!(wallets.len(), 2, "Should filter out wallets with <50 fills");
         assert!(wallets.iter().all(|w| w.total_fills >= 50));
     }
@@ -1719,7 +1836,7 @@ mod tests {
             },
         ];
 
-        apply_wallet_filters(&mut wallets, 50, 30);
+        apply_wallet_filters(&mut wallets, 50, 30, 500.0);
         assert_eq!(wallets.len(), 1, "Should filter out wallets with non-positive PnL");
         assert!(wallets[0].net_pnl > 0.0);
     }
@@ -1759,7 +1876,7 @@ mod tests {
             },
         ];
 
-        apply_wallet_filters(&mut wallets, 50, 30);
+        apply_wallet_filters(&mut wallets, 50, 30, 500.0);
         assert_eq!(wallets.len(), 1, "Should filter out wallets inactive >30 days");
     }
 
@@ -1821,7 +1938,7 @@ mod tests {
             },
         ];
 
-        apply_wallet_filters(&mut wallets, 50, 30);
+        apply_wallet_filters(&mut wallets, 50, 30, 500.0);
         assert_eq!(wallets.len(), 2, "Should keep 2 wallets that pass all filters");
         let addresses: Vec<&str> = wallets.iter().map(|w| w.address.as_str()).collect();
         assert!(addresses.contains(&"0xgood"));
@@ -2037,5 +2154,113 @@ mod tests {
             return false;
         }
         s.starts_with("0x") && s[2..].chars().all(|c| c.is_ascii_hexdigit())
+    }
+
+    // ── Wallet comparison tests ────────────────────────────────────────────
+
+    fn make_hl_wallet(address: &str, pnl: f64, fills: u64) -> HlWalletOutput {
+        HlWalletOutput {
+            address: address.to_string(),
+            source: "hyperliquid".to_string(),
+            total_fills: fills,
+            net_pnl: pnl,
+            last_active: Utc::now().to_rfc3339(),
+            fills: vec![],
+            account_value: None,
+            total_ntl_pos: None,
+            markets_traded: vec!["BTC".to_string()],
+            scraped_at: Utc::now().to_rfc3339(),
+        }
+    }
+
+    #[test]
+    fn test_compare_wallets_new_wallets() {
+        let new_wallets = vec![
+            make_hl_wallet("0xaaa", 5000.0, 100),
+            make_hl_wallet("0xbbb", 3000.0, 80),
+            make_hl_wallet("0xnew", 1000.0, 50),
+        ];
+
+        let existing = vec![
+            make_hl_wallet("0xaaa", 4000.0, 90),
+            make_hl_wallet("0xbbb", 2000.0, 70),
+        ];
+
+        let tmp_dir = std::env::temp_dir().join("zekt_compare_test_new");
+        let _ = fs::create_dir_all(&tmp_dir);
+        let existing_path = tmp_dir.join("existing.json");
+        fs::write(&existing_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+        let changes = compare_wallets(&new_wallets, &existing_path).unwrap();
+        assert_eq!(changes.new.len(), 1, "Should find 1 new wallet");
+        assert_eq!(changes.new[0].address, "0xnew");
+        assert_eq!(changes.still_profitable.len(), 2);
+        assert_eq!(changes.decayed.len(), 0);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_compare_wallets_decayed() {
+        let new_wallets = vec![
+            make_hl_wallet("0xaaa", 5000.0, 100),
+        ];
+
+        let existing = vec![
+            make_hl_wallet("0xaaa", 4000.0, 90),
+            make_hl_wallet("0xdecayed", 2000.0, 80),
+        ];
+
+        let tmp_dir = std::env::temp_dir().join("zekt_compare_test_decayed");
+        let _ = fs::create_dir_all(&tmp_dir);
+        let existing_path = tmp_dir.join("existing.json");
+        fs::write(&existing_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+        let changes = compare_wallets(&new_wallets, &existing_path).unwrap();
+        assert_eq!(changes.new.len(), 0);
+        assert_eq!(changes.still_profitable.len(), 1);
+        assert_eq!(changes.decayed.len(), 1);
+        assert_eq!(changes.decayed[0].address, "0xdecayed");
+        assert_eq!(changes.decayed[0].old_pnl, 2000.0);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_compare_wallets_pnl_delta() {
+        let new_wallets = vec![
+            make_hl_wallet("0xaaa", 6000.0, 100),
+        ];
+
+        let existing = vec![
+            make_hl_wallet("0xaaa", 4000.0, 80),
+        ];
+
+        let tmp_dir = std::env::temp_dir().join("zekt_compare_test_delta");
+        let _ = fs::create_dir_all(&tmp_dir);
+        let existing_path = tmp_dir.join("existing.json");
+        fs::write(&existing_path, serde_json::to_string_pretty(&existing).unwrap()).unwrap();
+
+        let changes = compare_wallets(&new_wallets, &existing_path).unwrap();
+        assert_eq!(changes.still_profitable.len(), 1);
+        assert!((changes.still_profitable[0].pnl_delta - 2000.0).abs() < 0.01);
+
+        let _ = fs::remove_dir_all(&tmp_dir);
+    }
+
+    #[test]
+    fn test_min_pnl_filter() {
+        let now = Utc::now().to_rfc3339();
+        let mut wallets = vec![
+            make_hl_wallet("0xhigh", 5000.0, 100),
+            make_hl_wallet("0xlow", 300.0, 100),
+            make_hl_wallet("0xmid", 1000.0, 100),
+        ];
+
+        apply_wallet_filters(&mut wallets, 50, 30, 500.0);
+        assert_eq!(wallets.len(), 2, "Should keep wallets with PnL >= $500");
+        let addresses: Vec<&str> = wallets.iter().map(|w| w.address.as_str()).collect();
+        assert!(addresses.contains(&"0xhigh"));
+        assert!(addresses.contains(&"0xmid"));
     }
 }

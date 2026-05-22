@@ -5,6 +5,7 @@ mod executor;
 mod flash_api;
 mod monitor;
 mod paper;
+mod regime;
 mod risk;
 mod signal;
 mod strategy;
@@ -377,6 +378,7 @@ async fn run_backtest(
         fee_rate,
         borrow_rate_hourly: 0.0001, // 0.01%/hr default
         leverage,
+        regime_filter: true, // Always enable regime filtering
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;

@@ -299,6 +299,22 @@ pub struct BacktestCellStats {
     /// Whether the Sharpe ratio meets the ≥ 1.0 threshold for live trading.
     #[serde(default)]
     pub sharpe_pass: bool,
+    /// Whether regime filtering was applied during this backtest.
+    #[serde(default)]
+    pub regime_filter: bool,
+    /// Number of entry signals blocked by regime incompatibility.
+    #[serde(default)]
+    pub regime_blocked_count: usize,
+    /// Regime distribution during the backtest period.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regime_transitions: Vec<RegimeTransition>,
+}
+
+/// A regime transition event recorded during backtest.
+#[derive(Debug, Clone, Serialize)]
+pub struct RegimeTransition {
+    pub time: String,
+    pub regime: String,
 }
 
 impl BacktestCellStats {
@@ -368,6 +384,8 @@ pub struct BacktestConfig {
     pub fee_rate: f64,
     pub borrow_rate_hourly: f64,
     pub leverage: f64,
+    /// Whether to apply regime filtering to strategy entries.
+    pub regime_filter: bool,
 }
 
 /// The backtesting engine. Replays historical candles through strategies.
@@ -551,6 +569,27 @@ impl BacktestEngine {
         let mut peak_balance = cell_balance;
         let mut cooldown_until_ms: i64 = 0;
 
+        // Regime detector for filtering entries based on market conditions
+        let mut regime = crate::regime::RegimeDetector::new(288, 200);
+        let apply_regime = self.bt_config.regime_filter;
+        let mut regime_blocked_count: usize = 0;
+        let mut last_regime_label: Option<String> = None;
+        let mut regime_transitions: Vec<RegimeTransition> = Vec::new();
+
+        // Extract cluster ID from strategy name for regime fingerprint matching
+        let cluster_id = strategy_name
+            .strip_prefix("blueprint-")
+            .unwrap_or("");
+
+        if apply_regime {
+            regime.load_all_fingerprints();
+            stats.regime_filter = true;
+            info!(
+                "[BT] {} on {}: regime filtering enabled (cluster_id={})",
+                strategy_name, market, if cluster_id.is_empty() { "none" } else { cluster_id }
+            );
+        }
+
         for candle in candles {
             let close_price: f64 = candle.c.parse().unwrap_or(0.0);
             if close_price <= 0.0 {
@@ -559,6 +598,25 @@ impl BacktestEngine {
 
             // Feed close price to strategy
             strat.push_price(close_price, candle.t);
+
+            // Update regime detector with candle data
+            if apply_regime {
+                let high_price: f64 = candle.h.parse().unwrap_or(close_price);
+                let low_price: f64 = candle.l.parse().unwrap_or(close_price);
+                regime.update(market, close_price, high_price, low_price);
+
+                // Record regime transitions
+                let current_label = regime.regime_label(market).to_string();
+                if last_regime_label.as_ref() != Some(&current_label) {
+                    if let Some(dt) = DateTime::from_timestamp_millis(candle.t) {
+                        regime_transitions.push(RegimeTransition {
+                            time: dt.to_rfc3339(),
+                            regime: current_label.clone(),
+                        });
+                    }
+                    last_regime_label = Some(current_label);
+                }
+            }
 
             // Build snapshot for signal detection
             let snapshot = strat.snapshot();
@@ -696,6 +754,21 @@ impl BacktestEngine {
 
             // Check entry (only if no position and not in cooldown)
             if position.is_none() && candle.t >= cooldown_until_ms {
+                // Regime gate: skip entry if current regime is incompatible with cluster
+                if apply_regime && !cluster_id.is_empty() && !regime.is_compatible(market, cluster_id) {
+                    regime_blocked_count += 1;
+                    // Regime incompatibility is logged separately from "no signal"
+                    debug!(
+                        "[BT] {} on {}: entry signal blocked by regime (regime={})",
+                        strategy_name, market, regime.regime_label(market)
+                    );
+                    // Still update position price
+                    if let Some(ref mut pos) = position {
+                        pos.update_price(close_price, interval_secs);
+                    }
+                    continue;
+                }
+
                 let entry_signal = strat.detect_entry(&snapshot);
                 match entry_signal {
                     Signal::MomentumLong { strength, .. } => {
@@ -818,6 +891,12 @@ impl BacktestEngine {
                 / (trade_pnls.len() - 1) as f64;
             let std_dev = variance.sqrt();
             stats.sharpe_ratio = if std_dev > 0.0 { mean / std_dev } else { 0.0 };
+        }
+
+        // Write regime filtering stats
+        if apply_regime {
+            stats.regime_blocked_count = regime_blocked_count;
+            stats.regime_transitions = regime_transitions;
         }
 
         Ok((stats, trades))
@@ -1141,6 +1220,7 @@ max_drawdown_pct = 20.0
             fee_rate: 0.001,
             borrow_rate_hourly: 0.0001,
             leverage: 5.0,
+            regime_filter: false,
         }
     }
 

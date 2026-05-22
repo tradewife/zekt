@@ -72,6 +72,15 @@ struct Args {
     /// Minimum AUM (USD) to include a market
     #[arg(long, default_value_t = 0.0)]
     min_aum_usd: f64,
+
+    /// Continuous monitoring mode — poll every N seconds and re-rank
+    #[arg(long, default_value_t = 0)]
+    watch: u64,
+
+    /// Enable edge detection — identify markets where LP utilization is changing rapidly,
+    /// capacity is shrinking, or a single LP holds >60% of the pool
+    #[arg(long, default_value_t = false)]
+    edge_detection: bool,
 }
 
 // ── Data Types ───────────────────────────────────────────────────────────────
@@ -148,6 +157,54 @@ pub struct MarketRankings {
     pub markets: Vec<RankedMarket>,
     /// HL→Flash Trade symbol mapping
     pub asset_mapping: AssetMapping,
+}
+
+// ── Edge Signal Types ────────────────────────────────────────────────────────
+
+/// An identified trading edge opportunity on a Flash Trade market.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSignal {
+    /// Market symbol
+    pub symbol: String,
+    /// Pool name
+    pub pool_name: String,
+    /// Type of edge detected
+    pub edge_type: EdgeType,
+    /// Description of the edge
+    pub description: String,
+    /// Current utilization percentage
+    pub utilization_pct: f64,
+    /// Utilization change in the last hour (percentage points)
+    pub utilization_delta_1h: f64,
+    /// Available capacity in USD
+    pub available_capacity_usd: f64,
+    /// Current market score from ranking
+    pub score: f64,
+    /// Whether this is a Flash-only market
+    pub flash_only: bool,
+    /// Timestamp when detected
+    pub detected_at: String,
+    /// Severity: "high", "medium", "low"
+    pub severity: String,
+}
+
+/// Type of edge detected.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum EdgeType {
+    /// LP utilization is changing rapidly (>5% in the last hour)
+    RapidUtilizationChange,
+    /// Available capacity is shrinking (LP being consumed)
+    CapacityShrinking,
+    /// High utilization on a Flash-only market (thin book edge)
+    FlashNativeThinBook,
+}
+
+/// The edge signals output file.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EdgeSignalsOutput {
+    pub scanned_at: String,
+    pub signals: Vec<EdgeSignal>,
+    pub previous_utilization: Option<HashMap<String, f64>>,
 }
 
 /// HL→Flash Trade symbol correspondence.
@@ -590,6 +647,35 @@ async fn run(args: Args) -> Result<()> {
         .build()
         .context("HTTP client")?;
 
+    // Previous utilization snapshots for delta detection
+    let mut prev_utilization: HashMap<String, f64> = HashMap::new();
+
+    loop {
+        scan_once(
+            &client,
+            &args,
+            &output_path,
+            &mut prev_utilization,
+        )
+        .await?;
+
+        if args.watch == 0 {
+            return Ok(());
+        }
+
+        info!(interval_secs = args.watch, "Watch mode: sleeping before next scan");
+        tokio::time::sleep(Duration::from_secs(args.watch)).await;
+    }
+}
+
+/// Run a single scan iteration.
+async fn scan_once(
+    client: &Client,
+    args: &Args,
+    output_path: &PathBuf,
+    prev_utilization: &mut HashMap<String, f64>,
+) -> Result<()> {
+
     // Fetch data from APIs
     let pools = fetch_flash_pool_data(&client, &args.flash_url).await?;
     let prices = fetch_flash_prices(&client, &args.flash_url).await?;
@@ -709,7 +795,137 @@ async fn run(args: Args) -> Result<()> {
 
     write_output(&rankings, &output_path)?;
 
+    // Edge detection
+    if args.edge_detection {
+        let signals = detect_edge_signals(&rankings, prev_utilization);
+        if !signals.is_empty() {
+            info!("=== Edge Signals ({}) ===", signals.len());
+            for sig in &signals {
+                info!(
+                    "  [{}] {:<12} {} util={:.1}% delta={:.1}pp cap=${:.0} ({})",
+                    sig.severity,
+                    sig.symbol,
+                    match sig.edge_type {
+                        EdgeType::RapidUtilizationChange => "RAPID_UTIL",
+                        EdgeType::CapacityShrinking => "CAP_SHRINK",
+                        EdgeType::FlashNativeThinBook => "FLASH_THIN",
+                    },
+                    sig.utilization_pct,
+                    sig.utilization_delta_1h,
+                    sig.available_capacity_usd,
+                    sig.description,
+                );
+            }
+
+            let edge_output = EdgeSignalsOutput {
+                scanned_at: chrono::Utc::now().to_rfc3339(),
+                signals,
+                previous_utilization: Some(prev_utilization.clone()),
+            };
+
+            let edge_path = PathBuf::from("data/edge-signals.json");
+            let edge_json = serde_json::to_string_pretty(&edge_output)
+                .context("serializing edge signals")?;
+            let tmp = edge_path.with_extension("json.tmp");
+            fs::write(&tmp, &edge_json).context("writing edge signals tmp")?;
+            fs::rename(&tmp, &edge_path).context("renaming edge signals")?;
+            info!("Wrote edge signals to {:?}", edge_path);
+        } else {
+            info!("No edge signals detected");
+        }
+    }
+
+    // Store current utilization for delta detection on next scan
+    prev_utilization.clear();
+    for market in &rankings.markets {
+        prev_utilization.insert(
+            market.symbol.clone(),
+            market.metrics.utilization_pct,
+        );
+    }
+
     Ok(())
+}
+
+/// Detect edge signals from current market rankings and previous utilization.
+fn detect_edge_signals(
+    rankings: &MarketRankings,
+    prev_utilization: &HashMap<String, f64>,
+) -> Vec<EdgeSignal> {
+    let mut signals = Vec::new();
+    let now = chrono::Utc::now().to_rfc3339();
+
+    for market in &rankings.markets {
+        let util = market.metrics.utilization_pct;
+        let prev_util = prev_utilization.get(&market.symbol).copied().unwrap_or(util);
+        let delta = util - prev_util;
+
+        // Edge 1: Rapid utilization change (>5% in the last hour/watch interval)
+        if delta.abs() > 5.0 {
+            signals.push(EdgeSignal {
+                symbol: market.symbol.clone(),
+                pool_name: market.pool_name.clone(),
+                edge_type: EdgeType::RapidUtilizationChange,
+                description: format!(
+                    "Utilization {} by {:.1}pp (from {:.1}% to {:.1}%)",
+                    if delta > 0.0 { "surged" } else { "dropped" },
+                    delta.abs(), prev_util, util,
+                ),
+                utilization_pct: util,
+                utilization_delta_1h: delta,
+                available_capacity_usd: market.metrics.available_capacity_usd,
+                score: market.score,
+                flash_only: market.metrics.flash_only,
+                detected_at: now.clone(),
+                severity: if delta.abs() > 15.0 { "high" } else if delta.abs() > 10.0 { "medium" } else { "low" }.to_string(),
+            });
+        }
+
+        // Edge 2: Capacity shrinking (available capacity < 10% of total, utilization > 60%)
+        let total = market.metrics.total_usd_owned;
+        if total > 0.0 && market.metrics.available_capacity_usd / total < 0.10 && util > 60.0 {
+            signals.push(EdgeSignal {
+                symbol: market.symbol.clone(),
+                pool_name: market.pool_name.clone(),
+                edge_type: EdgeType::CapacityShrinking,
+                description: format!(
+                    "LP being consumed: only ${:.0} capacity left ({:.1}% of ${:.0}), utilization {:.1}%",
+                    market.metrics.available_capacity_usd,
+                    market.metrics.available_capacity_usd / total * 100.0,
+                    total, util,
+                ),
+                utilization_pct: util,
+                utilization_delta_1h: delta,
+                available_capacity_usd: market.metrics.available_capacity_usd,
+                score: market.score,
+                flash_only: market.metrics.flash_only,
+                detected_at: now.clone(),
+                severity: if util > 80.0 { "high" } else { "medium" }.to_string(),
+            });
+        }
+
+        // Edge 3: Flash-only thin book (high utilization on Flash-only market)
+        if market.metrics.flash_only && util > 30.0 {
+            signals.push(EdgeSignal {
+                symbol: market.symbol.clone(),
+                pool_name: market.pool_name.clone(),
+                edge_type: EdgeType::FlashNativeThinBook,
+                description: format!(
+                    "Flash-only thin book: {:.1}% utilization, ${:.0} AUM, no HL competition",
+                    util, market.metrics.pool_aum_usd,
+                ),
+                utilization_pct: util,
+                utilization_delta_1h: delta,
+                available_capacity_usd: market.metrics.available_capacity_usd,
+                score: market.score,
+                flash_only: true,
+                detected_at: now.clone(),
+                severity: if util > 60.0 { "high" } else { "medium" }.to_string(),
+            });
+        }
+    }
+
+    signals
 }
 
 /// Write rankings to JSON file using atomic write pattern.

@@ -149,7 +149,26 @@ pub struct LpConsumptionParams {
     /// Number of scale-in clips (for multi-clip entry).
     #[serde(default = "default_scale_in_clips")]
     pub scale_in_clips: u32,
+
+    // --- Flash-native market parameters ---
+    // For Flash Trade-only markets (not on HL) with thin books
+
+    /// Whether to activate flash-native mode (relaxed thresholds for Flash-only markets).
+    #[serde(default)]
+    pub flash_native_mode: bool,
+    /// Minimum utilization percentage to consider a market a flash-native target.
+    #[serde(default = "default_flash_native_min_util")]
+    pub flash_native_min_util_pct: f64,
+    /// Velocity threshold multiplier for flash-native markets (lower = more sensitive).
+    #[serde(default = "default_flash_native_velocity_mult")]
+    pub flash_native_velocity_mult: f64,
+    /// Whether the current market is flash-only (set dynamically, not from config).
+    #[serde(default, skip)]
+    pub is_flash_only_market: bool,
 }
+
+fn default_flash_native_min_util() -> f64 { 30.0 }
+fn default_flash_native_velocity_mult() -> f64 { 0.6 }
 
 fn default_direction_bias() -> String { "neutral".to_string() }
 fn default_clip_size_usd() -> f64 { 100.0 }
@@ -744,6 +763,25 @@ impl Strategy for LpConsumptionStrategy {
 
         self.last_pool = Some(pool.clone());
 
+        // Flash-native mode: adjust thresholds for Flash Trade-only markets
+        let effective_velocity_threshold = if self.params.flash_native_mode && self.params.is_flash_only_market {
+            self.params.consumption_velocity_threshold * self.params.flash_native_velocity_mult
+        } else {
+            self.params.consumption_velocity_threshold
+        };
+
+        // Flash-native: check minimum utilization for thin-book markets
+        if self.params.flash_native_mode && self.params.is_flash_only_market {
+            let utilization = pool.long_utilization.max(pool.short_utilization);
+            if utilization < self.params.flash_native_min_util_pct / 100.0 {
+                debug!(
+                    "[lp-consumption] Flash-native: utilization too low ({:.1}% < {:.1}%), skipping",
+                    utilization * 100.0, self.params.flash_native_min_util_pct
+                );
+                return Signal::NoSignal;
+            }
+        }
+
         // Compute directional concentration
         let (long_conc, short_conc) = Self::directional_concentration(pool);
 
@@ -774,11 +812,11 @@ impl Strategy for LpConsumptionStrategy {
         };
 
         // Check velocity threshold
-        if max_velocity < self.params.consumption_velocity_threshold {
+        if max_velocity < effective_velocity_threshold {
             if self.consecutive_consumption != 0 {
                 debug!(
                     "[lp-consumption] Velocity below threshold: {:.4} < {:.4}",
-                    max_velocity, self.params.consumption_velocity_threshold
+                    max_velocity, effective_velocity_threshold
                 );
             }
             self.consecutive_consumption = 0;
@@ -824,14 +862,20 @@ impl Strategy for LpConsumptionStrategy {
         }
 
         // ENTRY SIGNAL
-        let strength = (max_velocity / self.params.consumption_velocity_threshold * 50.0)
+        let strength = (max_velocity / effective_velocity_threshold * 50.0)
             .clamp(50.0, 100.0);
+
+        let flash_tag = if self.params.flash_native_mode && self.params.is_flash_only_market {
+            " [FLASH-NATIVE]"
+        } else {
+            ""
+        };
 
         if direction > 0 {
             info!(
-                "[lp-consumption] LONG signal: velocity={:.4} (threshold={:.4}), \
+                "[lp-consumption]{} LONG signal: velocity={:.4} (threshold={:.4}), \
                  concentration={:.0}%, consecutive={}, utilization={:.2}",
-                max_velocity, self.params.consumption_velocity_threshold,
+                flash_tag, max_velocity, effective_velocity_threshold,
                 long_conc * 100.0, consec_count, current_utilization,
             );
             Signal::MomentumLong {
@@ -840,9 +884,9 @@ impl Strategy for LpConsumptionStrategy {
             }
         } else {
             info!(
-                "[lp-consumption] SHORT signal: velocity={:.4} (threshold={:.4}), \
+                "[lp-consumption]{} SHORT signal: velocity={:.4} (threshold={:.4}), \
                  concentration={:.0}%, consecutive={}, utilization={:.2}",
-                max_velocity, self.params.consumption_velocity_threshold,
+                flash_tag, max_velocity, effective_velocity_threshold,
                 short_conc * 100.0, consec_count, current_utilization,
             );
             Signal::MomentumShort {
@@ -1736,6 +1780,10 @@ pub fn create_strategy_from_config(
                     use_native_tp_sl: true,
                     leverage: 2.5,
                     scale_in_clips: 1,
+                    flash_native_mode: false,
+                    flash_native_min_util_pct: 30.0,
+                    flash_native_velocity_mult: 0.6,
+                    is_flash_only_market: false,
                 }
             };
             create_lp_consumption_strategy(lp_params)
@@ -3873,6 +3921,10 @@ mod tests {
             use_native_tp_sl: true,
             leverage: 2.5,
             scale_in_clips: 1,
+            flash_native_mode: false,
+            flash_native_min_util_pct: 30.0,
+            flash_native_velocity_mult: 0.6,
+            is_flash_only_market: false,
         }
     }
 
