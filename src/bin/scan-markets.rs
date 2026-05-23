@@ -677,9 +677,9 @@ async fn scan_once(
 ) -> Result<()> {
 
     // Fetch data from APIs
-    let pools = fetch_flash_pool_data(&client, &args.flash_url).await?;
-    let prices = fetch_flash_prices(&client, &args.flash_url).await?;
-    let hl_symbols = fetch_hl_meta(&client, &args.hl_url).await?;
+    let pools = fetch_flash_pool_data(client, &args.flash_url).await?;
+    let prices = fetch_flash_prices(client, &args.flash_url).await?;
+    let hl_symbols = fetch_hl_meta(client, &args.hl_url).await?;
 
     // Extract market metrics
     let all_metrics = extract_market_metrics(&pools, &prices, &hl_symbols);
@@ -706,7 +706,7 @@ async fn scan_once(
             markets: vec![],
             asset_mapping: build_asset_mapping(&flash_syms, &hl_symbols),
         };
-        write_output(&rankings, &output_path)?;
+        write_output(&rankings, output_path)?;
         return Ok(());
     }
 
@@ -793,7 +793,7 @@ async fn scan_once(
         rankings.asset_mapping.hl_only.len(),
     );
 
-    write_output(&rankings, &output_path)?;
+    write_output(&rankings, output_path)?;
 
     // Edge detection
     if args.edge_detection {

@@ -1679,6 +1679,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "blueprint-cluster-007",
         "blueprint-cluster-008",
         "blueprint-cluster-009",
+        "blueprint-hft-market-maker",
     ]
 }
 
@@ -2067,7 +2068,8 @@ pub fn create_strategy_from_config(
         | "blueprint-cluster-006"
         | "blueprint-cluster-007"
         | "blueprint-cluster-008"
-        | "blueprint-cluster-009" => {
+        | "blueprint-cluster-009"
+        | "blueprint-hft-market-maker" => {
             let cluster_id = name.strip_prefix("blueprint-").unwrap();
             match GenericBlueprintParams::from_cluster(cluster_id) {
                 Ok(params) => {
@@ -2931,7 +2933,7 @@ impl Strategy for DataDrivenMeanRevertStrategy {
 
 /// Entry logic variant, selected by the `strategy_type` field in the blueprint.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-enum BlueprintEntryLogic {
+pub(crate) enum BlueprintEntryLogic {
     /// Momentum velocity exceeding threshold (momentum_scalper)
     Momentum,
     /// SMA deviation + reversal confirmation (mean_reversion)
@@ -3129,6 +3131,7 @@ pub struct GenericBlueprintStrategy {
 
 impl GenericBlueprintStrategy {
     /// Create from a cluster ID (e.g., "cluster-003").
+    #[allow(dead_code)]
     pub fn from_cluster(cluster_id: &str) -> anyhow::Result<Self> {
         let params = GenericBlueprintParams::from_cluster(cluster_id)?;
         Self::from_params(cluster_id, params)
@@ -3245,7 +3248,7 @@ impl GenericBlueprintStrategy {
         if p90 > 0.0 {
             let ratio = p90 / threshold;
             // Only apply if scale factor is significant
-            if ratio > 1.5 || ratio < 0.67 {
+            if !(0.67..=1.5).contains(&ratio) {
                 info!(
                     "[{}] Auto-scaling velocity: {:.3}% → {:.3}% (p90 of {} velocities, original at p{:.0})",
                     self.name, threshold, p90, velocities.len(), percentile
@@ -3326,11 +3329,11 @@ impl GenericBlueprintStrategy {
                 self.spike_state = Some(GenericSpikeDirection::Above);
                 self.reversal_ticks = 0;
             }
-        } else if deviation_pct < -self.params.deviation_threshold_pct {
-            if self.spike_state != Some(GenericSpikeDirection::Below) {
-                self.spike_state = Some(GenericSpikeDirection::Below);
-                self.reversal_ticks = 0;
-            }
+        } else if deviation_pct < -self.params.deviation_threshold_pct
+            && self.spike_state != Some(GenericSpikeDirection::Below)
+        {
+            self.spike_state = Some(GenericSpikeDirection::Below);
+            self.reversal_ticks = 0;
         }
 
         if let Some(ref spike_dir) = self.spike_state {
@@ -3564,20 +3567,18 @@ impl Strategy for GenericBlueprintStrategy {
         }
 
         // 5. Mean return exit (for mean_reversion and grid types)
-        if self.params.entry_logic == BlueprintEntryLogic::MeanReversion
-            || self.params.entry_logic == BlueprintEntryLogic::Grid
+        if (self.params.entry_logic == BlueprintEntryLogic::MeanReversion
+            || self.params.entry_logic == BlueprintEntryLogic::Grid)
+            && let Some(sma) = self.compute_sma(self.params.mean_lookback)
+            && sma > 0.0
         {
-            if let Some(sma) = self.compute_sma(self.params.mean_lookback) {
-                if sma > 0.0 {
-                    let deviation_from_mean = (current_price - sma).abs() / sma * 100.0;
-                    if deviation_from_mean <= self.params.mean_tolerance_pct {
-                        info!(
-                            "[{}] MEAN RETURN: price={:.2}, sma={:.2}, dev={:.2}%",
-                            self.name, current_price, sma, deviation_from_mean
-                        );
-                        return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TakeProfit));
-                    }
-                }
+            let deviation_from_mean = (current_price - sma).abs() / sma * 100.0;
+            if deviation_from_mean <= self.params.mean_tolerance_pct {
+                info!(
+                    "[{}] MEAN RETURN: price={:.2}, sma={:.2}, dev={:.2}%",
+                    self.name, current_price, sma, deviation_from_mean
+                );
+                return Some(exit_signal(ctx.is_long, crate::signal::ExitReason::TakeProfit));
             }
         }
 
@@ -5803,7 +5804,8 @@ mod tests {
     #[test]
     fn test_generic_blueprint_loads_all_clusters() {
         for cluster_id in &["cluster-002", "cluster-003", "cluster-005",
-            "cluster-006", "cluster-007", "cluster-008", "cluster-009"] {
+            "cluster-006", "cluster-007", "cluster-008", "cluster-009",
+            "hft-market-maker"] {
             let params = GenericBlueprintParams::from_cluster(cluster_id)
                 .unwrap_or_else(|e| panic!("Failed to load {}: {}", cluster_id, e));
             assert_eq!(params.source_cluster_id, *cluster_id);
@@ -5817,10 +5819,11 @@ mod tests {
     #[test]
     fn test_generic_blueprint_strategy_names() {
         for cluster_id in &["cluster-002", "cluster-003", "cluster-005",
-            "cluster-006", "cluster-007", "cluster-008", "cluster-009"] {
+            "cluster-006", "cluster-007", "cluster-008", "cluster-009",
+            "hft-market-maker"] {
             let strategy = GenericBlueprintStrategy::from_cluster(cluster_id).unwrap();
             let name = strategy.name();
-            assert!(name.starts_with("blueprint-cluster-"), "name={}", name);
+            assert!(name.starts_with("blueprint-"), "name={}", name);
         }
     }
 
@@ -5829,7 +5832,7 @@ mod tests {
         for name in &["blueprint-cluster-002", "blueprint-cluster-003",
             "blueprint-cluster-005", "blueprint-cluster-006",
             "blueprint-cluster-007", "blueprint-cluster-008",
-            "blueprint-cluster-009"] {
+            "blueprint-cluster-009", "blueprint-hft-market-maker"] {
             let strategy = create_strategy_from_config(name, None, default_params())
                 .unwrap_or_else(|e| panic!("Failed to create {}: {}", name, e));
             assert_eq!(strategy.name(), *name);
@@ -5964,7 +5967,7 @@ mod tests {
         for name in &["blueprint-cluster-002", "blueprint-cluster-003",
             "blueprint-cluster-005", "blueprint-cluster-006",
             "blueprint-cluster-007", "blueprint-cluster-008",
-            "blueprint-cluster-009"] {
+            "blueprint-cluster-009", "blueprint-hft-market-maker"] {
             assert!(strategies.contains(name), "{} should be in available_strategies", name);
         }
     }
@@ -5972,9 +5975,20 @@ mod tests {
     #[test]
     fn test_generic_blueprint_params_validate() {
         for cluster_id in &["cluster-002", "cluster-003", "cluster-005",
-            "cluster-006", "cluster-007", "cluster-008", "cluster-009"] {
+            "cluster-006", "cluster-007", "cluster-008", "cluster-009",
+            "hft-market-maker"] {
             let params = GenericBlueprintParams::from_cluster(cluster_id).unwrap();
             assert!(params.validate().is_ok(), "{} should validate: {:?}", cluster_id, params.validate());
         }
+    }
+
+    #[test]
+    fn test_hft_market_maker_entry_logic_is_grid() {
+        let params = GenericBlueprintParams::from_cluster("hft-market-maker").unwrap();
+        assert_eq!(params.entry_logic, BlueprintEntryLogic::Grid);
+        assert_eq!(params.direction_bias, "neutral");
+        assert!(params.take_profit_pct > 0.0);
+        assert!(params.stop_loss_pct > 0.0);
+        assert!(params.max_hold_secs > 0);
     }
 }

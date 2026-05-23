@@ -1271,9 +1271,9 @@ max_drawdown_pct = 20.0
         let mut price = 90.0;
         for i in 0..120 {
             // Flat for 60 candles, then spike up
-            if i >= 60 && i < 75 {
+            if (60..75).contains(&i) {
                 price += 0.5; // Strong upward momentum
-            } else if i >= 75 && i < 85 {
+            } else if (75..85).contains(&i) {
                 price -= 0.3; // Reversal
             } else {
                 price += (i as f64 * 0.001).sin() * 0.1; // Small noise

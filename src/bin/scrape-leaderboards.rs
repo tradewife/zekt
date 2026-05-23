@@ -1017,6 +1017,7 @@ fn apply_wallet_filters(
 }
 
 /// Main QuickNode wallet discovery pipeline.
+#[allow(clippy::too_many_arguments)]
 async fn scrape_hyperliquid_quicknode(
     client: &Client,
     rate_limiter: &RateLimiter,
@@ -2009,7 +2010,7 @@ mod tests {
     #[test]
     fn test_hl_wallet_sort_by_pnl() {
         let now = Utc::now().to_rfc3339();
-        let mut wallets = vec![
+        let mut wallets = [
             HlWalletOutput {
                 address: "0xlow".to_string(),
                 source: "hyperliquid".to_string(),
@@ -2250,7 +2251,6 @@ mod tests {
 
     #[test]
     fn test_min_pnl_filter() {
-        let now = Utc::now().to_rfc3339();
         let mut wallets = vec![
             make_hl_wallet("0xhigh", 5000.0, 100),
             make_hl_wallet("0xlow", 300.0, 100),

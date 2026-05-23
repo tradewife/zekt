@@ -250,6 +250,7 @@ impl RollingStats {
     }
 
     /// Current price.
+    #[allow(dead_code)]
     fn current_price(&self) -> Option<f64> {
         self.prices.back().copied()
     }
@@ -293,11 +294,13 @@ impl RegimeDetector {
     }
 
     /// Create with default parameters: 288 lookback (24h of 5m candles), SMA 200.
+    #[allow(dead_code)]
     pub fn default_params() -> Self {
         Self::new(288, 200)
     }
 
     /// Load regime fingerprints from all blueprint files in data/blueprints/.
+    #[allow(dead_code)]
     pub fn load_all_fingerprints(&mut self) -> usize {
         let blueprint_dir = std::path::Path::new("data/blueprints");
         if !blueprint_dir.exists() {
@@ -309,23 +312,21 @@ impl RegimeDetector {
         if let Ok(entries) = std::fs::read_dir(blueprint_dir) {
             for entry in entries.flatten() {
                 let path = entry.path();
-                if path.extension().map(|e| e == "json").unwrap_or(false) {
-                    if let Some(name) = path.file_stem().and_then(|n| n.to_str()) {
-                        if name.starts_with("cluster-") {
-                            if let Some(fp) = RegimeFingerprint::from_blueprint_file(name) {
-                                debug!(
-                                    cluster = name,
-                                    vol_range = "{:.1}–{:.1}",
-                                    fp.expected_volatility_low,
-                                    fp.expected_volatility_high,
-                                    trend_bias = format!("{:.2}", fp.trend_bias),
-                                    "Loaded regime fingerprint"
-                                );
-                                self.fingerprints.insert(name.to_string(), fp);
-                                loaded += 1;
-                            }
-                        }
-                    }
+                if path.extension().map(|e| e == "json").unwrap_or(false)
+                    && let Some(name) = path.file_stem().and_then(|n| n.to_str())
+                    && name.starts_with("cluster-")
+                    && let Some(fp) = RegimeFingerprint::from_blueprint_file(name)
+                {
+                    debug!(
+                        cluster = name,
+                        vol_range = "{:.1}–{:.1}",
+                        fp.expected_volatility_low,
+                        fp.expected_volatility_high,
+                        trend_bias = format!("{:.2}", fp.trend_bias),
+                        "Loaded regime fingerprint"
+                    );
+                    self.fingerprints.insert(name.to_string(), fp);
+                    loaded += 1;
                 }
             }
         }
@@ -335,6 +336,7 @@ impl RegimeDetector {
     }
 
     /// Add a fingerprint manually.
+    #[allow(dead_code)]
     pub fn add_fingerprint(&mut self, fp: RegimeFingerprint) {
         self.fingerprints.insert(fp.cluster_id.clone(), fp);
     }
@@ -387,6 +389,7 @@ impl RegimeDetector {
     }
 
     /// Compute the current regime label from rolling statistics.
+    #[allow(dead_code)]
     fn compute_label(&self, stats: &RollingStats) -> RegimeLabel {
         let vol = stats.volatility();
         let trend = stats.trend_strength();
@@ -486,6 +489,7 @@ impl RegimeDetector {
     }
 
     /// Get current volatility for a market.
+    #[allow(dead_code)]
     pub fn volatility(&self, market: &str) -> f64 {
         self.stats
             .get(market)
@@ -494,6 +498,7 @@ impl RegimeDetector {
     }
 
     /// Get current ATR percentile for a market.
+    #[allow(dead_code)]
     pub fn atr_percentile(&self, market: &str) -> f64 {
         let history = match self.atr_history.get(market) {
             Some(h) if !h.is_empty() => h,
@@ -511,6 +516,7 @@ impl RegimeDetector {
     }
 
     /// Get current trend strength for a market.
+    #[allow(dead_code)]
     pub fn trend_strength(&self, market: &str) -> f64 {
         self.stats
             .get(market)
@@ -519,6 +525,7 @@ impl RegimeDetector {
     }
 
     /// Get snapshot of current regime state for a market.
+    #[allow(dead_code)]
     pub fn snapshot(&self, market: &str) -> RegimeSnapshot {
         RegimeSnapshot {
             market: market.to_string(),
@@ -533,6 +540,7 @@ impl RegimeDetector {
 
 /// Snapshot of current regime state for a market.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[allow(dead_code)]
 pub struct RegimeSnapshot {
     pub market: String,
     pub regime: RegimeLabel,
@@ -741,7 +749,7 @@ mod tests {
         }
 
         let pct = detector.atr_percentile("BTC");
-        assert!(pct >= 0.0 && pct <= 100.0, "Percentile should be 0-100, got {}", pct);
+        assert!((0.0..=100.0).contains(&pct), "Percentile should be 0-100, got {}", pct);
     }
 
     #[test]

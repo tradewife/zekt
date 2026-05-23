@@ -103,6 +103,7 @@ fn json_bool(v: &serde_json::Value) -> bool {
 
 /// Parsed wallet metrics extracted from the raw JSON.
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 struct ParsedWallet {
     address: String,
     avg_leverage: f64,
@@ -250,8 +251,7 @@ fn order_param(sort_by: &str, period: u32) -> String {
             format!("-{}", field)
         }
         "dd" => {
-            let field = period_field(period, "dd");
-            field // ascending = smallest drawdown first
+            period_field(period, "dd") // ascending = smallest drawdown first
         }
         _ => {
             // "sharpe" default
@@ -428,7 +428,7 @@ async fn main() -> Result<()> {
         let fetched = results.len();
         let parsed: Vec<ParsedWallet> = results
             .iter()
-            .filter_map(|v| ParsedWallet::from_json(v))
+            .filter_map(ParsedWallet::from_json)
             .collect();
         info!(fetched, parsed = parsed.len(), cumulative = all_wallets.len() + parsed.len(), "Page fetched");
 
@@ -447,7 +447,7 @@ async fn main() -> Result<()> {
     // Client-side filter: min trades (API doesn't support this filter directly)
     if args.min_trades > 0 {
         let before = all_wallets.len();
-        all_wallets.retain(|w| w.calc_count(args.period) >= args.min_trades as u64);
+        all_wallets.retain(|w| w.calc_count(args.period) >= args.min_trades);
         let after = all_wallets.len();
         if before != after {
             info!(before, after, "Applied min_trades={}", args.min_trades);
@@ -553,11 +553,11 @@ async fn main() -> Result<()> {
     }
 
     // Atomic write
-    if let Some(parent) = output_path.parent() {
-        if !parent.exists() {
-            fs::create_dir_all(parent)
-                .context(format!("Failed to create directory: {}", parent.display()))?;
-        }
+    if let Some(parent) = output_path.parent()
+        && !parent.exists()
+    {
+        fs::create_dir_all(parent)
+            .context(format!("Failed to create directory: {}", parent.display()))?;
     }
 
     let tmp_path = output_path.with_extension("json.tmp");
