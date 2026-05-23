@@ -37,6 +37,8 @@ path = "src/bin/whale-watcher.rs"
 [dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.26", features = ["rustls-tls-webpki-roots"] }
+futures-util = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
