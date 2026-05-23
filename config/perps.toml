@@ -254,3 +254,85 @@ max_drawdown_pct = 15.0
 # With 4 strategies × 2 markets, each at ~$3000, total could reach $24,000+.
 # Set a cap to prevent excessive exposure from accumulating.
 max_total_notional_usd = 100000.0
+
+# =============================================================================
+# ALPHA SCANNER — Wallet discovery configuration
+# =============================================================================
+
+[alpha-scanner]
+# Dextrabot discover-wallets API base URL
+dextrabot_url = "https://dextradata.nftinit.io"
+# Minimum 7-day Sharpe ratio for wallet candidates
+min_sharpe_7d = 1.5
+# Minimum 30-day Sharpe ratio for wallet candidates
+min_sharpe_30d = 2.0
+# Minimum 30-day PnL in USD for wallet candidates
+min_pnl_30d = 5000
+# Number of top wallets to include in watchlist
+watchlist_size = 20
+# Daemon refresh interval in seconds (6 hours)
+refresh_interval_secs = 21600
+# Output file path for ranked watchlist JSON
+output_path = "data/watchlist.json"
+
+# =============================================================================
+# COPY TRADER — Position mirroring configuration
+# =============================================================================
+
+[copy-trader]
+# Polling interval for wallet position checks (seconds)
+poll_interval_secs = 30
+# Maximum position size as percentage of account balance
+max_position_pct = 10.0
+# Maximum number of concurrent mirrored positions
+max_positions = 3
+# Stop-loss percentage for mirrored positions
+stop_loss_pct = 5.0
+# Delay before mirroring a detected position (seconds)
+lag_secs = 30
+# Position sizing multiplier: our_size = whale_size * multiplier
+sizing_multiplier = 0.1
+# Output file path for copy trade log JSON
+output_path = "data/copy-trades.json"
+
+# =============================================================================
+# WHALE WATCHER — Real-time whale monitoring configuration
+# =============================================================================
+
+[whale-watcher]
+# Minimum position notional (USD) to trigger an alert
+min_notional_usd = 10000
+# Window for alert accuracy follow-up check (seconds, 1h)
+accuracy_window_secs = 3600
+# Output file path for whale alerts JSON
+output_path = "data/whale-alerts.json"
+
+# =============================================================================
+# HYPURRSCAN — API configuration
+# =============================================================================
+
+[hypurrscan]
+# Environment variable name holding the JWT token
+jwt_env_var = "HYPURRSCAN_JWT"
+# Environment variable name holding the refresh token
+refresh_token_env_var = "HYPURRSCAN_REFRESH_TOKEN"
+# Hypurrscan API base URL
+base_url = "https://api.hypurrscan.io"
+# JWT refresh endpoint URL
+refresh_url = "https://hypurrscan.io/api/auth/refresh"
+
+# =============================================================================
+# FUNDING RATE CAPTURE STRATEGY
+# =============================================================================
+
+[strategy.funding-capture]
+# Minimum annualized funding rate (%) to trigger entry
+min_annualized_rate_pct = 20.0
+# Exit when annualized funding rate drops below this (%)
+exit_annualized_rate_pct = 5.0
+# Maximum position hold time (hours)
+max_position_hours = 72
+# Leverage for funding capture positions
+leverage = 1.0
+# Position clip size in USD
+clip_size_usd = 200.0

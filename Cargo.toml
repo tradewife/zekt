@@ -26,6 +26,14 @@ path = "src/bin/scan-markets.rs"
 name = "alpha-scanner"
 path = "src/bin/alpha-scanner.rs"
 
+[[bin]]
+name = "copy-trader"
+path = "src/bin/copy-trader.rs"
+
+[[bin]]
+name = "whale-watcher"
+path = "src/bin/whale-watcher.rs"
+
 [dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }
@@ -74,3 +82,6 @@ opt-level = 3
 lto = true
 strip = true
 panic = "abort"
+
+[dev-dependencies]
+tempfile = "3"
