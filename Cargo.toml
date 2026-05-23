@@ -22,6 +22,10 @@ path = "src/bin/analyze-wallet.rs"
 name = "scan-markets"
 path = "src/bin/scan-markets.rs"
 
+[[bin]]
+name = "alpha-scanner"
+path = "src/bin/alpha-scanner.rs"
+
 [dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }
