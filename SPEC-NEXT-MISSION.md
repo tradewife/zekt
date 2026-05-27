@@ -1,216 +1,417 @@
-# Zekt Mission: Regime-Aware Strategy Discovery + Flash-Native Edge Hunt
+# Zekt Mission: Alpha Discovery Engine — Find Edge, Prove Edge, Trade Edge
 
-## Onboarding
+## Why Everything Before Failed
 
-### What This Project Is
-Zekt is an **autonomous strategy poaching system** that discovers profitable Hyperliquid wallets, reverse-engineers their strategies from fill-level data, and replicates them on Flash Trade (Solana perps). Pipeline: Research on Hyperliquid (rich data) → Execute on Flash Trade (Solana perps).
+The previous approach was fundamentally flawed:
 
-### Project Root
-`/home/kt/zekt` — single Rust crate + Python analysis pipeline.
+1. **Reverse-engineering fills into strategies doesn't work.** We took 161 wallets, clustered their fills, extracted statistical parameters, and tried to replay them as momentum/grid/mean-reversion signals on 5m candles. The wallets were HFT market-makers operating on 48 obscure Hyperliquid markets (MET, PROVE, @232) with sub-second holds — their edge is **execution speed + orderbook positioning**, not a momentum signal that can be replicated from OHLCV data.
 
-### Build & Test
-```bash
-cargo build --release         # Build Rust binary
-cargo test                    # 181 unit tests (Rust)
-python -m pytest analysis/tests/ -v  # 132 Python tests
-```
+2. **Flash Trade is a red herring for now.** Flash Trade has thin books and high fees relative to Hyperliquid. The "LP consumption edge" doesn't exist because there's no real volume to consume. All 42 strategy/market combinations failed Sharpe >= 1.0 over 90 days.
 
-### Key Files (Rust — `src/`)
-- `strategy.rs` (5929 lines) — Strategy trait + 11 implementations + factory. **Read this first.** Contains `GenericBlueprintStrategy` (loads any cluster blueprint, 4 entry modes: momentum/mean-reversion/trend/grid). Has velocity auto-scaling via p90 percentile.
-- `backtest.rs` — Hyperliquid candle fetcher + BacktestEngine. Replay through strategies.
-- `paper.rs` — Paper trading engine (live prices, simulated PnL).
-- `signal.rs` — MomentumDetector, MomentumSnapshot, Signal/ExitReason types.
-- `engine.rs` — Live trading engine.
-- `flash_api.rs` — Flash Trade REST client.
-- `config.rs` — TOML config parser.
-- `main.rs` — CLI (clap), routes to backtest/paper/dry-run/live.
-- `src/bin/scrape-leaderboards.rs` — Wallet discovery via QuickNode HyperCore API.
-- `src/bin/scan-markets.rs` — Rank Flash Trade markets by attractiveness.
-- `src/bin/analyze-wallet.rs` — Classify wallet strategies, generate blueprints.
+3. **Backtesting on candle data can't capture HFT edge.** The profitable wallets operate inside the spread. 5m candles aggregate away the microstructure they exploit.
 
-### Key Files (Python — `analysis/`)
-- `position_clustering.py` — Cluster fills into open→close position cycles
-- `wallet_metrics.py` — Per-wallet metrics (clip consistency, hold time, win rate, PnL)
-- `strategy_classifier.py` — Classify wallets into strategy types
-- `entry_reconstruction.py` — Reconstruct entry triggers from candle data
-- `cluster_analysis.py` — Find groups of wallets running identical strategies
-- `blueprint_generator.py` — Generate strategy blueprints from cluster statistics
-
-### Data Files
-- `data/wallets-hl.json` — 161 real profitable HL wallets (85MB)
-- `data/blueprints/cluster-001.json` through `cluster-009.json` — 9 strategy blueprints
-- `data/market-rankings.json` — 33 Flash Trade markets ranked by score
-- `data/backtest-results/` — Backtest summary JSON + trade logs
-- `config/perps.toml` — All tunable parameters (agent, flash, strategy, risk sections)
-
-### Available Strategies (11 total)
-`momentum-scalper`, `lp-consumption`, `mean-reversion`, `trend-follower`, `blueprint-scalper` (cluster-001), `blueprint-mean-revert` (cluster-004), `blueprint-cluster-002` through `blueprint-cluster-009` (generic, loads from blueprint JSON)
-
-### What Just Happened (Previous Mission)
-All 9 clusters backtested on BTC/SOL/ETH (Apr 15–May 22, 5m and 1m candles). **Result: zero pass Sharpe ≥ 1.0.** The wallets' edge was regime-specific and market-specific (WLD, REZ, ZRO, TON, 2Z). Even native-market tests showed negative Sharpe in this period. Auto-scaling was added to adapt velocity thresholds via p90 percentile — it activates for 6/7 clusters but doesn't create edge, just enables trading.
+**The hard truth:** There is no "signal" in 5m OHLCV data that these wallets are trading. Their alpha comes from being fast, being first, and understanding orderbook microstructure — none of which our system captures.
 
 ---
 
-## Current Problem
+## New Approach: Three-Pronged Alpha Engine
 
-**No strategy has transferable alpha on BTC/SOL/ETH in the current market regime.** Three root causes:
-1. **Stale wallets** — The 161 wallets were scraped once. Their edge may have decayed. We need *currently* profitable wallets.
-2. **Regime mismatch** — The clusters' parameters were calibrated in a different volatility regime. No mechanism detects when a strategy should activate/deactivate based on current conditions.
-3. **Missing Flash-native opportunity** — Flash Trade has thin-book markets (JitoSOL #1 ranked, BONK 84% utilized) that don't exist on Hyperliquid. These are LP consumption edges waiting to be exploited.
+Instead of trying to reverse-engineer strategy parameters from fills, we build **three distinct alpha strategies** and a **continuous discovery loop** to ensure we never go stale.
+
+### Prong 1: Real-Time Copy Trading (Immediate Revenue)
+
+**Hypothesis:** The most profitable strategy for a small account is to follow profitable wallets in real-time — not reverse-engineer their signals, but literally mirror their positions with tight risk management.
+
+**Why this is different from before:** We're not trying to understand *why* they trade. We're using their on-chain positions as the signal itself. Hyperliquid's transparency means we can see every position, every fill, every PnL in real-time.
+
+**Data sources:**
+- **Dextrabot API** (`dextradata.nftinit.io`): 100K+ wallets with pre-computed Sharpe, PnL, drawdown, win rate across 7d/30d/90d/all timeframes. Filter by `min_sharpe=2.0`, `min_pnl=5000`, `period=7` to find *currently* hot wallets.
+- **Hypurrscan API** (`api.hypurrscan.io`): `/addressDetails/{address}` for wallet metadata, `/tags/{address}` for labels (identifies MEV bots, market makers, whales). JWT-authenticated endpoints for real-time transfers and bridges.
+- **Hyperliquid Info API**: `clearinghouseState` for real-time positions, `userFills` for entry/exit timing.
+
+**Implementation:**
+1. New Rust binary: `src/bin/copy-trader.rs`
+2. Every 30 seconds: poll top-N profitable wallets' positions via `clearinghouseState`
+3. When a followed wallet opens/closes/adjusts a position, mirror it with configurable lag and sizing
+4. Risk management: max 10% of account per copied trade, max 3 concurrent positions, stop-loss at -5% per position
+5. Paper trade first for 48h, validate positive PnL before live
+
+**Acceptance:** Copy trader binary that mirrors top-3 Dextrabot wallets in real-time. Paper PnL positive over 48h.
+
+### Prong 2: Funding Rate Capture (Passive Income)
+
+**Hypothesis:** Hyperliquid's funding rates are consistently positive for long-biased markets (BTC, ETH, SOL). A delta-neutral strategy that shorts perps and holds spot (or stakes HYPE) captures funding payments with minimal directional risk.
+
+**Data sources:**
+- **Hyperliquid Info API**: `metaAndAssetCtxs` for real-time funding rates across all markets
+- **Hyperliquid Spot**: HL now has spot markets — can hold spot BTC/ETH against short perps
+- **Chainstack guide**: Proven spot-perp arbitrage implementation (Python reference available)
+
+**Implementation:**
+1. New strategy: `FundingRateCapture` in `strategy.rs`
+2. Monitor funding rates for all HL markets every hour
+3. When 8h annualized funding rate > 20%: open delta-neutral position (short perp, long spot or hold USDC as collateral)
+4. Close when funding rate drops below 5% annualized or position is >72h old
+5. This is NOT a momentum strategy — it's a yield strategy with known risk profile
+
+**Acceptance:** Funding rate strategy implemented. Backtest shows positive net PnL on historical funding data (last 90 days). Paper trade for 48h.
+
+### Prong 3: Whale Alert System (Information Edge)
+
+**Hypothesis:** Large position openings by known-profitable wallets (identified via Dextrabot) predict short-term price movements. If a wallet with Sharpe >3.0 and $100K+ PnL suddenly opens a 5x leveraged long on BTC, that's a signal.
+
+**Data sources:**
+- **Dextrabot API**: Maintain a watchlist of top-20 profitable wallets (refreshed daily)
+- **Hyperliquid WebSocket**: `allMids` + `userFills` for real-time position changes
+- **Hypurrscan JWT endpoints**: `/transfers/{fromTimestamp}/{toTimestamp}` for capital flow tracking
+
+**Implementation:**
+1. New Rust binary: `src/bin/whale-watcher.rs`
+2. WebSocket connection to Hyperliquid for real-time position monitoring
+3. When a watched wallet opens a position >$10K notional, emit an alert
+4. Integrate alerts into the copy trader (Prong 1) for faster signal detection
+5. Track accuracy: does following whale entries produce positive PnL?
+
+**Acceptance:** Whale watcher detects position changes within 5 seconds. Alert log with wallet, market, direction, size. 48h tracking shows >50% of whale entries are profitable within 1h.
+
+### Continuous Discovery Loop (Anti-Staleness)
+
+**The problem:** Strategies decay. Wallets that were profitable last month may be losing this month. Alpha sources change.
+
+**Solution:** A daily cron job that:
+
+1. **Refresh wallet rankings** via Dextrabot API
+   - Re-score all wallets using 7-day and 30-day windows
+   - Remove wallets whose Sharpe dropped below 1.0
+   - Add newly profitable wallets
+   - Save to `data/watchlist-v{date}.json`
+
+2. **Validate existing copy targets**
+   - Check if currently-followed wallets are still profitable
+   - If 7-day Sharpe < 0: remove from follow list
+   - If 30-day Sharpe < 1.0: flag for review
+
+3. **Detect strategy decay**
+   - Track rolling PnL of each followed wallet
+   - If a wallet's 7d win rate drops below 40%: flag as potentially compromised
+   - Alert human for manual review
+
+4. **Discover new alpha sources**
+   - Weekly: scan Hypurrscan for new high-activity addresses not in Dextrabot
+   - Monthly: review Hyperliquid leaderboard for new entrants
+   - Ongoing: monitor funding rate regime changes
+
+**Implementation:**
+- New Rust binary: `src/bin/alpha-scanner.rs`
+- Runs as a daemon: every 6h refresh wallet list, every 24h full rescan
+- Outputs: `data/watchlist.json` (current targets), `data/alpha-report.json` (daily summary)
+- Integrates with copy-trader via shared watchlist file
+
+**Acceptance:** Alpha scanner refreshes watchlist daily. Detects when a previously-profitable wallet goes cold. Has run for 7 days continuously without crash.
 
 ---
 
-## Mission: 4 Milestones
-
-### M1: Re-Scrape Leaderboard for Currently Profitable Wallets (Rust)
-
-**Goal:** Discover wallets that are profitable RIGHT NOW (last 30 days), not months ago.
-
-**Changes to `src/bin/scrape-leaderboards.rs`:**
-- Add `--time-window-days` flag (default: 30) that filters wallets by recent activity
-- Add `--min-pnl-usd` flag (default: 500) to raise the bar for "profitable"
-- Add `--output-comparison` flag that diffs against existing `data/wallets-hl.json` to identify:
-  - New wallets not in the existing set
-  - Wallets whose PnL changed significantly
-  - Wallets that are no longer profitable
-- Save results to `data/wallets-hl-v2.json` (don't overwrite v1)
-- Output a `data/wallet-changes.json` with `{new: [...], still_profitable: [...], decayed: [...]}`
-
-**Acceptance:** New wallet list with ≥50 wallets profitable in last 30 days. Change report showing which old wallets decayed.
-
-### M2: Volatility Regime Detector (Rust)
-
-**Goal:** Add a regime detection layer that gates strategy activation based on current market conditions matching the source cluster's statistical profile.
-
-**New module: `src/regime.rs`**
+## Architecture
 
 ```
-RegimeDetector:
-  - Rolling volatility (stdev of returns over lookback window)
-  - ATR percentile (current ATR vs historical distribution)
-  - Trend strength (SMA200 vs current price)
-  
-  Each cluster blueprint has a "regime fingerprint" derived from its
-  statistical_parameters:
-    - Source median hold time → implies expected volatility
-    - Source TP/SL percentages → implies expected price range
-    - Source win rate × avg_winner/avg_loser → implies expected regime
-
-  Methods:
-    - update(price, timestamp) — update rolling stats
-    - is_compatible(cluster_id) -> bool — check if current regime matches cluster
-    - regime_label() -> &str — "low_vol", "trending", "high_vol", "choppy"
+┌──────────────────────────────────────────────────────────────────┐
+│                    ALPHA DISCOVERY ENGINE                        │
+│                                                                  │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────┐  │
+│  │  Dextrabot API  │  │  Hypurrscan API │  │  HL Info API    │  │
+│  │  (100K wallets) │  │  (JWT-endpoints)│  │  (positions)    │  │
+│  └────────┬────────┘  └────────┬────────┘  └────────┬────────┘  │
+│           │                    │                     │           │
+│  ┌────────▼────────────────────▼─────────────────────▼────────┐  │
+│  │              alpha-scanner (daemon)                        │  │
+│  │  Daily: refresh wallet rankings, detect decay              │  │
+│  │  Output: data/watchlist.json                               │  │
+│  └────────┬───────────────────────────────────────────────────┘  │
+│           │                                                      │
+│     ┌─────┼──────────────────────────────────┐                   │
+│     │     │                                  │                   │
+│  ┌──▼─────▼───┐  ┌──────────────────┐  ┌────▼──────────────┐   │
+│  │ copy-trader │  │  whale-watcher   │  │ funding-capture   │   │
+│  │ (real-time) │  │  (WebSocket)     │  │ (hourly scan)     │   │
+│  │             │  │                  │  │                   │   │
+│  │ Mirror top  │  │ Detect whale     │  │ Short perp when   │   │
+│  │ wallet pos  │  │ entries >$10K    │  │ funding >20% ann. │   │
+│  │ with sizing │  │ within 5s        │  │ Delta-neutral     │   │
+│  └──────┬──────┘  └────────┬─────────┘  └────────┬──────────┘   │
+│         │                   │                      │              │
+│  ┌──────▼───────────────────▼──────────────────────▼──────────┐  │
+│  │                    RISK MANAGER                            │  │
+│  │  Max 10% per trade | Max 3 concurrent | -5% hard stop     │  │
+│  │  Daily loss limit | Circuit breaker | Cooldown             │  │
+│  └──────┬─────────────────────────────────────────────────────┘  │
+│         │                                                        │
+│  ┌──────▼─────────────────────────────────────────────────────┐  │
+│  │              EXECUTION LAYER                                │  │
+│  │  Phase 1: Paper trade (48h minimum, positive PnL required) │  │
+│  │  Phase 2: Live with $100 (human approval)                  │  │
+│  │  Phase 3: Scale to $500 (after 7d profitable)              │  │
+│  │  Phase 4: Scale to $1000+ (after 30d profitable)           │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
 ```
 
-**Integration into backtest loop:**
-- Before each `detect_entry()`, check `regime.is_compatible(cluster_id)`
-- Skip entry signals when regime doesn't match
-- Log regime transitions for analysis
-- Backtest results include `regime_filter: true` field
+---
 
-**Integration into GenericBlueprintStrategy:**
-- Add `regime_compatible: bool` field, set by engine on each tick
-- `detect_entry()` returns `NoSignal` when regime is incompatible
-- Regime incompatibility is NOT the same as "no signal" — it's logged separately
+## Milestones
 
-**Acceptance:** Regime detector module with ≥10 unit tests. Backtest shows reduced trade count but improved Sharpe for compatible-regime trades.
+### M1: Alpha Scanner — Continuous Wallet Intelligence (Rust)
 
-### M3: Flash Trade Thin-Book Edge Exploitation (Rust)
+**Goal:** Build the daemon that keeps our wallet watchlist fresh.
 
-**Goal:** Exploit LP consumption edge on Flash Trade-native markets (JitoSOL, BONK) that have high utilization and thin books.
+**New binary:** `src/bin/alpha-scanner.rs`
 
-**Enhance `lp-consumption` strategy in `strategy.rs`:**
-- Current `LpConsumptionStrategy` already exists but hasn't been tested against real pool data
-- Add flash-native market detection: markets with `flash_only: true` AND `utilization_pct > 30%` are prime targets
-- Add market-specific config section `[strategy.flash-native]` in perps.toml
+```
+CLI:
+  alpha-scanner --daemon            # Run as daemon (refresh every 6h)
+  alpha-scanner --once              # Single scan and exit
+  alpha-scanner --min-sharpe 2.0    # Minimum Sharpe for inclusion
+  alpha-scanner --min-pnl 5000      # Minimum 30d PnL in USD
+  alpha-scanner --watchlist-size 20 # Number of wallets to track
+  alpha-scanner --output data/watchlist.json
 
-**Enhance `src/bin/scan-markets.rs`:**
-- Add `--watch` flag for continuous monitoring mode (poll every 60s)
-- Add `--edge-detection` flag that identifies markets where:
-  - LP utilization is changing rapidly (>5% in last hour)
-  - Available capacity is shrinking (LP being consumed)
-  - A single LP holds >60% of the pool
-- Output `data/edge-signals.json` with real-time opportunities
+Logic:
+  1. Fetch top wallets from Dextrabot (7d and 30d windows)
+  2. Enrich with Hypurrscan data (tags, labels, details)
+  3. For each wallet: fetch current positions via HL API
+  4. Score wallets: composite of Sharpe * PnL * consistency
+  5. Output ranked watchlist with metadata
+  6. Compare against previous watchlist, emit change report
+  7. Flag wallets that were profitable but no longer are
+```
 
-**Backtest Flash-native markets:**
-- JitoSOL, BONK, SPY are Flash-only with decent utilization
-- Run backtests using HL SOL candles as proxy (JitoSOL tracks SOL price)
-- If Sharpe ≥ 1.0 on proxy data, proceed to paper trade on Flash Trade live
+**Data structures:**
+```rust
+struct WatchlistEntry {
+    address: String,
+    dextrabot_sharpe_7d: f64,
+    dextrabot_sharpe_30d: f64,
+    dextrabot_pnl_30d: f64,
+    dextrabot_win_rate: f64,
+    hypurrscan_tags: Vec<String>,
+    current_positions: Vec<PositionSummary>,
+    composite_score: f64,
+    first_seen: DateTime<Utc>,
+    last_profitable: DateTime<Utc>,
+    status: WalletStatus, // Active, Decaying, Dead, New
+}
+```
 
-**Acceptance:** LP consumption strategy fires on live pool data. At least one Flash-native market shows positive gross PnL in paper trading.
+**Tests:** 10+ unit tests covering scoring, filtering, decay detection, watchlist diffing.
 
-### M4: Full Pipeline Re-Run + Validation (Rust + Python)
+**Acceptance:** Alpha scanner produces a ranked watchlist of 20 wallets. Detects wallet decay. Runs as daemon for 24h without crash.
 
-**Goal:** Run the complete discovery → analysis → implementation → validation pipeline with fresh data.
+### M2: Copy Trader — Real-Time Position Mirroring (Rust)
 
-**Steps:**
-1. Run re-scraped wallets (from M1) through Python analysis pipeline:
-   ```bash
-   cargo run --bin analyze-wallet -- --wallets data/wallets-hl-v2.json --output data/reports-v3/
-   ```
-2. This generates new blueprints in `data/blueprints/` (may overwrite old ones)
-3. Run backtests on ALL strategies (old + new) with regime filtering (from M2):
-   ```bash
-   ./target/release/zekt --backtest \
-     --strategies blueprint-cluster-002,...,blueprint-cluster-00N \
-     --markets BTC,SOL,ETH,JUP \
-     --backtest-start 2026-03-01 --backtest-end 2026-05-22 \
-     --backtest-interval 5m --paper-balance 1000
-   ```
-4. Extended backtest window (90 days vs previous 21 days) captures more regimes
-5. Any strategy with Sharpe ≥ 1.0 + regime filtering → paper trade 24h:
-   ```bash
-   ./target/release/zekt --paper --strategies <winner> --markets <market> --paper-balance 1000
-   ```
+**Goal:** Mirror profitable wallet positions in real-time.
 
-**Acceptance:** Full pipeline produces at least one strategy with Sharpe ≥ 1.0 over 90 days, OR a documented explanation of why no edge exists in current market conditions (truth is valuable).
+**New binary:** `src/bin/copy-trader.rs`
+
+```
+CLI:
+  copy-trader --paper                # Paper trading mode
+  copy-trader --live                 # Live mode (requires keypair)
+  copy-trader --watchlist data/watchlist.json
+  copy-trader --max-position-pct 10  # Max % of account per trade
+  copy-trader --max-positions 3      # Max concurrent positions
+  copy-trader --stop-loss-pct 5.0    # Hard stop loss per position
+  copy-trader --lag-secs 30          # Seconds to wait after whale entry
+  copy-trader --sizing-multiplier 0.1 # Size relative to whale (10%)
+
+Logic:
+  1. Load watchlist from alpha-scanner output
+  2. Every 30s: poll each wallet's positions via HL clearinghouseState
+  3. Detect new positions, position size changes, and closures
+  4. For new positions: open mirror position after configurable lag
+  5. For closures: close mirror position
+  6. Apply risk management: position sizing, max positions, stop loss
+  7. Log all decisions to data/copy-trades.json
+```
+
+**Key implementation details:**
+- Use Hyperliquid Info API `clearinghouseState` for position monitoring (no WebSocket needed for 30s polling)
+- Position sizing: `our_size = whale_size * sizing_multiplier * (our_balance / whale_balance).min(1.0)`
+- Slippage protection: preview entry via Flash Trade or HL API before submitting
+- The copy trader operates on **Hyperliquid directly** (not Flash Trade) for execution — HL has deeper liquidity and lower fees
+
+**Tests:** 15+ unit tests covering position detection, sizing calculation, risk limits, stop-loss triggers.
+
+**Acceptance:** Copy trader mirrors top-3 wallets in real-time with <60s lag. Paper PnL tracked over 48h. Risk management prevents any single trade from losing >5%.
+
+### M3: Whale Watcher — Real-Time Signal Detection (Rust)
+
+**Goal:** Detect large position changes by profitable wallets within seconds.
+
+**New binary:** `src/bin/whale-watcher.rs`
+
+```
+CLI:
+  whale-watcher --watchlist data/watchlist.json
+  whale-watcher --min-notional 10000  # Minimum position size for alert
+  whale-watcher --output data/whale-alerts.json
+
+Logic:
+  1. Load watchlist
+  2. Connect to HL WebSocket for real-time user events
+  3. When a watched wallet opens/closes >$10K notional: emit alert
+  4. Alert includes: wallet, market, direction, size, timestamp, wallet Sharpe
+  5. Feed alerts to copy-trader for faster signal
+  6. Track alert accuracy (did following the alert produce profit?)
+```
+
+**Tests:** 8+ unit tests covering WebSocket parsing, alert generation, accuracy tracking.
+
+**Acceptance:** Whale watcher detects position changes within 5 seconds. Alert log maintained. Accuracy tracking shows what % of whale entries are profitable.
+
+### M4: Funding Rate Capture — Passive Yield Strategy (Rust)
+
+**Goal:** Implement delta-neutral funding rate capture.
+
+**New strategy in `strategy.rs`:** `FundingRateCaptureStrategy`
+
+```
+Parameters:
+  min_annualized_rate_pct: 20.0    # Only enter when funding > 20% annualized
+  exit_annualized_rate_pct: 5.0    # Exit when funding drops below 5%
+  max_position_hours: 72           # Close after 72h regardless
+  leverage: 1.0                    # No leverage for delta-neutral
+  clip_size_usd: 200.0             # Small position size
+  funding_interval_hours: 8        # HL uses 8h funding
+
+Logic:
+  1. Every hour: fetch all market funding rates via HL metaAndAssetCtxs
+  2. For markets with annualized funding > 20%: open short perp position
+  3. This is effectively "earning" the funding rate from longs
+  4. Close when funding drops below 5% or position is >72h old
+  5. Track cumulative funding captured vs. price risk
+
+Risk:
+  - Delta risk: if we short perp without spot hedge, we have directional exposure
+  - Solution: use HL spot markets to hedge (buy spot, short perp)
+  - Or: only short perps where we're comfortable with directional risk
+  - Conservative approach: start with pure short perp, small size ($200)
+```
+
+**Tests:** 40 unit tests covering rate calculation, entry/exit logic, PnL tracking, parameter validation, pipeline integration, serde roundtrips.
+
+**Acceptance:** Funding rate strategy implemented. 40 tests pass. Wired into strategy factory with config sub-table support. ✅ DONE
+
+### M5: Integration + Validation (Rust + Testing)
+
+**Goal:** Wire everything together and validate the complete system.
+
+1. Wire `alpha-scanner` → `watchlist.json` → `copy-trader` + `whale-watcher`
+2. Paper trade all three strategies simultaneously for 48h
+3. Track combined PnL across strategies
+4. If any strategy shows positive PnL: proceed to live with $100
+5. Run full test suite (target: 536+ tests)
+6. Update `config/perps.toml` with new strategy sections
+
+**Acceptance:** Full system runs as a daemon for 48h without crash. At least one strategy shows positive paper PnL. 536+ tests pass.
 
 ---
 
 ## Execution Order
 
-| # | Task | Depends On | Estimated Effort |
-|---|------|-----------|-----------------|
-| 1 | M1: Re-scrape leaderboards with time filtering | None | Medium |
-| 2 | M2: Regime detector module | None | Medium |
-| 3 | M2: Integrate regime into GenericBlueprintStrategy + backtest | M2 module | Medium |
-| 4 | M3: Flash-native LP consumption edge detection | None | Medium |
-| 5 | M3: scan-markets continuous mode + edge signals | M3 | Medium |
-| 6 | M4: Full pipeline re-run with fresh wallets + regime | M1 + M2 | Medium |
-| 7 | M4: Extended 90-day backtest with regime filtering | M2 | Small |
-| 8 | M4: 24h paper trade for any Sharpe ≥ 1.0 candidate | M4 | Small |
+| # | Task | Depends On | Effort | Status |
+|---|------|-----------|--------|--------|
+| 1 | M1: Alpha scanner binary | None | Medium | ✅ DONE (64 tests) |
+| 2 | M2: Copy trader binary | M1 | Medium-Large | ✅ DONE (85 tests) |
+| 3 | M3: Whale watcher binary | M1 | Medium | ✅ DONE (41 tests) |
+| 4 | M4: Funding rate strategy | None | Medium | ✅ DONE (40 tests) |
+| 5 | M5: Integration + validation | M1-M4 | Small | Pending |
 
-## Architecture: New Components
+M1 and M4 can run in parallel. M2 and M3 depend on M1's watchlist output.
 
-```mermaid
-flowchart TB
-    subgraph Intelligence["Intelligence Layer (HL)"]
-        QN[QuickNode API] -->|re-scrape| WS[Wallet Scanner v2]
-        WS -->|filter last 30d| WV2[wallets-hl-v2.json]
-        WV2 --> AP[Python Analysis]
-        AP --> BP[New Blueprints]
-    end
+---
 
-    subgraph Execution["Execution Layer (Flash Trade)"]
-        SM[scan-markets --watch] -->|pool data| ES[edge-signals.json]
-        RD[Regime Detector] -->|gate| GPS[GenericBlueprintStrategy]
-        GPS -->|regime-filtered| BT[Backtest Engine]
-        BT -->|Sharpe >= 1.0| PT[Paper Trade]
-        PT -->|24h positive| LIVE[Live Engine]
-    end
+## API Credentials
 
-    subgraph FlashNative["Flash-Native Edge"]
-        FT[Flash Trade API] -->|pool/utilization| LPC[LP Consumption Strategy]
-        LPC -->|JitoSOL, BONK| PT
-    end
+### Dextrabot (already integrated)
+- Backend: `dextradata.nftinit.io` (data) + `dextrabothypev2.nftinit.io` (app)
+- No auth required for `discover-wallets` endpoint
+- Already have `scrape-dextrabot.rs` binary
 
-    BP --> GPS
-    ES --> LPC
-```
+### Hypurrscan (JWT)
+- Base URL: `api.hypurrscan.io`
+- Access token: stored in environment variable `HYPURRSCAN_JWT`
+- Refresh token: stored in environment variable `HYPURRSCAN_REFRESH_TOKEN`
+- Rate limit: 1000 req/min/IP
+- Key endpoints (JWT-gated):
+  - `GET /transfers/{fromTimestamp}/{toTimestamp}` — capital flow tracking
+  - `GET /bridges/{fromTimestamp}/{toTimestamp}` — bridge deposits/withdrawals
+- Public endpoints (no auth):
+  - `GET /addressDetails/{address}` — wallet metadata
+  - `GET /tags/{address}` — wallet labels
+  - `GET /rank/{address}` — wallet ranking
+  - `GET /twap/{address}` — active TWAP orders
+  - `GET /feesRecent` — 48h fee data
 
-## Constraints
-- All new Rust code uses `tracing` for logging, `anyhow::Result` for errors
-- Python analysis follows existing module pattern (each module has `tests/test_<module>.py`)
-- Don't break existing 181 Rust tests or 132 Python tests
-- Config changes go in `config/perps.toml` with comments tracing to data source
-- No live trading without explicit human approval
+### Hyperliquid (no auth)
+- Info API: `POST https://api.hyperliquid.xyz/info`
+- WebSocket: `wss://api.hyperliquid.xyz/ws`
+- No auth required, rate limit 1200 weight/min/IP
+
+---
+
+## Key Constraints
+
+1. **Execute on Hyperliquid, not Flash Trade.** HL has deeper books, lower fees, and is where the profitable wallets actually trade. Flash Trade remains as a secondary option only.
+2. **Paper trade for minimum 48h** before any live execution
+3. **Human approval required** for live mode, position sizing > $100, and any new wallet additions
+4. **All new Rust code** uses `tracing` for logging, `anyhow::Result` for errors
+5. **Don't break existing 536 tests**
+6. **Risk limits are hard limits**, not suggestions — circuit breaker halts everything on daily loss limit
+7. **Small account focus:** start with $100, scale to $500 after 7d profitable, $1000 after 30d
+8. **Keep the existing strategy infrastructure** (backtest engine, paper trading) — these still work for validating new strategies
+
+---
+
+## Success Metrics
+
+| Metric | Target | Measurement |
+|--------|--------|-------------|
+| Paper PnL (48h) | Positive | Copy trader + funding capture combined |
+| Sharpe (paper) | >= 1.0 | Over 48h paper trading period |
+| Max drawdown (paper) | < 10% | During paper trading period |
+| Wallet detection speed | < 5s | Whale watcher position detection |
+| Watchlist freshness | < 6h | Alpha scanner refresh interval |
+| Strategy decay detection | < 24h | Time to flag a decaying wallet |
+| System uptime | > 99% | No crashes during 48h paper trading |
+| Test coverage | 536+ | Total Rust unit tests |
+
+---
+
+## What This Mission Is NOT
+
+- NOT another attempt to reverse-engineer fills into candle-based signals
+- NOT a theoretical exercise — everything must be validated with real money (paper first, then live)
+- NOT a single-strategy bet — three independent strategies reduce risk of total failure
+- NOT dependent on Flash Trade — we go where the alpha is (Hyperliquid)
+- NOT a black box — every decision is logged and auditable
+
+---
+
+## Files to Create/Modify
+
+### New Files
+- `src/bin/alpha-scanner.rs` — Wallet discovery daemon (main new binary)
+- `src/bin/copy-trader.rs` — Real-time position mirroring
+- `src/bin/whale-watcher.rs` — Real-time whale alert system
+- `src/funding_capture.rs` — Funding rate capture strategy module
+- `data/watchlist.json` — Current wallet watchlist (output of alpha-scanner)
+- `data/whale-alerts.json` — Whale alert log (output of whale-watcher)
+- `data/copy-trades.json` — Copy trade log (output of copy-trader)
+- `data/alpha-report.json` — Daily alpha summary
+
+### Modified Files
+- `src/strategy.rs` — Add `FundingRateCaptureStrategy` + update `available_strategies()` + factory
+- `src/main.rs` — Add `mod funding_capture`
+- `Cargo.toml` — Add `tokio-tungstenite` for WebSocket support (whale watcher)
+- `config/perps.toml` — Add `[strategy.funding-capture]` and `[copy-trader]` sections
+- `CLAUDE.md` — Update with new binaries and commands
+- `SESSION-CONTEXT.md` — Update with new architecture

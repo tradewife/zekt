@@ -95,7 +95,7 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 ```bash
 # Build and test
 cargo build --release
-cargo test    # 140 unit tests
+cargo test    # 536 unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v
@@ -268,7 +268,9 @@ kill -9 <pid>   # Emergency
 ```
 
 ## Key Files
-- `src/strategy.rs` — Strategy trait + 4 implementations + factory (3369 lines, 63 tests)
+- `src/strategy.rs` — Strategy trait + 5 implementations + factory (6000+ lines, 63 tests)
+- `src/funding_capture.rs` — Funding rate capture strategy (40 tests)
+- `src/hl_info.rs` — Hyperliquid Info API client (positions, funding rates, fills)
 - `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (1170 lines, 15 tests)
 - `src/paper.rs` — Paper trading: single engine + MultiPaperEngine (1684 lines, 14 tests)
 - `src/engine.rs` — Live trading engine
@@ -278,8 +280,13 @@ kill -9 <pid>   # Emergency
 - `src/executor.rs` — Solana tx signing
 - `src/config.rs` — TOML config parser
 - `src/main.rs` — CLI entrypoint, routes to backtest/paper/dry-run/live
-- `src/bin/scrape-leaderboards.rs` — Wallet discovery via QuickNode HyperCore API (8 tests)
-- `src/bin/analyze-wallet.rs` — Wallet strategy classifier + blueprint generator (24 tests)
+- `src/bin/alpha-scanner.rs` — Wallet discovery daemon (64 tests)
+- `src/bin/copy-trader.rs` — Position mirroring engine (85 tests)
+- `src/bin/whale-watcher.rs` — WebSocket fill monitoring (41 tests)
+- `src/bin/scrape-leaderboards.rs` — Wallet discovery via QuickNode (22 tests)
+- `src/bin/analyze-wallet.rs` — Strategy classifier + blueprints (24 tests)
+- `src/bin/scan-markets.rs` — Flash Trade market ranking (18 tests)
+- `src/bin/scrape-dextrabot.rs` — Dextrabot API integration (8 tests)
 - `config/perps.toml` — All tunable parameters
 - `analysis/` — Python analysis pipeline (position clustering, metrics, classification, blueprints)
 - `analysis/tests/` — Python unit tests (pytest)
@@ -288,35 +295,54 @@ kill -9 <pid>   # Emergency
 
 **M1 (Completed): P0 Bug Fixes + Root Documentation** — Fixed borrow accrual (60x understated), added cross-cell position limits, populated pool data for LP Consumption strategy. Updated all root .md files.
 
-**M2: Real HL Wallet Discovery via QuickNode** — Replace fake Hyperliquid seed addresses with QuickNode HyperCore API. Batch scan 100+ wallets. Filter: >50 fills, positive PnL, active <30 days.
+**M2 (Completed): Alpha Discovery Engine — M1 Foundation** — HL Info client, alpha-scanner binary, config registration. 98 new tests.
 
-**M3: Fill-Level Deep Analysis (Python)** — Implement Bulk.Trade methodology: position clustering, wallet metrics, strategy classification, entry reconstruction, cluster analysis, blueprint generation.
+**M3 (Completed): Alpha Discovery Engine — M2 Traders** — Copy-trader binary (85 tests), whale-watcher binary (41 tests). WebSocket integration.
 
-**M4: Flash Trade Market Intelligence + Strategy Implementation** — Market scanner, data-driven strategies from blueprints, every parameter traceable to wallet cluster.
+**M4 (Completed): Funding Rate Capture Strategy** — FundingRateCaptureStrategy in funding_capture.rs, wired into strategy factory. 40 tests.
 
-**M5: Validation + Monitoring Foundation** — Backtest (Sharpe ≥ 1.0), paper trade 24h+ (positive net PnL), monitoring loop skeleton.
+**M5: Integration + Validation** — Wire alpha-scanner → watchlist → copy-trader + whale-watcher. 48h paper trading validation. Prove positive PnL after fees.
+
+**M6: Real HL Wallet Discovery via QuickNode** — Replace fake seed addresses with QuickNode HyperCore API. Batch scan 100+ wallets.
+
+**M7: Fill-Level Deep Analysis (Python)** — Implement Bulk.Trade methodology: position clustering, wallet metrics, strategy classification, entry reconstruction, cluster analysis, blueprint generation.
+
+**M8: Flash Trade Market Intelligence + Strategy Implementation** — Market scanner, data-driven strategies from blueprints, every parameter traceable to wallet cluster.
+
+**M9: Validation + Monitoring Foundation** — Backtest (Sharpe ≥ 1.0), paper trade 24h+ (positive net PnL), monitoring loop skeleton.
 
 ## Testing
-**Rust:** 140 unit tests total. Run with `cargo test`.
+**Rust:** 536 unit tests total. Run with `cargo test`.
 - strategy.rs: 63 tests
+- funding_capture.rs: 40 tests
 - paper.rs: 14 tests
 - backtest.rs: 15 tests
 - analyze-wallet.rs: 24 tests
-- scrape-leaderboards.rs: 8 tests
-- Other modules: 16 tests
+- scrape-leaderboards.rs: 22 tests
+- alpha-scanner.rs: 64 tests
+- copy-trader.rs: 85 tests
+- whale-watcher.rs: 41 tests
+- scan-markets.rs: 18 tests
+- scrape-dextrabot.rs: 8 tests
+- config + hl_info + other: ~42 tests
 
 **Python:** Run with `python -m pytest analysis/tests/ -v`.
 
 ## TODO / Next Steps
 - [ ] **QuickNode wallet scanner** — Batch scan HL wallets via HyperCore API
 - [ ] **Python analysis pipeline** — Fill-level Bulk.Trade methodology
-- [ ] **Market scanner** — Rank Flash Trade markets by liquidity concentration
 - [ ] **Data-driven strategies** — Parameters from blueprints, not invented defaults
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Monitoring loop with periodic re-scanning for new strategies
+- [ ] **Integration validation** — 48h paper trading with all strategies + alpha engine
 - [x] ~~Backtesting engine against historical prices~~ (done: Hyperliquid candleSnapshot)
 - [x] ~~LP detection~~ (done: lp-consumption strategy)
 - [x] ~~LP consumption rate signal~~ (done: lp-consumption strategy, pool data populated)
-- [x] ~~Unit tests~~ (done: 140 tests)
+- [x] ~~Unit tests~~ (done: 536 tests)
 - [x] ~~Fee-awareness~~ (done: per-trade fee tracking in paper + backtest engines)
 - [x] ~~P0 bug fixes~~ (done: borrow accrual, cross-cell limits, pool data)
+- [x] ~~Alpha scanner binary~~ (done: Dextrabot + Hypurrscan + HL enrichment, 64 tests)
+- [x] ~~Copy trader binary~~ (done: position mirroring + paper trading, 85 tests)
+- [x] ~~Whale watcher binary~~ (done: WebSocket alerts + accuracy tracking, 41 tests)
+- [x] ~~Funding rate capture strategy~~ (done: delta-neutral yield strategy, 40 tests)
+- [x] ~~HL Info client~~ (done: positions, funding rates, fills, market contexts)

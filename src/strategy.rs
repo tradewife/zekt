@@ -1670,6 +1670,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "lp-consumption",
         "mean-reversion",
         "trend-follower",
+        "funding-capture",
         "blueprint-scalper",
         "blueprint-mean-revert",
         "blueprint-cluster-002",
@@ -1697,6 +1698,13 @@ pub fn create_strategy(name: &str, params: StrategyParams) -> anyhow::Result<Box
             }
             Ok(Box::new(MomentumScalperStrategy::new(params)))
         }
+        "funding-capture" => {
+            // Funding capture uses its own params — use defaults from config
+            let fc_params = crate::funding_capture::FundingCaptureParams::default();
+            Ok(Box::new(
+                crate::funding_capture::FundingRateCaptureStrategy::new(fc_params),
+            ))
+        }
         _ => {
             let available = available_strategies().join(", ");
             anyhow::bail!(
@@ -1706,6 +1714,18 @@ pub fn create_strategy(name: &str, params: StrategyParams) -> anyhow::Result<Box
             );
         }
     }
+}
+
+/// Create a Funding Rate Capture strategy from its specific parameters.
+pub fn create_funding_capture_strategy(
+    params: crate::funding_capture::FundingCaptureParams,
+) -> anyhow::Result<Box<dyn Strategy>> {
+    if let Err(e) = params.validate() {
+        anyhow::bail!("Invalid funding capture parameters: {}", e);
+    }
+    Ok(Box::new(
+        crate::funding_capture::FundingRateCaptureStrategy::new(params),
+    ))
 }
 
 /// Create an LP Consumption strategy from its specific parameters.
@@ -1849,6 +1869,24 @@ pub fn create_strategy_from_config(
                 }
             };
             create_trend_follower_strategy(tf_params)
+        }
+        "funding-capture" => {
+            let fc_params = if let Some(table) = sub_table {
+                let params: crate::funding_capture::FundingCaptureParams =
+                    table.clone().try_into().map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to parse [strategy.funding-capture] sub-table: {}",
+                            e
+                        )
+                    })?;
+                params
+            } else {
+                crate::funding_capture::FundingCaptureParams {
+                    clip_size_usd: fallback_params.clip_size_usd,
+                    ..Default::default()
+                }
+            };
+            create_funding_capture_strategy(fc_params)
         }
         "blueprint-scalper" => {
             let bp_params = if let Some(table) = sub_table {

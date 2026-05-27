@@ -35,7 +35,7 @@ Semi-autonomous trading system that **discovers profitable strategies from Hyper
 
 ## Current Strategies
 
-Zekt implements 4 strategies as pluggable Rust modules via the `Strategy` trait. Originally reverse-engineered from profitable wallets scraped from perp DEX leaderboards, these are being replaced with data-driven implementations as blueprints are generated from the analysis pipeline.
+Zekt implements 5 strategies as pluggable Rust modules via the `Strategy` trait. Originally reverse-engineered from profitable wallets scraped from perp DEX leaderboards, these are being replaced with data-driven implementations as blueprints are generated from the analysis pipeline.
 
 | Strategy | Edge | Entry Signal | Typical Hold |
 |----------|------|-------------|-------------|
@@ -43,6 +43,7 @@ Zekt implements 4 strategies as pluggable Rust modules via the `Strategy` trait.
 | **lp-consumption** | Dominant LP being consumed in one direction | Utilization velocity + directional concentration | Minutes-hours |
 | **mean-reversion** | Fading momentum spikes after deviation from SMA | Price deviates from SMA then reverses | Minutes |
 | **trend-follower** | Confirmed momentum breakouts with wider stops | Velocity above breakout threshold for N consecutive ticks | Hours |
+| **funding-capture** | Delta-neutral yield from positive funding rates | Annualized funding rate exceeds threshold on HL perps | Hours-days |
 
 **Core loop per strategy:**
 ```
@@ -68,7 +69,7 @@ Push price → Detect entry signal → Open position → Monitor exit conditions
 # Build
 cargo build --release
 
-# Run tests (140 unit tests)
+# Run tests (536 unit tests)
 cargo test
 
 # 1. BACKTEST -- replay Hyperliquid candles through strategies (no wallet needed)
@@ -165,6 +166,13 @@ deviation_threshold_pct = 1.5
 breakout_threshold_pct = 0.25
 confirmation_ticks = 4
 
+[strategy.funding-capture]
+min_annualized_rate_pct = 20.0
+exit_annualized_rate_pct = 5.0
+max_position_hours = 72
+leverage = 1.0
+clip_size_usd = 200.0
+
 [risk]
 max_position_notional_usd = 1000.0
 max_total_notional_usd = 10000.0
@@ -196,7 +204,7 @@ Backtesting supports any Hyperliquid perps market (BTC, SOL, ETH, etc.).
 src/
   main.rs              CLI entrypoint (clap) + graceful shutdown (ctrlc)
   config.rs            TOML config parser (agent, flash, strategy, risk)
-  strategy.rs          Strategy trait + 4 implementations + factory (3369 lines)
+  strategy.rs          Strategy trait + 5 implementations + factory (6000+ lines)
   signal.rs            MomentumDetector, MomentumSnapshot, Signal/ExitReason types
   backtest.rs          Hyperliquid candle fetcher + BacktestEngine (1170 lines)
   flash_api.rs         Flash Trade REST client (prices, positions, tx builder)
@@ -226,6 +234,18 @@ cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --outpu
 # Analyze wallets and generate strategy blueprints (Rust)
 cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
 
+# Alpha scanner: discover profitable wallets via Dextrabot + Hypurrscan (one-shot or daemon)
+cargo run --bin alpha-scanner -- --once --min-sharpe 2.0 --output data/watchlist.json
+
+# Copy trader: mirror profitable wallet positions in paper mode
+cargo run --bin copy-trader -- --paper --watchlist data/watchlist.json
+
+# Whale watcher: real-time WebSocket alerts for large position changes
+cargo run --bin whale-watcher -- --watchlist data/watchlist.json --min-notional 10000
+
+# Scan Flash Trade markets for LP concentration
+cargo run --bin scan-markets -- --output data/market-rankings.json
+
 # Run Python analysis pipeline
 python -m pytest analysis/tests/ -v
 ```
@@ -254,7 +274,7 @@ python -m pytest analysis/tests/ -v
 
 ## Testing
 
-**Rust:** 140 unit tests covering all strategies, backtesting, paper trading, wallet analysis, and leaderboard scraping. Run with `cargo test`.
+**Rust:** 536 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, and market scanning. Run with `cargo test`.
 
 **Python:** Analysis pipeline unit tests. Run with `python -m pytest analysis/tests/ -v`.
 
