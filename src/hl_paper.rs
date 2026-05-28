@@ -244,6 +244,9 @@ pub struct HlPaperConfig {
     pub poll_interval_secs: u64,
     /// Maximum total notional across all positions.
     pub max_total_notional_usd: f64,
+    /// Maximum 24h price volatility (%) to allow entry. Markets exceeding this are skipped.
+    /// Set to 0.0 to disable the filter.
+    pub max_24h_volatility_pct: f64,
 }
 
 impl Default for HlPaperConfig {
@@ -251,6 +254,7 @@ impl Default for HlPaperConfig {
         Self {
             poll_interval_secs: 300,
             max_total_notional_usd: 50_000.0,
+            max_24h_volatility_pct: 5.0,
         }
     }
 }
@@ -277,6 +281,7 @@ pub struct HlPaperEngine<P: MarketDataProvider> {
     market_stats: HashMap<String, MarketStats>,
     poll_interval_secs: u64,
     max_total_notional_usd: f64,
+    max_24h_volatility_pct: f64,
     output_dir: String,
     running: Arc<AtomicBool>,
     start_time: DateTime<Utc>,
@@ -307,6 +312,7 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
     ) -> anyhow::Result<Self> {
         let poll_interval_secs = config.poll_interval_secs;
         let max_total_notional_usd = config.max_total_notional_usd;
+        let max_24h_volatility_pct = config.max_24h_volatility_pct;
 
         let mut market_stats = HashMap::new();
         for m in &markets {
@@ -344,6 +350,7 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
             market_stats,
             poll_interval_secs,
             max_total_notional_usd,
+            max_24h_volatility_pct,
             output_dir: output_dir.to_string(),
             running: Arc::new(AtomicBool::new(true)),
             start_time: Utc::now(),
@@ -450,6 +457,22 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
             if has_position {
                 self.manage_cell(&key, price)?;
             } else {
+                // 24h volatility filter: skip entry on highly volatile markets.
+                if self.max_24h_volatility_pct > 0.0
+                    && let Some(fs) = funding_by_market.get(&key.market.to_uppercase())
+                    && fs.prev_day_px > 0.0
+                {
+                    let vol_pct =
+                        (fs.mark_px - fs.prev_day_px).abs() / fs.prev_day_px * 100.0;
+                    if vol_pct > self.max_24h_volatility_pct {
+                        debug!(
+                            "[hl-paper] skipping ENTRY for {}: 24h volatility {:.2}% \
+                             exceeds threshold {:.2}%",
+                            key.market, vol_pct, self.max_24h_volatility_pct
+                        );
+                        continue;
+                    }
+                }
                 self.handle_no_position_cell(&key, price)?;
             }
         }
@@ -1088,6 +1111,7 @@ mod tests {
             mark_px,
             open_interest_usd: 1_000_000.0,
             timestamp_ms: 1_700_000_000_000,
+            prev_day_px: 0.0,
         }
     }
 
@@ -2280,5 +2304,186 @@ mod tests {
         assert_eq!(summary["open_positions"].as_array().unwrap().len(), 0);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // -----------------------------------------------------------------------
+    // Volatility filter helpers
+    // -----------------------------------------------------------------------
+
+    fn make_funding_snapshot_with_prev(coin: &str, rate_pct: f64, mark_px: f64, prev_day_px: f64) -> FundingSnapshot {
+        FundingSnapshot {
+            coin: coin.to_string(),
+            annualized_rate_pct: rate_pct,
+            raw_funding_rate: rate_pct / 100.0 / (365.0 * 3.0),
+            mark_px,
+            open_interest_usd: 1_000_000.0,
+            timestamp_ms: 1_700_000_000_000,
+            prev_day_px,
+        }
+    }
+
+    fn build_engine_with_config(
+        provider: MockDataProvider,
+        markets: Vec<&str>,
+        balance: f64,
+        config: HlPaperConfig,
+    ) -> HlPaperEngine<MockDataProvider> {
+        let params = default_funding_params();
+        let strategy_names = vec!["funding-capture".to_string()];
+        let markets_owned: Vec<String> = markets.iter().map(|s| s.to_string()).collect();
+
+        HlPaperEngine::new(
+            provider,
+            config,
+            strategy_names,
+            &|name| {
+                match name {
+                    "funding-capture" => Ok(Box::new(FundingRateCaptureStrategy::new(params.clone()))),
+                    other => Err(anyhow::anyhow!("Unknown strategy: {}", other)),
+                }
+            },
+            markets_owned,
+            balance,
+            "/tmp/hl-paper-test",
+        )
+        .unwrap()
+    }
+
+    // -----------------------------------------------------------------------
+    // Volatility filter: blocks high-volatility market
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_volatility_filter_blocks_high_vol_market() {
+        // mark_px = 64000, prev_day_px = 60000 → volatility = 6.67% > 5% threshold → blocked
+        let funding = vec![
+            make_funding_snapshot_with_prev("BTC", 25.0, 64000.0, 60000.0),
+            make_funding_snapshot_with_prev("BTC", 25.0, 64000.0, 60000.0),
+        ];
+        let mut prices = HashMap::new();
+        prices.insert("BTC".to_string(), 64000.0);
+
+        let provider = make_mock_provider(prices, funding);
+        let mut engine = build_engine_with_config(
+            provider,
+            vec!["BTC"],
+            1000.0,
+            HlPaperConfig {
+                max_24h_volatility_pct: 5.0,
+                ..HlPaperConfig::default()
+            },
+        );
+
+        // Tick twice (need confirmation_ticks=2).
+        engine.tick().await.unwrap();
+        // Swap provider for second tick with same high funding.
+        engine.provider = make_mock_provider(
+            {
+                let mut p = HashMap::new();
+                p.insert("BTC".to_string(), 64000.0);
+                p
+            },
+            vec![
+                make_funding_snapshot_with_prev("BTC", 25.0, 64000.0, 60000.0),
+                make_funding_snapshot_with_prev("BTC", 25.0, 64000.0, 60000.0),
+            ],
+        );
+        engine.tick().await.unwrap();
+
+        assert!(
+            !engine.has_position("funding-capture", "BTC"),
+            "Should NOT open position when 24h volatility (6.67%) exceeds threshold (5.0%)"
+        );
+        assert_eq!(engine.open_position_count(), 0);
+    }
+
+    // -----------------------------------------------------------------------
+    // Volatility filter: allows low-volatility market
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_volatility_filter_allows_low_vol_market() {
+        // mark_px = 61000, prev_day_px = 60000 → volatility = 1.67% < 5% threshold → allowed
+        let funding = vec![
+            make_funding_snapshot_with_prev("BTC", 25.0, 61000.0, 60000.0),
+            make_funding_snapshot_with_prev("BTC", 25.0, 61000.0, 60000.0),
+        ];
+        let mut prices = HashMap::new();
+        prices.insert("BTC".to_string(), 61000.0);
+
+        let provider = make_mock_provider(prices, funding);
+        let mut engine = build_engine_with_config(
+            provider,
+            vec!["BTC"],
+            1000.0,
+            HlPaperConfig {
+                max_24h_volatility_pct: 5.0,
+                ..HlPaperConfig::default()
+            },
+        );
+
+        engine.tick().await.unwrap();
+        engine.provider = make_mock_provider(
+            {
+                let mut p = HashMap::new();
+                p.insert("BTC".to_string(), 61000.0);
+                p
+            },
+            vec![
+                make_funding_snapshot_with_prev("BTC", 25.0, 61000.0, 60000.0),
+                make_funding_snapshot_with_prev("BTC", 25.0, 61000.0, 60000.0),
+            ],
+        );
+        engine.tick().await.unwrap();
+
+        assert!(
+            engine.has_position("funding-capture", "BTC"),
+            "Should open position when 24h volatility (1.67%) is below threshold (5.0%)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Volatility filter: disabled with high threshold
+    // -----------------------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_volatility_filter_disabled_with_high_threshold() {
+        // mark_px = 63000, prev_day_px = 60000 → volatility = 5% → but threshold = 100% → allowed
+        let funding = vec![
+            make_funding_snapshot_with_prev("BTC", 25.0, 63000.0, 60000.0),
+            make_funding_snapshot_with_prev("BTC", 25.0, 63000.0, 60000.0),
+        ];
+        let mut prices = HashMap::new();
+        prices.insert("BTC".to_string(), 63000.0);
+
+        let provider = make_mock_provider(prices, funding);
+        let mut engine = build_engine_with_config(
+            provider,
+            vec!["BTC"],
+            1000.0,
+            HlPaperConfig {
+                max_24h_volatility_pct: 100.0,
+                ..HlPaperConfig::default()
+            },
+        );
+
+        engine.tick().await.unwrap();
+        engine.provider = make_mock_provider(
+            {
+                let mut p = HashMap::new();
+                p.insert("BTC".to_string(), 63000.0);
+                p
+            },
+            vec![
+                make_funding_snapshot_with_prev("BTC", 25.0, 63000.0, 60000.0),
+                make_funding_snapshot_with_prev("BTC", 25.0, 63000.0, 60000.0),
+            ],
+        );
+        engine.tick().await.unwrap();
+
+        assert!(
+            engine.has_position("funding-capture", "BTC"),
+            "Should open position when volatility threshold is set very high (100%)"
+        );
     }
 }

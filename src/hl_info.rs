@@ -302,6 +302,9 @@ pub struct HlFundingRate {
     /// Previous day's funding (f64), if available.
     #[serde(default)]
     pub prev_day_funding: f64,
+    /// Previous day's mark price (f64), used for 24h volatility calculation.
+    #[serde(default)]
+    pub prev_day_px: f64,
 }
 
 /// Full market context — universe entry + asset context combined.
@@ -619,6 +622,12 @@ fn parse_meta_and_asset_ctxs(raw: &serde_json::Value) -> Result<Vec<HlFundingRat
             .or_else(|| ctx.get("premium").and_then(|v| v.as_f64()))
             .unwrap_or(0.0);
 
+        let prev_day_px = ctx
+            .get("prevDayPx")
+            .and_then(|v| v.as_str().and_then(|s| s.parse::<f64>().ok()))
+            .or_else(|| ctx.get("prevDayPx").and_then(|v| v.as_f64()))
+            .unwrap_or(0.0);
+
         rates.push(HlFundingRate {
             coin,
             mark_px,
@@ -627,6 +636,7 @@ fn parse_meta_and_asset_ctxs(raw: &serde_json::Value) -> Result<Vec<HlFundingRat
             open_interest_usd,
             volume_24h_usd,
             prev_day_funding,
+            prev_day_px,
         });
     }
 

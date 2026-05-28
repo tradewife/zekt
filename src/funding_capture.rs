@@ -199,6 +199,9 @@ pub struct FundingSnapshot {
     pub open_interest_usd: f64,
     /// Timestamp of this snapshot (ms since epoch).
     pub timestamp_ms: i64,
+    /// Previous day's mark price for 24h volatility calculation (0.0 if unavailable).
+    #[serde(default)]
+    pub prev_day_px: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -499,6 +502,7 @@ mod tests {
             mark_px,
             open_interest_usd: 1_000_000.0,
             timestamp_ms: 1700000000000,
+            prev_day_px: 0.0,
         }
     }
 
@@ -870,6 +874,7 @@ mod tests {
                 mark_px: 100000.0,
                 open_interest_usd: 1_000_000.0,
                 timestamp_ms: i as i64 * 1000,
+                prev_day_px: 0.0,
             });
         }
         assert!(s.funding_history.len() <= 100);
@@ -961,6 +966,7 @@ mod tests {
             mark_px: 3500.0,
             open_interest_usd: 500_000.0,
             timestamp_ms: 1700000000000,
+            prev_day_px: 3450.0,
         };
         let json = serde_json::to_string(&snap).unwrap();
         let back: FundingSnapshot = serde_json::from_str(&json).unwrap();

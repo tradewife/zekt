@@ -156,6 +156,7 @@ impl HlDataProvider {
             mark_px: rate.mark_px,
             open_interest_usd: rate.open_interest_usd,
             timestamp_ms: chrono::Utc::now().timestamp_millis(),
+            prev_day_px: rate.prev_day_px,
         }
     }
 }
@@ -398,6 +399,7 @@ mod tests {
             open_interest_usd: 100_000_000.0,
             volume_24h_usd: 500_000_000.0,
             prev_day_funding: 0.00008,
+            prev_day_px: 59500.0,
         };
 
         let snapshot = HlDataProvider::funding_rate_to_snapshot(&rate);
@@ -423,6 +425,7 @@ mod tests {
             open_interest_usd: 50_000_000.0,
             volume_24h_usd: 0.0,
             prev_day_funding: 0.0,
+            prev_day_px: 0.0,
         };
 
         let snapshot = HlDataProvider::funding_rate_to_snapshot(&rate);
@@ -533,6 +536,7 @@ mod tests {
                 mark_px: 60000.0,
                 open_interest_usd: 1_000_000.0,
                 timestamp_ms: 1000,
+                prev_day_px: 0.0,
             },
             FundingSnapshot {
                 coin: "ETH".to_string(),
@@ -541,6 +545,7 @@ mod tests {
                 mark_px: 3000.0,
                 open_interest_usd: 500_000.0,
                 timestamp_ms: 1000,
+                prev_day_px: 0.0,
             },
         ];
 

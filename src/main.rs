@@ -310,6 +310,7 @@ async fn run_hl_paper(
     let hl_config = HlPaperConfig {
         poll_interval_secs: config.agent.poll_interval_secs,
         max_total_notional_usd: config.risk.max_total_notional_usd,
+        max_24h_volatility_pct: 5.0, // skip entry when 24h volatility exceeds 5%
     };
 
     let engine = HlPaperEngine::new(
