@@ -8,6 +8,8 @@ mod funding_capture;
 mod hl_info;
 mod monitor;
 mod paper;
+#[allow(dead_code)]
+mod pnl_tracker;
 mod regime;
 mod risk;
 mod signal;

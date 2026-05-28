@@ -69,7 +69,7 @@ Push price → Detect entry signal → Open position → Monitor exit conditions
 # Build
 cargo build --release
 
-# Run tests (536 unit tests)
+# Run tests (560 unit tests)
 cargo test
 
 # 1. BACKTEST -- replay Hyperliquid candles through strategies (no wallet needed)
@@ -143,14 +143,14 @@ log_level = "info"
 
 [flash]
 market = "SOL"
-leverage = 10.0
+leverage = 3.0
 input_token = "USDC"
 pool = "Crypto.1"
 slippage_pct = "0.5"
 
 [strategy]
 active = "momentum-scalper"
-clip_size_usd = 100.0
+clip_size_usd = 1000.0
 # ... (see config/perps.toml for full schema)
 
 # Per-strategy overrides
@@ -174,9 +174,9 @@ leverage = 1.0
 clip_size_usd = 200.0
 
 [risk]
-max_position_notional_usd = 1000.0
-max_total_notional_usd = 10000.0
-max_daily_loss_usd = 200.0
+max_position_notional_usd = 5000.0
+max_total_notional_usd = 100000.0
+max_daily_loss_usd = 500.0
 max_drawdown_pct = 15.0
 ```
 
@@ -205,6 +205,8 @@ src/
   main.rs              CLI entrypoint (clap) + graceful shutdown (ctrlc)
   config.rs            TOML config parser (agent, flash, strategy, risk)
   strategy.rs          Strategy trait + 5 implementations + factory (6000+ lines)
+  funding_capture.rs   Funding rate capture strategy (delta-neutral short perp for yield)
+  pnl_tracker.rs       Combined PnL tracking across all strategies
   signal.rs            MomentumDetector, MomentumSnapshot, Signal/ExitReason types
   backtest.rs          Hyperliquid candle fetcher + BacktestEngine (1170 lines)
   flash_api.rs         Flash Trade REST client (prices, positions, tx builder)
@@ -213,8 +215,14 @@ src/
   engine.rs            Live trading loop (poll -> detect -> preview -> build tx -> sign -> monitor)
   paper.rs             Paper trading engine (single + MultiPaperEngine with position matrix)
   src/bin/
-    scrape-leaderboards.rs   Discover profitable wallets via QuickNode HyperCore API + leaderboards
-    analyze-wallet.rs        Classify wallet strategies, generate strategy blueprints
+    pipeline.rs               Orchestrate all alpha engine components as child processes
+    alpha-scanner.rs          Discover profitable wallets via Dextrabot + Hypurrscan (daemon)
+    copy-trader.rs            Mirror profitable wallet positions in paper mode
+    whale-watcher.rs          Real-time WebSocket alerts for large position changes
+    scrape-leaderboards.rs    Discover profitable wallets via QuickNode HyperCore API + leaderboards
+    analyze-wallet.rs         Classify wallet strategies, generate strategy blueprints
+    scan-markets.rs           Rank Flash Trade markets by LP concentration, leverage, volume
+    scrape-dextrabot.rs       Dextrabot API integration
 analysis/
   position_clustering.py     Cluster fills into open→close position cycles
   wallet_metrics.py          Per-wallet metrics (clip consistency, hold time, win rate, PnL)
@@ -228,11 +236,9 @@ analysis/
 ## CLI Binaries
 
 ```bash
-# Discover wallets from Hyperliquid via QuickNode
-cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --output data/wallets-hl.json
-
-# Analyze wallets and generate strategy blueprints (Rust)
-cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
+# Pipeline orchestrator: run all alpha engine components together
+cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
+cargo run --bin pipeline -- --once  # single scan + report
 
 # Alpha scanner: discover profitable wallets via Dextrabot + Hypurrscan (one-shot or daemon)
 cargo run --bin alpha-scanner -- --once --min-sharpe 2.0 --output data/watchlist.json
@@ -242,6 +248,12 @@ cargo run --bin copy-trader -- --paper --watchlist data/watchlist.json
 
 # Whale watcher: real-time WebSocket alerts for large position changes
 cargo run --bin whale-watcher -- --watchlist data/watchlist.json --min-notional 10000
+
+# Discover wallets from Hyperliquid via QuickNode
+cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --output data/wallets-hl.json
+
+# Analyze wallets and generate strategy blueprints (Rust)
+cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
 
 # Scan Flash Trade markets for LP concentration
 cargo run --bin scan-markets -- --output data/market-rankings.json
@@ -274,7 +286,7 @@ python -m pytest analysis/tests/ -v
 
 ## Testing
 
-**Rust:** 536 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, and market scanning. Run with `cargo test`.
+**Rust:** 560 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, pipeline orchestration, and combined PnL tracking. Run with `cargo test`.
 
 **Python:** Analysis pipeline unit tests. Run with `python -m pytest analysis/tests/ -v`.
 

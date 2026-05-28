@@ -21,10 +21,16 @@ An **autonomous strategy poaching system** that discovers profitable Hyperliquid
 ## Build & Run
 ```bash
 cargo build --release                          # Build Rust binary
-cargo test                                     # Run 536+ Rust unit tests
+cargo test                                     # Run 560+ Rust unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v            # Run Python analysis module tests
+
+# Full pipeline orchestration (alpha-scanner + copy-trader + whale-watcher + paper)
+cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
+cargo run --bin pipeline -- --once              # Single scan + report, then exit
+cargo run --bin pipeline -- --skip-scanner      # Use existing watchlist
+cargo run --bin pipeline -- --help              # All options
 
 # Backtest against Hyperliquid historical data
 ./target/release/zekt --backtest --strategies momentum-scalper --markets BTC,SOL \
@@ -54,24 +60,26 @@ cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/r
 ```
 main.rs         CLI (clap) + graceful shutdown (ctrlc) -- routes to backtest, paper, dry-run, or live mode
 config.rs       TOML config (agent, flash, strategy, risk sections + strategy sub-tables)
-strategy.rs     Strategy trait + 4 implementations + factory function (6000+ lines, 63 tests)
+strategy.rs     Strategy trait + 5 implementations + factory function (6000+ lines, 63 tests)
 signal.rs       MomentumDetector, MomentumSnapshot, PoolSnapshot, Signal/ExitReason types
 backtest.rs     Hyperliquid candle fetcher + BacktestEngine (replay through Strategy trait, 15 tests)
 flash_api.rs    REST client for Flash Trade API (prices, positions, tx builder)
 hl_info.rs      REST client for Hyperliquid Info API (positions, funding rates, fills, market contexts)
 funding_capture.rs  Funding rate capture strategy (delta-neutral short perp for yield)
+pnl_tracker.rs  Combined PnL tracking across all strategies (copy-trader + whale-watcher + paper)
 executor.rs     Solana keypair loading + tx sign/submit via Arc<RpcClient> + spawn_blocking
 risk.rs         Risk manager -- SL/TP/trailing, circuit breaker, daily reset, fee tracking, trade journal
 engine.rs       Live trading loop -- poll price -> detect -> preview -> build tx -> sign -> monitor
 paper.rs        Paper trading -- single + MultiPaperEngine (strategy x market matrix, 14 tests)
 src/bin/
-  scrape-leaderboards.rs   CLI: discover profitable wallets via QuickNode HyperCore API + leaderboards (22 tests)
-  analyze-wallet.rs        CLI: classify wallet strategies and generate blueprints (24 tests)
-  alpha-scanner.rs         Daemon: wallet discovery via Dextrabot + Hypurrscan enrichment + composite scoring (64 tests)
-  copy-trader.rs           Daemon: real-time position mirroring with paper trading + risk management (85 tests)
-  whale-watcher.rs         Daemon: WebSocket fill monitoring, notional alerts, accuracy tracking (41 tests)
-  scan-markets.rs          CLI: rank Flash Trade markets by LP concentration, leverage, volume (18 tests)
-  scrape-dextrabot.rs      CLI: Dextrabot discover-wallets API integration (8 tests)
+  pipeline.rs             Orchestrator: launches alpha-scanner + copy-trader + whale-watcher + paper (14 tests)
+  scrape-leaderboards.rs  CLI: discover profitable wallets via QuickNode HyperCore API + leaderboards (22 tests)
+  analyze-wallet.rs       CLI: classify wallet strategies and generate blueprints (24 tests)
+  alpha-scanner.rs        Daemon: wallet discovery via Dextrabot + Hypurrscan enrichment + composite scoring (64 tests)
+  copy-trader.rs          Daemon: real-time position mirroring with paper trading + risk management (85 tests)
+  whale-watcher.rs        Daemon: WebSocket fill monitoring, notional alerts, accuracy tracking (41 tests)
+  scan-markets.rs         CLI: rank Flash Trade markets by LP concentration, leverage, volume (18 tests)
+  scrape-dextrabot.rs     CLI: Dextrabot discover-wallets API integration (8 tests)
 ```
 
 ### Python (Analysis Pipeline)
@@ -209,7 +217,7 @@ Base URL: `https://api.hyperliquid.xyz/info`
 
 ## Config Format
 TOML with 4 main sections: `[agent]`, `[flash]`, `[strategy]`, `[risk]`
-Additional sections: `[alpha-scanner]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`
+Additional sections: `[alpha-scanner]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`, `[pipeline]`
 Strategy sub-tables: `[strategy.lp-consumption]`, `[strategy.mean-reversion]`, `[strategy.trend-follower]`, `[strategy.funding-capture]`
 QuickNode configuration: `QUICKNODE_HL_URL` env var or `--quicknode-url` CLI flag (not in TOML, gitignored)
 See `config/perps.toml` for the full schema with defaults.
@@ -217,11 +225,13 @@ See `config/perps.toml` for the full schema with defaults.
 ## Testing
 
 ### Rust Tests
-536 unit tests across all modules. Run with `cargo test`.
+560 unit tests across all modules. Run with `cargo test`.
 - `strategy.rs`: 63 tests (entry/exit for each strategy, parameter validation, factory)
 - `funding_capture.rs`: 40 tests (entry/exit, parameter validation, funding tracking, pipeline)
+- `pnl_tracker.rs`: 10 tests (combined PnL reporting, copy-trades/paper-trades/whale-alerts parsing, serde roundtrips)
 - `paper.rs`: 14 tests (MultiPaperEngine, position matrix, fee accounting)
 - `backtest.rs`: 15 tests (candle parsing, position PnL, fee accrual, synthetic replay)
+- `src/bin/pipeline.rs`: 14 tests (CLI args, report generation, managed child process)
 - `src/bin/analyze-wallet.rs`: 24 tests (wallet classification, blueprint generation)
 - `src/bin/scrape-leaderboards.rs`: 22 tests (API parsing, deduplication)
 - `src/bin/alpha-scanner.rs`: 64 tests (wallet discovery, scoring, decay detection)
@@ -229,7 +239,7 @@ See `config/perps.toml` for the full schema with defaults.
 - `src/bin/whale-watcher.rs`: 41 tests (WebSocket parsing, alerts, accuracy tracking)
 - `src/bin/scan-markets.rs`: 18 tests (market ranking, pool data)
 - `src/bin/scrape-dextrabot.rs`: 8 tests (Dextrabot API integration)
-- Other modules: ~46 tests (config, hl_info, etc.)
+- Other modules: ~42 tests (config, hl_info, etc.)
 
 ### Python Tests
 Run with `python -m pytest analysis/tests/ -v`.

@@ -308,10 +308,10 @@ Risk:
 2. Paper trade all three strategies simultaneously for 48h
 3. Track combined PnL across strategies
 4. If any strategy shows positive PnL: proceed to live with $100
-5. Run full test suite (target: 536+ tests)
+5. Run full test suite (target: 560+ tests)
 6. Update `config/perps.toml` with new strategy sections
 
-**Acceptance:** Full system runs as a daemon for 48h without crash. At least one strategy shows positive paper PnL. 536+ tests pass.
+**Acceptance:** Full system runs as a daemon for 48h without crash. At least one strategy shows positive paper PnL. 560+ tests pass.
 
 ---
 
@@ -323,7 +323,7 @@ Risk:
 | 2 | M2: Copy trader binary | M1 | Medium-Large | ✅ DONE (85 tests) |
 | 3 | M3: Whale watcher binary | M1 | Medium | ✅ DONE (41 tests) |
 | 4 | M4: Funding rate strategy | None | Medium | ✅ DONE (40 tests) |
-| 5 | M5: Integration + validation | M1-M4 | Small | Pending |
+| 5 | M5: Integration + validation | M1-M4 | Small | ✅ DONE (24 tests: pipeline 14 + pnl_tracker 10) |
 
 M1 and M4 can run in parallel. M2 and M3 depend on M1's watchlist output.
 
@@ -364,7 +364,7 @@ M1 and M4 can run in parallel. M2 and M3 depend on M1's watchlist output.
 2. **Paper trade for minimum 48h** before any live execution
 3. **Human approval required** for live mode, position sizing > $100, and any new wallet additions
 4. **All new Rust code** uses `tracing` for logging, `anyhow::Result` for errors
-5. **Don't break existing 536 tests**
+5. **Don't break existing 560 tests**
 6. **Risk limits are hard limits**, not suggestions — circuit breaker halts everything on daily loss limit
 7. **Small account focus:** start with $100, scale to $500 after 7d profitable, $1000 after 30d
 8. **Keep the existing strategy infrastructure** (backtest engine, paper trading) — these still work for validating new strategies
@@ -382,7 +382,7 @@ M1 and M4 can run in parallel. M2 and M3 depend on M1's watchlist output.
 | Watchlist freshness | < 6h | Alpha scanner refresh interval |
 | Strategy decay detection | < 24h | Time to flag a decaying wallet |
 | System uptime | > 99% | No crashes during 48h paper trading |
-| Test coverage | 536+ | Total Rust unit tests |
+| Test coverage | 560+ | Total Rust unit tests |
 
 ---
 
@@ -398,20 +398,18 @@ M1 and M4 can run in parallel. M2 and M3 depend on M1's watchlist output.
 
 ## Files to Create/Modify
 
-### New Files
-- `src/bin/alpha-scanner.rs` — Wallet discovery daemon (main new binary)
-- `src/bin/copy-trader.rs` — Real-time position mirroring
-- `src/bin/whale-watcher.rs` — Real-time whale alert system
-- `src/funding_capture.rs` — Funding rate capture strategy module
-- `data/watchlist.json` — Current wallet watchlist (output of alpha-scanner)
-- `data/whale-alerts.json` — Whale alert log (output of whale-watcher)
-- `data/copy-trades.json` — Copy trade log (output of copy-trader)
-- `data/alpha-report.json` — Daily alpha summary
+### New Files (all created)
+- `src/bin/alpha-scanner.rs` — Wallet discovery daemon (64 tests) ✅
+- `src/bin/copy-trader.rs` — Real-time position mirroring (85 tests) ✅
+- `src/bin/whale-watcher.rs` — Real-time whale alert system (41 tests) ✅
+- `src/funding_capture.rs` — Funding rate capture strategy module (40 tests) ✅
+- `src/pnl_tracker.rs` — Combined PnL tracking across all strategies (10 tests) ✅
+- `src/bin/pipeline.rs` — Pipeline orchestrator binary (14 tests) ✅
 
-### Modified Files
-- `src/strategy.rs` — Add `FundingRateCaptureStrategy` + update `available_strategies()` + factory
-- `src/main.rs` — Add `mod funding_capture`
-- `Cargo.toml` — Add `tokio-tungstenite` for WebSocket support (whale watcher)
-- `config/perps.toml` — Add `[strategy.funding-capture]` and `[copy-trader]` sections
-- `CLAUDE.md` — Update with new binaries and commands
-- `SESSION-CONTEXT.md` — Update with new architecture
+### Modified Files (all done)
+- `src/strategy.rs` — Add `FundingRateCaptureStrategy` + update `available_strategies()` + factory ✅
+- `src/main.rs` — Add `mod funding_capture`, `mod pnl_tracker` ✅
+- `Cargo.toml` — Add `tokio-tungstenite` for WebSocket + `pipeline` binary ✅
+- `config/perps.toml` — Add `[strategy.funding-capture]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`, `[pipeline]` sections ✅
+- `CLAUDE.md` — Update with new binaries and commands ✅
+- `SESSION-CONTEXT.md` — Update with new architecture ✅

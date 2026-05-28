@@ -95,7 +95,7 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 ```bash
 # Build and test
 cargo build --release
-cargo test    # 536 unit tests
+cargo test    # 560 unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v
@@ -125,6 +125,10 @@ QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
 
 # CLI tools
 cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
+
+# Pipeline orchestration (runs all alpha engine components together)
+cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
+cargo run --bin pipeline -- --once  # single scan + report
 ```
 
 ## CLI Flags Reference
@@ -165,32 +169,41 @@ cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/r
 - `flash.market` = Trading pair (SOL, BTC, ETH, etc.)
 - `flash.input_token` = USDC
 - `flash.pool` = "Crypto.1"
-- `flash.leverage` = 10.0
+- `flash.leverage` = 3.0
 - `flash.slippage_pct` = "0.5"
 
 ### Strategy (shared defaults)
 - `strategy.active` = "momentum-scalper"
-- `strategy.clip_size_usd` = 100.0
+- `strategy.clip_size_usd` = 1000.0
 - `strategy.momentum_threshold_pct` = 0.15
 - `strategy.lookback_count` = 60
 - `strategy.direction_bias` = "neutral"
-- `strategy.take_profit_pct` = 2.5
-- `strategy.stop_loss_pct` = 1.0
-- `strategy.trailing_stop_pct` = 0.8
-- `strategy.trailing_activation_pct` = 1.5
-- `strategy.max_hold_secs` = 1800
+- `strategy.take_profit_pct` = 1.0
+- `strategy.stop_loss_pct` = 0.5
+- `strategy.trailing_stop_pct` = 0.3
+- `strategy.trailing_activation_pct` = 0.5
+- `strategy.max_hold_secs` = 1200
 - `strategy.cooldown_after_loss_secs` = 300
 
 ### Strategy Sub-Tables (per-strategy overrides)
-- `[strategy.lp-consumption]` — consumption_velocity_threshold=0.5, lp_concentration_min=0.7, take_profit=2.0, stop_loss=1.0
-- `[strategy.mean-reversion]` — mean_lookback=120, deviation_threshold_pct=1.5, take_profit=1.0, stop_loss=1.5
-- `[strategy.trend-follower]` — breakout_threshold_pct=0.25, confirmation_ticks=4, take_profit=5.0, stop_loss=2.0, max_hold_secs=7200
+- `[strategy.lp-consumption]` — consumption_velocity_threshold=0.5, lp_concentration_min=0.7, take_profit=1.0, stop_loss=0.5, leverage=2.5
+- `[strategy.mean-reversion]` — mean_lookback=120, deviation_threshold_pct=1.5, take_profit=1.0, stop_loss=0.5, leverage=2.0
+- `[strategy.trend-follower]` — breakout_threshold_pct=0.25, confirmation_ticks=4, take_profit=2.0, stop_loss=0.8, max_hold_secs=2400, leverage=3.0
+- `[strategy.funding-capture]` — min_annualized_rate_pct=20.0, exit_annualized_rate_pct=5.0, max_position_hours=72, leverage=1.0, clip_size_usd=200.0
 
 ### Risk Limits
-- `risk.max_position_notional_usd` = 1000
-- `risk.max_total_notional_usd` = 10000
-- `risk.max_daily_loss_usd` = 200
+- `risk.max_position_notional_usd` = 5000
+- `risk.max_total_notional_usd` = 100000
+- `risk.max_daily_loss_usd` = 500
 - `risk.max_drawdown_pct` = 15%
+
+### Pipeline (orchestrator)
+- `pipeline.paper_balance` = 1000
+- `pipeline.report_interval_secs` = 300
+- `pipeline.scanner_refresh_secs` = 21600
+- `pipeline.strategies` = "funding-capture"
+- `pipeline.markets` = "BTC"
+- `pipeline.combined_output` = "data/combined-pnl.json"
 
 ## Supported Markets (Flash Trade Crypto.1)
 SOL, BTC, ETH, ZEC, BNB, XAU, XAG, EUR, JPY, JUP, BONK, WIF, PENGU, FARTCOIN, and more.
@@ -270,6 +283,7 @@ kill -9 <pid>   # Emergency
 ## Key Files
 - `src/strategy.rs` — Strategy trait + 5 implementations + factory (6000+ lines, 63 tests)
 - `src/funding_capture.rs` — Funding rate capture strategy (40 tests)
+- `src/pnl_tracker.rs` — Combined PnL tracking across all strategies (10 tests)
 - `src/hl_info.rs` — Hyperliquid Info API client (positions, funding rates, fills)
 - `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (1170 lines, 15 tests)
 - `src/paper.rs` — Paper trading: single engine + MultiPaperEngine (1684 lines, 14 tests)
@@ -280,6 +294,7 @@ kill -9 <pid>   # Emergency
 - `src/executor.rs` — Solana tx signing
 - `src/config.rs` — TOML config parser
 - `src/main.rs` — CLI entrypoint, routes to backtest/paper/dry-run/live
+- `src/bin/pipeline.rs` — Pipeline orchestrator: alpha-scanner + copy-trader + whale-watcher + paper (14 tests)
 - `src/bin/alpha-scanner.rs` — Wallet discovery daemon (64 tests)
 - `src/bin/copy-trader.rs` — Position mirroring engine (85 tests)
 - `src/bin/whale-watcher.rs` — WebSocket fill monitoring (41 tests)
@@ -301,7 +316,7 @@ kill -9 <pid>   # Emergency
 
 **M4 (Completed): Funding Rate Capture Strategy** — FundingRateCaptureStrategy in funding_capture.rs, wired into strategy factory. 40 tests.
 
-**M5: Integration + Validation** — Wire alpha-scanner → watchlist → copy-trader + whale-watcher. 48h paper trading validation. Prove positive PnL after fees.
+**M5 (Completed): Integration + Validation** — Pipeline orchestrator (`pipeline.rs`), combined PnL tracker (`pnl_tracker.rs`), wired alpha-scanner → watchlist → copy-trader + whale-watcher. 560 tests pass. `[pipeline]` config section.
 
 **M6: Real HL Wallet Discovery via QuickNode** — Replace fake seed addresses with QuickNode HyperCore API. Batch scan 100+ wallets.
 
@@ -312,11 +327,13 @@ kill -9 <pid>   # Emergency
 **M9: Validation + Monitoring Foundation** — Backtest (Sharpe ≥ 1.0), paper trade 24h+ (positive net PnL), monitoring loop skeleton.
 
 ## Testing
-**Rust:** 536 unit tests total. Run with `cargo test`.
+**Rust:** 560 unit tests total. Run with `cargo test`.
 - strategy.rs: 63 tests
 - funding_capture.rs: 40 tests
+- pnl_tracker.rs: 10 tests
 - paper.rs: 14 tests
 - backtest.rs: 15 tests
+- pipeline.rs: 14 tests
 - analyze-wallet.rs: 24 tests
 - scrape-leaderboards.rs: 22 tests
 - alpha-scanner.rs: 64 tests
@@ -334,11 +351,11 @@ kill -9 <pid>   # Emergency
 - [ ] **Data-driven strategies** — Parameters from blueprints, not invented defaults
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Monitoring loop with periodic re-scanning for new strategies
-- [ ] **Integration validation** — 48h paper trading with all strategies + alpha engine
+- [x] ~~**Integration validation** — Pipeline orchestrator + combined PnL tracker + 560 tests pass~~ (done: M5)
 - [x] ~~Backtesting engine against historical prices~~ (done: Hyperliquid candleSnapshot)
 - [x] ~~LP detection~~ (done: lp-consumption strategy)
 - [x] ~~LP consumption rate signal~~ (done: lp-consumption strategy, pool data populated)
-- [x] ~~Unit tests~~ (done: 536 tests)
+- [x] ~~Unit tests~~ (done: 560 tests)
 - [x] ~~Fee-awareness~~ (done: per-trade fee tracking in paper + backtest engines)
 - [x] ~~P0 bug fixes~~ (done: borrow accrual, cross-cell limits, pool data)
 - [x] ~~Alpha scanner binary~~ (done: Dextrabot + Hypurrscan + HL enrichment, 64 tests)

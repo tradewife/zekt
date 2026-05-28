@@ -336,3 +336,21 @@ max_position_hours = 72
 leverage = 1.0
 # Position clip size in USD
 clip_size_usd = 200.0
+
+# =============================================================================
+# PIPELINE — Orchestrator configuration
+# =============================================================================
+
+[pipeline]
+# Default paper balance for pipeline paper trading
+paper_balance = 1000.0
+# Combined PnL report generation interval (seconds)
+report_interval_secs = 300
+# Alpha-scanner refresh interval (seconds, 6 hours)
+scanner_refresh_secs = 21600
+# Default strategies for pipeline paper trading
+strategies = "funding-capture"
+# Default markets for pipeline paper trading
+markets = "BTC"
+# Combined PnL report output path
+combined_output = "data/combined-pnl.json"

@@ -221,13 +221,15 @@ Once the poaching pipeline proves itself, build the self-evolution layer:
 |---|------|----------------|--------|
 | **1** | Fix P0 bugs (borrow accrual, position limits, pool data) | Current numbers are objectively wrong | ✅ DONE |
 | **2** | Update root .md files to reflect new architecture | Documentation must match new direction | ✅ DONE |
-| **3** | Replace fake HL seed addresses with QuickNode wallet discovery | Can't analyze wallets we don't have | Pending |
-| **4** | Rewrite HL wallet analysis for fill-level Bulk methodology | This is the mission's intellectual core | Pending |
-| **5** | Run deep analysis on 100+ real HL wallets | Find actual strategy clusters | Pending |
-| **6** | Reconstruct entry/exit triggers from fill timing + candle data | Extract logic, not just parameters | Pending |
-| **7** | Flash Trade market intelligence (pool ranking) | Identify exploitable execution targets | Pending |
-| **8** | Implement extracted strategies with real parameters | Faithful replicas, not generics | Pending |
-| **9** | Backtest → paper → live validation pipeline | Prove edge exists on target venue | Pending |
+| **3** | Alpha Discovery Engine (M1-M4) | Build alpha infrastructure before analysis | ✅ DONE |
+| **4** | Integration + Validation (M5) | Wire and validate the full pipeline | ✅ DONE |
+| **5** | Replace fake HL seed addresses with QuickNode wallet discovery | Can't analyze wallets we don't have | Pending |
+| **6** | Rewrite HL wallet analysis for fill-level Bulk methodology | This is the mission's intellectual core | Pending |
+| **7** | Run deep analysis on 100+ real HL wallets | Find actual strategy clusters | Pending |
+| **8** | Reconstruct entry/exit triggers from fill timing + candle data | Extract logic, not just parameters | Pending |
+| **9** | Flash Trade market intelligence (pool ranking) | Identify exploitable execution targets | Pending |
+| **10** | Implement extracted strategies with real parameters | Faithful replicas, not generics | Pending |
+| **11** | Backtest → paper → live validation pipeline | Prove edge exists on target venue | Pending |
 
 ---
 

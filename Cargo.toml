@@ -34,6 +34,10 @@ path = "src/bin/copy-trader.rs"
 name = "whale-watcher"
 path = "src/bin/whale-watcher.rs"
 
+[[bin]]
+name = "pipeline"
+path = "src/bin/pipeline.rs"
+
 [dependencies]
 # Async
 tokio = { version = "1", features = ["full"] }
