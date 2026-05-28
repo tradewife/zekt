@@ -600,6 +600,12 @@ pub trait Strategy: Send + Sync {
     /// Produce a `MomentumSnapshot` from the current internal state.
     /// Used for logging and debugging.
     fn snapshot(&self) -> MomentumSnapshot;
+
+    /// Downcast support for trait-object downcasting (e.g., to `FundingRateCaptureStrategy`).
+    #[allow(dead_code)]
+    fn as_any(&self) -> &dyn std::any::Any;
+    /// Mutable downcast support.
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any;
 }
 
 // ---------------------------------------------------------------------------
@@ -663,6 +669,14 @@ impl Strategy for MomentumScalperStrategy {
 
     fn snapshot(&self) -> MomentumSnapshot {
         self.detector.analyze()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -1032,6 +1046,14 @@ impl Strategy for LpConsumptionStrategy {
         }
         snap
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// Helper to create an exit signal.
@@ -1375,6 +1397,14 @@ impl Strategy for MeanReversionStrategy {
             pool_data: None,
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1656,6 +1686,14 @@ impl Strategy for TrendFollowerStrategy {
 
     fn snapshot(&self) -> MomentumSnapshot {
         self.detector.analyze()
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -2523,6 +2561,14 @@ impl Strategy for DataDrivenScalperStrategy {
     fn snapshot(&self) -> MomentumSnapshot {
         self.detector.analyze()
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -2962,6 +3008,14 @@ impl Strategy for DataDrivenMeanRevertStrategy {
             volatility_pct: 0.0,
             pool_data: None,
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 
@@ -3660,6 +3714,14 @@ impl Strategy for GenericBlueprintStrategy {
             volatility_pct: 0.0,
             pool_data: None,
         }
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
     }
 }
 

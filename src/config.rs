@@ -783,11 +783,11 @@ max_positions = 5
         let fc_sub = config.strategy.get_sub_table("funding-capture")
             .expect("funding-capture sub-table should exist");
         let fc_table = fc_sub.as_table().unwrap();
-        assert_eq!(fc_table.get("min_annualized_rate_pct").unwrap().as_float(), Some(20.0));
-        assert_eq!(fc_table.get("exit_annualized_rate_pct").unwrap().as_float(), Some(5.0));
+        assert_eq!(fc_table.get("min_annualized_rate_pct").unwrap().as_float(), Some(10.0));
+        assert_eq!(fc_table.get("exit_annualized_rate_pct").unwrap().as_float(), Some(3.0));
         assert_eq!(fc_table.get("max_position_hours").unwrap().as_integer(), Some(72));
         assert_eq!(fc_table.get("leverage").unwrap().as_float(), Some(1.0));
-        assert_eq!(fc_table.get("clip_size_usd").unwrap().as_float(), Some(200.0));
+        assert_eq!(fc_table.get("clip_size_usd").unwrap().as_float(), Some(50.0));
 
         // Existing strategy sub-tables still work
         assert!(config.strategy.get_sub_table("lp-consumption").is_some());

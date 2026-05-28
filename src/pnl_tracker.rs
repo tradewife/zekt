@@ -11,7 +11,7 @@ use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use tracing::{debug, info, warn};
 
 // ── Data types for reading external trade logs ──────────────────────────────
@@ -32,6 +32,18 @@ struct CopyTrade {
     pnl_usd: Option<f64>,
     whale_size_usd: f64,
     sizing_multiplier: f64,
+    /// HL paper mode: entry fee (0.035% taker on notional).
+    #[serde(default)]
+    entry_fee: Option<f64>,
+    /// HL paper mode: exit fee (0.035% taker on notional).
+    #[serde(default)]
+    exit_fee: Option<f64>,
+    /// HL paper mode: borrow fee accrued over holding period.
+    #[serde(default)]
+    borrow_fee: Option<f64>,
+    /// HL paper mode: hours the position was held.
+    #[serde(default)]
+    hours_held: Option<f64>,
 }
 
 /// Whale alert entry (matches whale-watcher output format).
@@ -87,6 +99,34 @@ struct PaperSummary {
     total_fees: f64,
 }
 
+/// Fee breakdown from HlPaperEngine report.
+#[derive(Debug, Clone, Default, Deserialize)]
+struct HlFeeBreakdownLocal {
+    #[serde(default)]
+    taker_fees: f64,
+    #[serde(default)]
+    borrow_fees: f64,
+    #[serde(default)]
+    total: f64,
+}
+
+/// HlPaperEngine summary report (matches hl_paper.rs HlPaperSummary).
+#[derive(Debug, Clone, Deserialize)]
+struct HlPaperReportLocal {
+    #[serde(default)]
+    initial_balance: f64,
+    #[serde(default)]
+    final_balance: f64,
+    #[serde(default)]
+    net_pnl: f64,
+    #[serde(default)]
+    total_fees: HlFeeBreakdownLocal,
+    #[serde(default)]
+    total_trades: usize,
+    #[serde(default)]
+    win_rate: f64,
+}
+
 // ── Combined output types ───────────────────────────────────────────────────
 
 /// Per-strategy PnL breakdown.
@@ -104,6 +144,9 @@ pub struct StrategyPnl {
     pub win_rate_pct: f64,
     pub largest_win: f64,
     pub largest_loss: f64,
+    /// Path to the source data file for this strategy.
+    #[serde(default)]
+    pub data_source: String,
 }
 
 /// Combined PnL report across all strategies.
@@ -117,6 +160,12 @@ pub struct CombinedPnlReport {
     pub strategies: Vec<StrategyPnl>,
     pub data_sources: HashMap<String, String>,
     pub errors: Vec<String>,
+    /// Initial account balance before any trades.
+    #[serde(default)]
+    pub initial_balance: f64,
+    /// Current balance = initial_balance + sum(closed trade net_pnl).
+    #[serde(default)]
+    pub balance: f64,
 }
 
 // ── Tracker ─────────────────────────────────────────────────────────────────
@@ -128,7 +177,9 @@ pub struct PnlTrackerConfig {
     pub whale_alerts_path: PathBuf,
     pub paper_trades_path: PathBuf,
     pub paper_summary_path: PathBuf,
+    pub hl_paper_summary_path: PathBuf,
     pub output_path: PathBuf,
+    pub initial_balance: f64,
 }
 
 impl Default for PnlTrackerConfig {
@@ -138,7 +189,9 @@ impl Default for PnlTrackerConfig {
             whale_alerts_path: PathBuf::from("data/whale-alerts.json"),
             paper_trades_path: PathBuf::from("paper-trades.json"),
             paper_summary_path: PathBuf::from("data/paper-results/summary.json"),
+            hl_paper_summary_path: PathBuf::from("data/paper-results/hl-paper-summary.json"),
             output_path: PathBuf::from("data/combined-pnl.json"),
+            initial_balance: 0.0,
         }
     }
 }
@@ -227,6 +280,23 @@ impl PnlTracker {
             }
         };
 
+        // 5. HL paper summary (funding-capture strategy from HlPaperEngine)
+        let hl_paper_pnl = match self.read_hl_paper_summary() {
+            Ok(pnl) => {
+                data_sources.insert(
+                    "hl-paper-summary".to_string(),
+                    self.config.hl_paper_summary_path.display().to_string(),
+                );
+                Some(pnl)
+            }
+            Err(e) => {
+                let msg = format!("hl-paper-summary: {:#}", e);
+                debug!("{}", msg);
+                errors.push(msg);
+                None
+            }
+        };
+
         // Aggregate
         if let Some(pnl) = copy_pnl {
             strategies.push(pnl);
@@ -247,6 +317,7 @@ impl PnlTracker {
                 win_rate_pct: 0.0,
                 largest_win: 0.0,
                 largest_loss: 0.0,
+                data_source: self.config.whale_alerts_path.display().to_string(),
             });
         }
 
@@ -254,10 +325,17 @@ impl PnlTracker {
             strategies.push(pnl);
         }
 
+        if let Some(pnl) = hl_paper_pnl {
+            strategies.push(pnl);
+        }
+
         let total_net_pnl: f64 = strategies.iter().map(|s| s.net_pnl).sum();
         let total_gross_pnl: f64 = strategies.iter().map(|s| s.gross_pnl).sum();
         let total_fees: f64 = strategies.iter().map(|s| s.total_fees).sum();
         let total_trades: usize = strategies.iter().map(|s| s.total_trades).sum();
+
+        let initial_balance = self.config.initial_balance;
+        let balance = initial_balance + total_net_pnl;
 
         let report = CombinedPnlReport {
             generated_at: Utc::now().to_rfc3339(),
@@ -268,6 +346,8 @@ impl PnlTracker {
             strategies,
             data_sources,
             errors,
+            initial_balance,
+            balance,
         };
 
         Ok(report)
@@ -346,8 +426,19 @@ impl PnlTracker {
             0.0
         };
 
-        // Estimate fees as 0.1% of notional per trade (entry + exit)
-        let total_fees: f64 = trades.iter().map(|t| t.size_usd * 0.001 * 2.0).sum();
+        // Use actual fees from HL paper mode when available, otherwise estimate 0.1% per side.
+        let total_fees: f64 = trades
+            .iter()
+            .map(|t| {
+                if t.entry_fee.is_some() || t.exit_fee.is_some() {
+                    t.entry_fee.unwrap_or(0.0)
+                        + t.exit_fee.unwrap_or(0.0)
+                        + t.borrow_fee.unwrap_or(0.0)
+                } else {
+                    t.size_usd * 0.001 * 2.0
+                }
+            })
+            .sum();
 
         Ok(StrategyPnl {
             strategy: "copy-trader".to_string(),
@@ -362,6 +453,7 @@ impl PnlTracker {
             win_rate_pct: win_rate,
             largest_win,
             largest_loss,
+            data_source: path.display().to_string(),
         })
     }
 
@@ -445,6 +537,7 @@ impl PnlTracker {
             win_rate_pct: win_rate,
             largest_win,
             largest_loss,
+            data_source: path.display().to_string(),
         })
     }
 
@@ -459,6 +552,39 @@ impl PnlTracker {
             .with_context(|| format!("parse {}", path.display()))?;
         Ok(summary)
     }
+
+    /// Read HlPaperEngine summary as a funding-capture strategy entry.
+    fn read_hl_paper_summary(&self) -> Result<StrategyPnl> {
+        let path = &self.config.hl_paper_summary_path;
+        if !path.exists() {
+            anyhow::bail!("file not found: {}", path.display());
+        }
+        let data = fs::read_to_string(path)
+            .with_context(|| format!("read {}", path.display()))?;
+        let summary: HlPaperReportLocal = serde_json::from_str(&data)
+            .with_context(|| format!("parse {}", path.display()))?;
+
+        let total_fees = summary.total_fees.total;
+        let net_pnl = summary.net_pnl;
+        // gross_pnl = net_pnl + total_fees (since net = gross - fees)
+        let gross_pnl = net_pnl + total_fees;
+
+        Ok(StrategyPnl {
+            strategy: "funding-capture".to_string(),
+            total_trades: summary.total_trades,
+            closed_trades: summary.total_trades,
+            open_trades: 0,
+            gross_pnl,
+            total_fees,
+            net_pnl,
+            win_count: 0,
+            loss_count: 0,
+            win_rate_pct: summary.win_rate,
+            largest_win: 0.0,
+            largest_loss: 0.0,
+            data_source: path.display().to_string(),
+        })
+    }
 }
 
 /// Log the combined report summary to tracing.
@@ -471,6 +597,10 @@ pub fn log_report_summary(report: &CombinedPnlReport) {
     info!(
         "Total: gross=${:.2} fees=${:.2} net=${:.2}",
         report.total_gross_pnl, report.total_fees, report.total_net_pnl,
+    );
+    info!(
+        "Balance: initial=${:.2} current=${:.2}",
+        report.initial_balance, report.balance,
     );
 
     for s in &report.strategies {
@@ -492,6 +622,37 @@ pub fn log_report_summary(report: &CombinedPnlReport) {
             warn!("  - {}", e);
         }
     }
+}
+
+/// Standalone function to generate a combined PnL report from funding-capture
+/// (HlPaperEngine) and copy-trader sources.
+///
+/// Reads both data sources, aggregates into a combined report, and writes
+/// it atomically to `output_path`.
+///
+/// # Arguments
+/// * `hl_paper_summary_path` - Path to HlPaperEngine summary JSON
+/// * `copy_trades_path` - Path to copy-trader trade log JSON
+/// * `output_path` - Path for the combined report output
+/// * `initial_balance` - Starting account balance for balance tracking
+pub fn generate_combined_report(
+    hl_paper_summary_path: &Path,
+    copy_trades_path: &Path,
+    output_path: &Path,
+    initial_balance: f64,
+) -> Result<CombinedPnlReport> {
+    let config = PnlTrackerConfig {
+        hl_paper_summary_path: hl_paper_summary_path.to_path_buf(),
+        copy_trades_path: copy_trades_path.to_path_buf(),
+        initial_balance,
+        output_path: output_path.to_path_buf(),
+        ..PnlTrackerConfig::default()
+    };
+
+    let tracker = PnlTracker::new(config);
+    let report = tracker.run()?;
+
+    Ok(report)
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
@@ -696,7 +857,9 @@ mod tests {
             whale_alerts_path: whale_path,
             paper_trades_path: paper_path,
             paper_summary_path: dir.path().join("nonexistent.json"),
+            hl_paper_summary_path: dir.path().join("nonexistent-hl.json"),
             output_path: output_path.clone(),
+            initial_balance: 1000.0,
         };
 
         let tracker = PnlTracker::new(config);
@@ -737,7 +900,9 @@ mod tests {
             whale_alerts_path: dir.path().join("no-whale.json"),
             paper_trades_path: dir.path().join("no-paper.json"),
             paper_summary_path: dir.path().join("no-summary.json"),
+            hl_paper_summary_path: dir.path().join("no-hl-summary.json"),
             output_path,
+            initial_balance: 0.0,
         };
 
         let tracker = PnlTracker::new(config);
@@ -770,9 +935,12 @@ mod tests {
                 win_rate_pct: 75.0,
                 largest_win: 20.0,
                 largest_loss: -5.0,
+                data_source: String::new(),
             }],
             data_sources: HashMap::new(),
             errors: vec![],
+            initial_balance: 1000.0,
+            balance: 1042.5,
         };
         // Should not panic
         log_report_summary(&report);
@@ -812,6 +980,7 @@ mod tests {
             win_rate_pct: 100.0,
             largest_win: 50.0,
             largest_loss: 0.0,
+            data_source: "data/test.json".to_string(),
         };
         let json = serde_json::to_string(&pnl).unwrap();
         let parsed: StrategyPnl = serde_json::from_str(&json).unwrap();
@@ -831,6 +1000,8 @@ mod tests {
             strategies: vec![],
             data_sources: HashMap::new(),
             errors: vec!["some error".to_string()],
+            initial_balance: 1000.0,
+            balance: 1042.5,
         };
         let json = serde_json::to_string(&report).unwrap();
         let parsed: CombinedPnlReport = serde_json::from_str(&json).unwrap();
@@ -855,5 +1026,336 @@ mod tests {
         let summary = tracker.read_paper_summary().unwrap();
         assert!((summary.final_balance - 1050.0).abs() < 0.01);
         assert_eq!(summary.total_trades, 5);
+    }
+
+    // ── HL paper summary tests ──────────────────────────────────────────────
+
+    fn make_hl_paper_summary_json() -> &'static str {
+        r#"{
+            "start_time": "2026-05-27T00:00:00Z",
+            "end_time": "2026-05-27T12:00:00Z",
+            "initial_balance": 1000.0,
+            "final_balance": 1050.0,
+            "net_pnl": 42.5,
+            "total_fees": {
+                "taker_fees": 5.0,
+                "borrow_fees": 2.5,
+                "total": 7.5
+            },
+            "total_trades": 10,
+            "win_rate": 70.0,
+            "sharpe_ratio": 1.8,
+            "markets": []
+        }"#
+    }
+
+    #[test]
+    fn test_read_hl_paper_summary() {
+        let dir = TempDir::new().unwrap();
+        let path = dir.path().join("hl-paper-summary.json");
+        fs::write(&path, make_hl_paper_summary_json()).unwrap();
+
+        let config = PnlTrackerConfig {
+            hl_paper_summary_path: path,
+            ..PnlTrackerConfig::default()
+        };
+        let tracker = PnlTracker::new(config);
+        let pnl = tracker.read_hl_paper_summary().unwrap();
+
+        assert_eq!(pnl.strategy, "funding-capture");
+        assert_eq!(pnl.total_trades, 10);
+        assert_eq!(pnl.closed_trades, 10);
+        // gross_pnl = net_pnl + total_fees = 42.5 + 7.5 = 50.0
+        assert!((pnl.gross_pnl - 50.0).abs() < 0.01);
+        assert!((pnl.total_fees - 7.5).abs() < 0.01);
+        assert!((pnl.net_pnl - 42.5).abs() < 0.01);
+        assert!(!pnl.data_source.is_empty());
+    }
+
+    // ── Combined report tests (8 tests as specified) ────────────────────────
+
+    fn make_combined_report_setup(dir: &tempfile::TempDir) -> PnlTrackerConfig {
+        let copy_path = dir.path().join("copy-trades.json");
+        fs::write(&copy_path, make_copy_trades_json()).unwrap();
+
+        let hl_path = dir.path().join("hl-paper-summary.json");
+        fs::write(&hl_path, make_hl_paper_summary_json()).unwrap();
+
+        let output_path = dir.path().join("combined-pnl.json");
+
+        PnlTrackerConfig {
+            copy_trades_path: copy_path,
+            hl_paper_summary_path: hl_path,
+            output_path,
+            initial_balance: 10000.0,
+            ..PnlTrackerConfig::default()
+        }
+    }
+
+    #[test]
+    fn test_combined_report_has_all_fields() {
+        let dir = TempDir::new().unwrap();
+        let config = make_combined_report_setup(&dir);
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // Verify top-level fields
+        assert!(!report.generated_at.is_empty());
+        assert!(report.total_trades > 0);
+        assert!(report.total_fees >= 0.0);
+        assert!(report.total_gross_pnl.is_finite());
+        assert!(report.total_net_pnl.is_finite());
+        assert!(!report.strategies.is_empty());
+        assert!(!report.data_sources.is_empty());
+        assert!(report.initial_balance > 0.0);
+        assert!(report.balance.is_finite());
+
+        // Verify each strategy has required fields
+        for s in &report.strategies {
+            assert!(!s.strategy.is_empty());
+            assert!(s.total_trades > 0 || s.open_trades > 0);
+            assert!(s.gross_pnl.is_finite());
+            assert!(s.total_fees >= 0.0);
+            assert!(s.net_pnl.is_finite());
+        }
+    }
+
+    #[test]
+    fn test_combined_report_fee_consistency() {
+        let dir = TempDir::new().unwrap();
+        let config = make_combined_report_setup(&dir);
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // total_fees == sum(strategies[].total_fees)
+        let sum_fees: f64 = report.strategies.iter().map(|s| s.total_fees).sum();
+        assert!(
+            (report.total_fees - sum_fees).abs() < 0.01,
+            "total_fees ({}) should equal sum of strategy fees ({})",
+            report.total_fees,
+            sum_fees
+        );
+    }
+
+    #[test]
+    fn test_combined_report_net_pnl_formula() {
+        let dir = TempDir::new().unwrap();
+        let config = make_combined_report_setup(&dir);
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // Each strategy: net_pnl == gross_pnl - total_fees
+        for s in &report.strategies {
+            let expected_net = s.gross_pnl - s.total_fees;
+            assert!(
+                (s.net_pnl - expected_net).abs() < 0.01,
+                "strategy {} net_pnl ({}) should equal gross ({}) - fees ({})",
+                s.strategy,
+                s.net_pnl,
+                s.gross_pnl,
+                s.total_fees
+            );
+        }
+
+        // Total level
+        let expected_total_net = report.total_gross_pnl - report.total_fees;
+        assert!(
+            (report.total_net_pnl - expected_total_net).abs() < 0.01,
+            "total_net_pnl ({}) should equal total_gross ({}) - total_fees ({})",
+            report.total_net_pnl,
+            report.total_gross_pnl,
+            report.total_fees
+        );
+    }
+
+    #[test]
+    fn test_combined_report_balance_tracking() {
+        let dir = TempDir::new().unwrap();
+        let config = make_combined_report_setup(&dir);
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // balance == initial_balance + total_net_pnl
+        let expected_balance = report.initial_balance + report.total_net_pnl;
+        assert!(
+            (report.balance - expected_balance).abs() < 0.01,
+            "balance ({}) should equal initial ({}) + net_pnl ({})",
+            report.balance,
+            report.initial_balance,
+            report.total_net_pnl
+        );
+    }
+
+    #[test]
+    fn test_combined_report_with_empty_sources() {
+        let dir = TempDir::new().unwrap();
+        let output_path = dir.path().join("combined-pnl.json");
+
+        // Only provide copy trades, no HL paper summary
+        let copy_path = dir.path().join("copy-trades.json");
+        fs::write(&copy_path, make_copy_trades_json()).unwrap();
+
+        let config = PnlTrackerConfig {
+            copy_trades_path: copy_path,
+            hl_paper_summary_path: dir.path().join("no-hl-summary.json"),
+            output_path,
+            initial_balance: 5000.0,
+            ..PnlTrackerConfig::default()
+        };
+
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // Should succeed with at least copy-trader
+        assert!(
+            report
+                .strategies
+                .iter()
+                .any(|s| s.strategy == "copy-trader"),
+            "Should have copy-trader strategy"
+        );
+        // Should have errors for missing sources
+        assert!(!report.errors.is_empty());
+        // Balance should still be computed
+        assert!((report.initial_balance - 5000.0).abs() < 0.01);
+        let expected_balance = report.initial_balance + report.total_net_pnl;
+        assert!((report.balance - expected_balance).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_combined_report_atomic_writes() {
+        let dir = TempDir::new().unwrap();
+        let output_path = dir.path().join("combined-pnl.json");
+        let tmp_path = dir.path().join("combined-pnl.json.tmp");
+
+        let copy_path = dir.path().join("copy-trades.json");
+        fs::write(&copy_path, make_copy_trades_json()).unwrap();
+
+        let hl_path = dir.path().join("hl-paper-summary.json");
+        fs::write(&hl_path, make_hl_paper_summary_json()).unwrap();
+
+        let config = PnlTrackerConfig {
+            copy_trades_path: copy_path,
+            hl_paper_summary_path: hl_path,
+            output_path: output_path.clone(),
+            initial_balance: 1000.0,
+            ..PnlTrackerConfig::default()
+        };
+
+        let tracker = PnlTracker::new(config);
+        let _report = tracker.run().unwrap();
+
+        // Output file should exist
+        assert!(output_path.exists(), "Output file should exist after write");
+        // .tmp file should NOT exist (renamed)
+        assert!(
+            !tmp_path.exists(),
+            ".tmp file should have been renamed to final path"
+        );
+
+        // Output should be valid JSON
+        let content = fs::read_to_string(&output_path).unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+        assert!(parsed.get("generated_at").is_some());
+        assert!(parsed.get("strategies").is_some());
+    }
+
+    #[test]
+    fn test_combined_report_single_strategy() {
+        let dir = TempDir::new().unwrap();
+        let output_path = dir.path().join("combined-pnl.json");
+
+        // Only HL paper summary, no copy trades
+        let hl_path = dir.path().join("hl-paper-summary.json");
+        fs::write(&hl_path, make_hl_paper_summary_json()).unwrap();
+
+        let config = PnlTrackerConfig {
+            copy_trades_path: dir.path().join("no-copy.json"),
+            hl_paper_summary_path: hl_path,
+            output_path,
+            initial_balance: 5000.0,
+            ..PnlTrackerConfig::default()
+        };
+
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // Should have exactly funding-capture strategy
+        assert_eq!(report.strategies.len(), 1);
+        assert_eq!(report.strategies[0].strategy, "funding-capture");
+        assert!(
+            report
+                .strategies
+                .iter()
+                .any(|s| s.data_source.contains("hl-paper-summary")),
+            "funding-capture should have data_source set"
+        );
+
+        // Totals should equal single strategy
+        let s = &report.strategies[0];
+        assert!((report.total_net_pnl - s.net_pnl).abs() < 0.01);
+        assert!((report.total_gross_pnl - s.gross_pnl).abs() < 0.01);
+        assert!((report.total_fees - s.total_fees).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_combined_report_timestamp() {
+        let dir = TempDir::new().unwrap();
+        let config = make_combined_report_setup(&dir);
+        let tracker = PnlTracker::new(config);
+        let report = tracker.run().unwrap();
+
+        // Timestamp should be valid RFC3339
+        assert!(
+            chrono::DateTime::parse_from_rfc3339(&report.generated_at).is_ok(),
+            "generated_at should be valid RFC3339: {}",
+            report.generated_at
+        );
+
+        // Timestamp should be recent (within last 60 seconds)
+        let parsed =
+            chrono::DateTime::parse_from_rfc3339(&report.generated_at).unwrap();
+        let now = chrono::Utc::now();
+        let diff = now.signed_duration_since(parsed.with_timezone(&chrono::Utc));
+        assert!(
+            diff.num_seconds().abs() < 60,
+            "generated_at should be recent, but was {} seconds from now",
+            diff.num_seconds()
+        );
+    }
+
+    // ── generate_combined_report() standalone function test ─────────────────
+
+    #[test]
+    fn test_generate_combined_report_standalone() {
+        let dir = TempDir::new().unwrap();
+
+        let copy_path = dir.path().join("copy-trades.json");
+        fs::write(&copy_path, make_copy_trades_json()).unwrap();
+
+        let hl_path = dir.path().join("hl-paper-summary.json");
+        fs::write(&hl_path, make_hl_paper_summary_json()).unwrap();
+
+        let output_path = dir.path().join("combined-pnl.json");
+
+        let report = generate_combined_report(
+            &hl_path,
+            &copy_path,
+            &output_path,
+            10000.0,
+        )
+        .unwrap();
+
+        assert!(output_path.exists());
+        assert!(!report.strategies.is_empty());
+        assert!((report.initial_balance - 10000.0).abs() < 0.01);
+
+        // Verify balance tracking
+        let expected_balance = report.initial_balance + report.total_net_pnl;
+        assert!((report.balance - expected_balance).abs() < 0.01);
+
+        // Verify fee consistency
+        let sum_fees: f64 = report.strategies.iter().map(|s| s.total_fees).sum();
+        assert!((report.total_fees - sum_fees).abs() < 0.01);
     }
 }

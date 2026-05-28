@@ -24,6 +24,12 @@ use tracing::{debug, error, info, warn};
 
 const HL_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
+/// Hyperliquid taker fee rate: 0.035% of notional per side.
+const HL_TAKER_FEE_RATE: f64 = 0.00035;
+
+/// Hyperliquid hourly borrow rate: 0.01% of notional per hour.
+const HL_BORROW_RATE_PER_HOUR: f64 = 0.0001;
+
 // ── CLI ──────────────────────────────────────────────────────────────────────
 
 fn validate_max_position_pct(v: &str) -> Result<f64, String> {
@@ -87,6 +93,10 @@ struct Args {
     #[arg(long)]
     paper: bool,
 
+    /// HL paper trading mode — paper trade with Hyperliquid fee model (0.035% taker, 0.01%/hr borrow).
+    #[arg(long)]
+    hl_paper: bool,
+
     /// Live trading mode (requires human approval gate).
     #[arg(long)]
     live: bool,
@@ -126,11 +136,15 @@ struct Args {
 
 impl Args {
     fn validate(&self) -> Result<()> {
-        if !self.paper && !self.live {
-            anyhow::bail!("must specify --paper or --live mode");
+        let mode_count = [self.paper, self.hl_paper, self.live]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+        if mode_count == 0 {
+            anyhow::bail!("must specify --paper, --hl-paper, or --live mode");
         }
-        if self.paper && self.live {
-            anyhow::bail!("cannot specify both --paper and --live");
+        if mode_count > 1 {
+            anyhow::bail!("cannot specify more than one of --paper, --hl-paper, --live");
         }
         if !self.watchlist.exists() {
             anyhow::bail!(
@@ -266,6 +280,18 @@ pub struct CopyTrade {
     pub pnl_usd: Option<f64>,
     pub whale_size_usd: f64,
     pub sizing_multiplier: f64,
+    /// HL paper mode: entry fee (0.035% taker on notional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_fee: Option<f64>,
+    /// HL paper mode: exit fee (0.035% taker on notional).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub exit_fee: Option<f64>,
+    /// HL paper mode: borrow fee accrued over holding period.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub borrow_fee: Option<f64>,
+    /// HL paper mode: hours the position was held.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub hours_held: Option<f64>,
 }
 
 // ── HL Position Types (inline, matching hl_info.rs format) ──────────────────
@@ -590,6 +616,35 @@ impl TradeLog {
     }
 }
 
+// ── HL Paper Fee Helpers ─────────────────────────────────────────────────────
+
+/// Calculate hours between an RFC3339 timestamp and now.
+fn hours_since_timestamp(timestamp: &str) -> f64 {
+    let Ok(dt) = chrono::DateTime::parse_from_rfc3339(timestamp) else {
+        return 0.0;
+    };
+    let now = Utc::now();
+    let diff = now.naive_utc() - dt.naive_utc();
+    diff.num_seconds() as f64 / 3600.0
+}
+
+/// Compute HL paper fees for opening a position.
+fn hl_entry_fee(size_usd: f64) -> f64 {
+    size_usd * HL_TAKER_FEE_RATE
+}
+
+/// Compute HL paper fees for closing a position.
+fn hl_close_fees(size_usd: f64, hours_held: f64) -> (f64, f64) {
+    let exit_fee = size_usd * HL_TAKER_FEE_RATE;
+    let borrow_fee = size_usd * HL_BORROW_RATE_PER_HOUR * hours_held;
+    (exit_fee, borrow_fee)
+}
+
+/// Compute net PnL for HL paper mode: gross_pnl - entry_fee - exit_fee - borrow_fee.
+fn hl_net_pnl(gross_pnl: f64, entry_fee: f64, exit_fee: f64, borrow_fee: f64) -> f64 {
+    gross_pnl - entry_fee - exit_fee - borrow_fee
+}
+
 // ── Engine ───────────────────────────────────────────────────────────────────
 
 pub type SnapshotMap = HashMap<String, Vec<WalletPosition>>;
@@ -603,6 +658,8 @@ pub struct CopyTraderConfig {
     pub sizing_multiplier: f64,
     pub paper_balance: f64,
     pub poll_interval_secs: u64,
+    /// When true, use Hyperliquid fee model (0.035% taker, 0.01%/hr borrow).
+    pub hl_paper: bool,
 }
 
 pub struct CopyTraderEngine {
@@ -686,6 +743,14 @@ impl CopyTraderEngine {
                 pnl_usd: None,
                 whale_size_usd: whale_size,
                 sizing_multiplier: self.config.sizing_multiplier,
+                entry_fee: if self.config.hl_paper {
+                    Some(hl_entry_fee(our_size))
+                } else {
+                    None
+                },
+                exit_fee: None,
+                borrow_fee: None,
+                hours_held: None,
             };
 
             info!(
@@ -717,12 +782,27 @@ impl CopyTraderEngine {
                 updated.status = TradeStatus::Closed;
                 updated.close_reason = Some(CloseReason::WalletClosed);
                 updated.exit_price = Some(mark_price);
-                updated.pnl_usd = Some(unrealized_pnl_usd(
+
+                let gross_pnl = unrealized_pnl_usd(
                     updated.size_usd,
                     updated.entry_price,
                     mark_price,
                     matches!(updated.direction, Direction::Long),
-                ));
+                );
+
+                if self.config.hl_paper {
+                    let hours = hours_since_timestamp(&updated.timestamp);
+                    let entry_fee = updated.entry_fee.unwrap_or(hl_entry_fee(updated.size_usd));
+                    let (exit_fee, borrow_fee) = hl_close_fees(updated.size_usd, hours);
+                    let net = hl_net_pnl(gross_pnl, entry_fee, exit_fee, borrow_fee);
+                    updated.entry_fee = Some(entry_fee);
+                    updated.exit_fee = Some(exit_fee);
+                    updated.borrow_fee = Some(borrow_fee);
+                    updated.hours_held = Some(hours);
+                    updated.pnl_usd = Some(net);
+                } else {
+                    updated.pnl_usd = Some(gross_pnl);
+                }
 
                 self.account_balance += updated.pnl_usd.unwrap_or(0.0);
 
@@ -777,12 +857,27 @@ impl CopyTraderEngine {
                 updated.status = TradeStatus::Closed;
                 updated.close_reason = Some(CloseReason::StopLoss);
                 updated.exit_price = Some(current_price);
-                updated.pnl_usd = Some(unrealized_pnl_usd(
+
+                let gross_pnl = unrealized_pnl_usd(
                     updated.size_usd,
                     updated.entry_price,
                     current_price,
                     is_long,
-                ));
+                );
+
+                if self.config.hl_paper {
+                    let hours = hours_since_timestamp(&updated.timestamp);
+                    let entry_fee = updated.entry_fee.unwrap_or(hl_entry_fee(updated.size_usd));
+                    let (exit_fee, borrow_fee) = hl_close_fees(updated.size_usd, hours);
+                    let net = hl_net_pnl(gross_pnl, entry_fee, exit_fee, borrow_fee);
+                    updated.entry_fee = Some(entry_fee);
+                    updated.exit_fee = Some(exit_fee);
+                    updated.borrow_fee = Some(borrow_fee);
+                    updated.hours_held = Some(hours);
+                    updated.pnl_usd = Some(net);
+                } else {
+                    updated.pnl_usd = Some(gross_pnl);
+                }
 
                 self.account_balance += updated.pnl_usd.unwrap_or(0.0);
 
@@ -833,8 +928,15 @@ async fn main() -> Result<()> {
         .init();
 
     info!("=== copy-trader ===");
+    let mode_str = if args.hl_paper {
+        "hl-paper"
+    } else if args.paper {
+        "paper"
+    } else {
+        "live"
+    };
     info!(
-        mode = if args.paper { "paper" } else { "live" },
+        mode = mode_str,
         watchlist = %args.watchlist.display(),
         max_position_pct = args.max_position_pct,
         max_positions = args.max_positions,
@@ -847,7 +949,7 @@ async fn main() -> Result<()> {
     );
 
     if args.live {
-        anyhow::bail!("--live mode is not yet implemented. Use --paper for paper trading.");
+        anyhow::bail!("--live mode is not yet implemented. Use --paper or --hl-paper for paper trading.");
     }
 
     let wallets = load_watchlist(&args.watchlist)?;
@@ -871,6 +973,7 @@ async fn main() -> Result<()> {
         sizing_multiplier: args.sizing_multiplier,
         paper_balance: args.paper_balance,
         poll_interval_secs: 30,
+        hl_paper: args.hl_paper,
     };
     let mut engine = CopyTraderEngine::new(config, trade_log);
 
@@ -892,11 +995,12 @@ async fn main() -> Result<()> {
 
         let mut total_new = 0;
         let mut total_errors = 0;
+        let mut accumulated_mark_prices: HashMap<String, f64> = HashMap::new();
 
         for wallet in &wallets {
             match fetch_wallet_positions(&client, &wallet.address).await {
                 Ok(positions) => {
-                    let mark_prices: HashMap<String, f64> = positions
+                    let wallet_mark_prices: HashMap<String, f64> = positions
                         .iter()
                         .filter_map(|p| {
                             let px: f64 = p.mark_px.as_ref()?.parse().ok()?;
@@ -904,7 +1008,12 @@ async fn main() -> Result<()> {
                         })
                         .collect();
 
-                    match engine.process_wallet(&wallet.address, positions, &mark_prices) {
+                    // Accumulate mark prices across all wallets for stop-loss checks
+                    for (coin, px) in &wallet_mark_prices {
+                        accumulated_mark_prices.entry(coin.clone()).or_insert(*px);
+                    }
+
+                    match engine.process_wallet(&wallet.address, positions, &wallet_mark_prices) {
                         Ok(count) => total_new += count,
                         Err(e) => {
                             warn!(
@@ -927,8 +1036,7 @@ async fn main() -> Result<()> {
             }
         }
 
-        let mark_prices: HashMap<String, f64> = HashMap::new();
-        if let Err(e) = engine.check_stop_losses(&mark_prices) {
+        if let Err(e) = engine.check_stop_losses(&accumulated_mark_prices) {
             error!(error = %e, "Failed to check stop-losses");
         }
 
@@ -1607,6 +1715,7 @@ mod tests {
             direction: Direction::Long, size_usd: 100.0, entry_price: 60000.0,
             status: TradeStatus::Open, close_reason: None, exit_price: None, pnl_usd: None,
             whale_size_usd: 1000.0, sizing_multiplier: 0.1,
+            entry_fee: None, exit_fee: None, borrow_fee: None, hours_held: None,
         };
         let s = serde_json::to_string(&t).unwrap();
         let p: CopyTrade = serde_json::from_str(&s).unwrap();
@@ -1622,10 +1731,12 @@ mod tests {
             status: TradeStatus::Closed, close_reason: Some(CloseReason::StopLoss),
             exit_price: Some(3150.0), pnl_usd: Some(-2.5),
             whale_size_usd: 500.0, sizing_multiplier: 0.1,
+            entry_fee: Some(0.0175), exit_fee: Some(0.0175), borrow_fee: Some(0.005), hours_held: Some(1.0),
         };
         let s = serde_json::to_string(&t).unwrap();
         let p: CopyTrade = serde_json::from_str(&s).unwrap();
         assert_eq!(p.close_reason, Some(CloseReason::StopLoss));
+        assert!((p.entry_fee.unwrap() - 0.0175).abs() < 1e-10);
     }
 
     #[test]
@@ -1635,12 +1746,17 @@ mod tests {
             market: "M".into(), direction: Direction::Long, size_usd: 1.0, entry_price: 1.0,
             status: TradeStatus::Open, close_reason: None, exit_price: None, pnl_usd: None,
             whale_size_usd: 1.0, sizing_multiplier: 0.1,
+            entry_fee: None, exit_fee: None, borrow_fee: None, hours_held: None,
         };
         let v = serde_json::to_value(&t).unwrap();
         for f in &["id","timestamp","wallet_address","market","direction","size_usd","entry_price","status"] {
             assert!(v.get(*f).is_some(), "missing: {}", f);
         }
         assert!(v.get("close_reason").is_none());
+        assert!(v.get("entry_fee").is_none());
+        assert!(v.get("exit_fee").is_none());
+        assert!(v.get("borrow_fee").is_none());
+        assert!(v.get("hours_held").is_none());
     }
 
     // === Integration: Full Pipeline (2 tests) ===
@@ -1685,18 +1801,661 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // === Bug-Fix: Stop-Loss with Real Mark Prices (6 tests) ===
+
+    #[test]
+    fn test_stop_loss_fires_long() {
+        // Long position with price dropped 6% (below 5% threshold)
+        let dir = std::env::temp_dir().join("ct-sl-long");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+        // Open long BTC at 60000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+        // Price drops 6% → 56400
+        let mark_prices = hashmap!("BTC" => 56400.0);
+        let closed = eng.check_stop_losses(&mark_prices).unwrap();
+        assert_eq!(closed, 1);
+        let trade = &eng.trade_log().trades()[0];
+        assert_eq!(trade.status, TradeStatus::Closed);
+        assert_eq!(trade.close_reason, Some(CloseReason::StopLoss));
+        assert!(trade.pnl_usd.unwrap() < 0.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stop_loss_fires_short() {
+        // Short position with price risen 6% (above 5% threshold)
+        let dir = std::env::temp_dir().join("ct-sl-short");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+        // Open short ETH at 3000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("ETH", "-2.0", "3000.0")],
+            &hashmap!("ETH" => 3000.0),
+        )
+        .unwrap();
+        // Price rises 6% → 3180
+        let mark_prices = hashmap!("ETH" => 3180.0);
+        let closed = eng.check_stop_losses(&mark_prices).unwrap();
+        assert_eq!(closed, 1);
+        let trade = &eng.trade_log().trades()[0];
+        assert_eq!(trade.status, TradeStatus::Closed);
+        assert_eq!(trade.close_reason, Some(CloseReason::StopLoss));
+        assert!(trade.pnl_usd.unwrap() < 0.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stop_loss_no_trigger() {
+        // Position within stop-loss threshold — should NOT close
+        let dir = std::env::temp_dir().join("ct-sl-no");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+        // Price only drops 3% → 58200 (within 5% threshold)
+        let mark_prices = hashmap!("BTC" => 58200.0);
+        let closed = eng.check_stop_losses(&mark_prices).unwrap();
+        assert_eq!(closed, 0);
+        assert_eq!(eng.trade_log().open_count(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_mark_prices_populated() {
+        // Verify that mark_prices HashMap is correctly populated from position data
+        let positions = vec![
+            WalletPosition {
+                coin: "BTC".into(),
+                size: "1.0".into(),
+                entry_px: "60000.0".into(),
+                mark_px: Some("61000.0".into()),
+            },
+            WalletPosition {
+                coin: "ETH".into(),
+                size: "5.0".into(),
+                entry_px: "3000.0".into(),
+                mark_px: Some("3100.0".into()),
+            },
+            WalletPosition {
+                coin: "SOL".into(),
+                size: "100.0".into(),
+                entry_px: "150.0".into(),
+                mark_px: None, // No mark price
+            },
+        ];
+
+        let mark_prices: HashMap<String, f64> = positions
+            .iter()
+            .filter_map(|p| {
+                let px: f64 = p.mark_px.as_ref()?.parse().ok()?;
+                Some((p.coin.clone(), px))
+            })
+            .collect();
+
+        // Should have 2 entries (BTC, ETH), not SOL (no mark_px)
+        assert_eq!(mark_prices.len(), 2);
+        assert!((mark_prices["BTC"] - 61000.0).abs() < 0.01);
+        assert!((mark_prices["ETH"] - 3100.0).abs() < 0.01);
+        assert!(!mark_prices.contains_key("SOL"));
+    }
+
+    #[test]
+    fn test_stop_loss_no_empty_hashmap() {
+        // Verify stop-loss does NOT fire when mark_prices is empty —
+        // this proves the bug (empty HashMap) doesn't silently prevent stop-losses
+        // by showing that with real data it works, and empty data means no closure
+        // when the fallback is the entry price (which equals the entry, so no loss)
+        let dir = std::env::temp_dir().join("ct-sl-empty");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        // With empty HashMap, check_stop_losses falls back to entry_price → no loss
+        let empty: HashMap<String, f64> = HashMap::new();
+        let closed = eng.check_stop_losses(&empty).unwrap();
+        assert_eq!(
+            closed, 0,
+            "Empty HashMap should not trigger stop-loss (falls back to entry price = no loss)"
+        );
+        assert_eq!(eng.trade_log().open_count(), 1);
+
+        // But with real mark prices showing a 6% drop, it SHOULD fire
+        let real_prices = hashmap!("BTC" => 56400.0);
+        let closed = eng.check_stop_losses(&real_prices).unwrap();
+        assert_eq!(
+            closed, 1,
+            "Real mark prices should trigger stop-loss for 6% drop"
+        );
+        assert_eq!(eng.trade_log().open_count(), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_stop_loss_accumulated_mark_prices_multi_wallet() {
+        // Simulate the main-loop pattern: accumulate mark prices across wallets
+        let dir = std::env::temp_dir().join("ct-sl-acc");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Wallet 1: BTC position
+        eng.process_wallet(
+            "w1",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+        // Wallet 2: ETH position
+        eng.process_wallet(
+            "w2",
+            vec![make_wp("ETH", "2.0", "3000.0")],
+            &hashmap!("ETH" => 3000.0),
+        )
+        .unwrap();
+
+        // Accumulated mark prices from both wallets
+        let mut accumulated: HashMap<String, f64> = HashMap::new();
+        accumulated.insert("BTC".to_string(), 56400.0); // -6% → triggers SL
+        accumulated.insert("ETH".to_string(), 2940.0); // -2% → no SL
+
+        let closed = eng.check_stop_losses(&accumulated).unwrap();
+        assert_eq!(closed, 1, "Only BTC should trigger stop-loss");
+        let btc_trade = eng
+            .trade_log()
+            .trades()
+            .iter()
+            .find(|t| t.market == "BTC")
+            .unwrap();
+        assert_eq!(btc_trade.close_reason, Some(CloseReason::StopLoss));
+        let eth_trade = eng
+            .trade_log()
+            .trades()
+            .iter()
+            .find(|t| t.market == "ETH")
+            .unwrap();
+        assert_eq!(eth_trade.status, TradeStatus::Open);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    // === HL Paper Mode Tests (13 tests) ===
+
+    #[test]
+    fn test_hl_paper_cli_flag() {
+        // Verify --hl-paper flag is parsed correctly
+        let args = Args::try_parse_from(["copy-trader", "--hl-paper", "--watchlist", "/tmp/test.json"]);
+        assert!(args.is_ok(), "Failed to parse --hl-paper flag");
+        let args = args.unwrap();
+        assert!(args.hl_paper);
+        assert!(!args.paper);
+        assert!(!args.live);
+    }
+
+    #[test]
+    fn test_hl_paper_cli_conflict() {
+        // Cannot use --hl-paper with --paper
+        let args = Args::try_parse_from(["copy-trader", "--hl-paper", "--paper", "--watchlist", "/tmp/test.json"]);
+        let args = args.unwrap();
+        assert!(args.validate().is_err(), "Should reject --hl-paper + --paper");
+    }
+
+    #[test]
+    fn test_hl_paper_mode_fee_tracking() {
+        // When HL paper mode is enabled, entry_fee is recorded when opening a position
+        let dir = std::env::temp_dir().join("ct-hl-fees");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        assert!(trade.entry_fee.is_some(), "entry_fee should be recorded in HL paper mode");
+        let expected_entry_fee = trade.size_usd * HL_TAKER_FEE_RATE;
+        assert!(
+            (trade.entry_fee.unwrap() - expected_entry_fee).abs() < 1e-10,
+            "entry_fee mismatch"
+        );
+        assert!(trade.exit_fee.is_none(), "exit_fee should be None for open trade");
+        assert!(trade.borrow_fee.is_none(), "borrow_fee should be None for open trade");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_net_pnl_calculation() {
+        // net_pnl = gross_pnl - entry_fee - exit_fee - borrow_fee
+        let dir = std::env::temp_dir().join("ct-hl-net");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Open long BTC at 60000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        let size_usd = trade.size_usd;
+        let entry_fee = trade.entry_fee.unwrap();
+
+        // Close when price goes to 63000 (+5%)
+        eng.process_wallet("0xa", vec![], &hashmap!("BTC" => 63000.0)).unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        assert_eq!(trade.status, TradeStatus::Closed);
+
+        let gross_pnl = size_usd * (63000.0 - 60000.0) / 60000.0;
+        let exit_fee = trade.exit_fee.unwrap();
+        let borrow_fee = trade.borrow_fee.unwrap();
+        let hours_held = trade.hours_held.unwrap();
+        let expected_net = gross_pnl - entry_fee - exit_fee - borrow_fee;
+
+        assert!(
+            (trade.pnl_usd.unwrap() - expected_net).abs() < 1e-6,
+            "net_pnl should be gross_pnl minus all fees"
+        );
+
+        // Verify exit_fee = size_usd * HL_TAKER_FEE_RATE
+        assert!(
+            (exit_fee - size_usd * HL_TAKER_FEE_RATE).abs() < 1e-10,
+            "exit_fee should be taker fee on notional"
+        );
+
+        // Verify borrow_fee = size_usd * HL_BORROW_RATE_PER_HOUR * hours_held
+        assert!(
+            (borrow_fee - size_usd * HL_BORROW_RATE_PER_HOUR * hours_held).abs() < 1e-6,
+            "borrow_fee should be size_usd * rate * hours"
+        );
+
+        // Net PnL should be less than gross PnL (fees reduce it)
+        assert!(trade.pnl_usd.unwrap() < gross_pnl, "net should be less than gross after fees");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_position_size_cap() {
+        // Position size capped at account_balance * max_position_pct / 100
+        let dir = std::env::temp_dir().join("ct-hl-cap");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.paper_balance = 5000.0;
+        cfg.max_position_pct = 20.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Whale has $100k BTC position — our cap should be 5000 * 20% = $1000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "100000.0")],
+            &hashmap!("BTC" => 100000.0),
+        )
+        .unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        assert!(
+            (trade.size_usd - 1000.0).abs() < 0.01,
+            "size should be capped at 1000 (5000 * 20%)"
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_borrow_fee() {
+        // Borrow fee accrues based on hours held
+        // borrow_fee = notional * 0.01%/hr * hours_held
+        let notional = 10000.0;
+        let hours = 5.0;
+        let expected_borrow = notional * HL_BORROW_RATE_PER_HOUR * hours;
+        // 10000 * 0.0001 * 5 = 5.0
+        assert!(
+            (expected_borrow - 5.0).abs() < 1e-10,
+            "borrow fee should be $5 for $10k over 5 hours"
+        );
+
+        // Also verify through the helper
+        let (_, borrow_fee) = hl_close_fees(notional, hours);
+        assert!((borrow_fee - expected_borrow).abs() < 1e-10);
+
+        // Zero hours → zero borrow
+        let (_, zero_borrow) = hl_close_fees(notional, 0.0);
+        assert!((zero_borrow - 0.0).abs() < 1e-15);
+    }
+
+    #[test]
+    fn test_hl_paper_api_failure_graceful() {
+        // Simulate API failure scenario: engine continues processing after error
+        let dir = std::env::temp_dir().join("ct-hl-api");
+        let _ = fs::create_dir_all(&dir);
+        let cfg = make_hl_config();
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Process wallet 1 successfully
+        let result = eng.process_wallet(
+            "w1",
+            vec![make_wp("BTC", "0.5", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        );
+        assert!(result.is_ok(), "First wallet should succeed");
+        assert_eq!(result.unwrap(), 1);
+
+        // Simulate API failure by passing empty positions (wallet went away)
+        // This should not crash — just no diff detected
+        let result = eng.process_wallet("w2", vec![], &hashmap!());
+        assert!(result.is_ok(), "Empty positions should not crash");
+        assert_eq!(result.unwrap(), 0);
+
+        // Engine should still be functional
+        assert_eq!(eng.trade_log().open_count(), 1);
+        assert_eq!(eng.account_balance(), 10000.0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_max_positions() {
+        // Max positions limit enforced in HL paper mode
+        let dir = std::env::temp_dir().join("ct-hl-maxpos");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.max_positions = 2;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Open 2 positions (max)
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "0.5", "60000.0"), make_wp("ETH", "2.0", "3000.0")],
+            &hashmap!("BTC" => 60000.0, "ETH" => 3000.0),
+        )
+        .unwrap();
+        assert_eq!(eng.trade_log().open_count(), 2);
+
+        // Third position should be skipped
+        eng.process_wallet(
+            "0xb",
+            vec![make_wp("SOL", "10.0", "150.0")],
+            &hashmap!("SOL" => 150.0),
+        )
+        .unwrap();
+        assert_eq!(eng.trade_log().open_count(), 2, "Third position should be skipped");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_position_diff_new() {
+        // Detect new positions in HL paper mode
+        let old: Vec<WalletPosition> = vec![];
+        let new = vec![
+            make_wp("BTC", "0.5", "60000.0"),
+            make_wp("ETH", "2.0", "3000.0"),
+        ];
+        let diff = detect_positions_diff(&old, &new);
+        assert_eq!(diff.new_positions.len(), 2, "Both positions should be new");
+        assert!(diff.closed_positions.is_empty());
+    }
+
+    #[test]
+    fn test_position_diff_closed() {
+        // Detect closed positions in HL paper mode
+        let old = vec![
+            make_wp("BTC", "0.5", "60000.0"),
+            make_wp("ETH", "2.0", "3000.0"),
+        ];
+        let new = vec![make_wp("BTC", "0.5", "60000.0")];
+        let diff = detect_positions_diff(&old, &new);
+        assert_eq!(diff.closed_positions.len(), 1, "ETH should be closed");
+        assert_eq!(diff.closed_positions[0].coin, "ETH");
+        assert!(diff.new_positions.is_empty());
+    }
+
+    #[test]
+    fn test_hl_paper_balance_tracking() {
+        // Balance updated correctly after close in HL paper mode (including fees)
+        let dir = std::env::temp_dir().join("ct-hl-bal");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.paper_balance = 10000.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        let initial_balance = eng.account_balance();
+
+        // Open long BTC position (size = $60000 at 100% balance would be capped to $10000)
+        // With max_position_pct=100 and balance=10000, sizing_multiplier=1.0:
+        // raw_size = 60000 * 1.0 = 60000, max = 10000 * 1.0 = 10000 → capped to 10000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        // Balance unchanged while position is open
+        assert!(
+            (eng.account_balance() - initial_balance).abs() < 1e-10,
+            "Balance should not change on open"
+        );
+
+        // Close with profit: price goes to 66000 (+10%)
+        eng.process_wallet("0xa", vec![], &hashmap!("BTC" => 66000.0)).unwrap();
+
+        let final_balance = eng.account_balance();
+        assert!(
+            final_balance > initial_balance,
+            "Balance should increase after profitable close"
+        );
+
+        // Verify: gross_pnl = 10000 * (66000-60000)/60000 = 1000
+        // fees: entry=10000*0.00035=3.5, exit=10000*0.00035=3.5, borrow varies by time
+        // net_pnl = 1000 - 3.5 - 3.5 - borrow_fee < 1000
+        let trade = &eng.trade_log().trades()[0];
+        let net_pnl = trade.pnl_usd.unwrap();
+        assert!(net_pnl < 1000.0, "Net PnL should be less than gross due to fees");
+        assert!(net_pnl > 0.0, "Net PnL should still be positive for 10% gain");
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_stop_loss_with_fees() {
+        // Stop-loss in HL paper mode includes fee deduction
+        let dir = std::env::temp_dir().join("ct-hl-sl");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.stop_loss_pct = 5.0;
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Open long BTC at 60000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        // Price drops 6% → stop-loss triggers
+        let closed = eng.check_stop_losses(&hashmap!("BTC" => 56400.0)).unwrap();
+        assert_eq!(closed, 1);
+
+        let trade = &eng.trade_log().trades()[0];
+        assert_eq!(trade.status, TradeStatus::Closed);
+        assert_eq!(trade.close_reason, Some(CloseReason::StopLoss));
+        assert!(trade.exit_fee.is_some(), "exit_fee should be recorded");
+        assert!(trade.borrow_fee.is_some(), "borrow_fee should be recorded");
+        assert!(trade.hours_held.is_some(), "hours_held should be recorded");
+
+        // Net PnL should be worse than gross due to fees
+        let gross_pnl = trade.size_usd * (56400.0 - 60000.0) / 60000.0;
+        assert!(trade.pnl_usd.unwrap() < gross_pnl, "Net should be less than gross after fees");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_no_fee_in_normal_mode() {
+        // When hl_paper=false, no fees are tracked
+        let dir = std::env::temp_dir().join("ct-hl-nofee");
+        let _ = fs::create_dir_all(&dir);
+        let cfg = make_config(); // hl_paper: false
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "0.5", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        assert!(trade.entry_fee.is_none(), "No entry_fee in normal paper mode");
+        assert!(trade.exit_fee.is_none());
+        assert!(trade.borrow_fee.is_none());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_paper_loss_with_fees() {
+        // Losing trade in HL paper mode: fees make the loss worse
+        let dir = std::env::temp_dir().join("ct-hl-loss");
+        let _ = fs::create_dir_all(&dir);
+        let mut cfg = make_hl_config();
+        cfg.max_position_pct = 100.0;
+        cfg.sizing_multiplier = 1.0;
+        let tl = TradeLog::new(dir.join("t.json"));
+        let mut eng = CopyTraderEngine::new(cfg, tl);
+
+        // Open long at 60000
+        eng.process_wallet(
+            "0xa",
+            vec![make_wp("BTC", "1.0", "60000.0")],
+            &hashmap!("BTC" => 60000.0),
+        )
+        .unwrap();
+
+        // Close at 57000 (-5%)
+        eng.process_wallet("0xa", vec![], &hashmap!("BTC" => 57000.0)).unwrap();
+
+        let trade = &eng.trade_log().trades()[0];
+        let gross_pnl = trade.size_usd * (57000.0 - 60000.0) / 60000.0; // negative
+        let net_pnl = trade.pnl_usd.unwrap();
+
+        assert!(net_pnl < gross_pnl, "Fees should make the loss worse");
+        assert!(net_pnl < 0.0, "Net PnL should be negative");
+
+        let entry_fee = trade.entry_fee.unwrap();
+        let exit_fee = trade.exit_fee.unwrap();
+        let borrow_fee = trade.borrow_fee.unwrap();
+        let expected_net = gross_pnl - entry_fee - exit_fee - borrow_fee;
+        assert!((net_pnl - expected_net).abs() < 1e-6);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn test_hl_fee_helper_functions() {
+        // Unit test the fee helper functions directly
+        let size = 10000.0;
+
+        // Entry fee
+        let entry = hl_entry_fee(size);
+        assert!((entry - 10000.0 * 0.00035).abs() < 1e-10);
+        assert!((entry - 3.5).abs() < 1e-10);
+
+        // Close fees for 10 hours held
+        let (exit_fee, borrow_fee) = hl_close_fees(size, 10.0);
+        assert!((exit_fee - 3.5).abs() < 1e-10);
+        assert!((borrow_fee - 10000.0 * 0.0001 * 10.0).abs() < 1e-10);
+        assert!((borrow_fee - 10.0).abs() < 1e-10);
+
+        // Net PnL
+        let net = hl_net_pnl(100.0, 3.5, 3.5, 10.0);
+        assert!((net - 83.0).abs() < 1e-10);
+
+        // Negative net
+        let net_loss = hl_net_pnl(-50.0, 3.5, 3.5, 10.0);
+        assert!((net_loss - (-67.0)).abs() < 1e-10);
+    }
+
     // === Helpers ===
 
     fn make_config() -> CopyTraderConfig {
         CopyTraderConfig { max_position_pct: 10.0, max_positions: 3, stop_loss_pct: 5.0,
-            lag_secs: 30, sizing_multiplier: 0.1, paper_balance: 10000.0, poll_interval_secs: 30 }
+            lag_secs: 30, sizing_multiplier: 0.1, paper_balance: 10000.0, poll_interval_secs: 30,
+            hl_paper: false }
+    }
+
+    fn make_hl_config() -> CopyTraderConfig {
+        CopyTraderConfig { max_position_pct: 10.0, max_positions: 3, stop_loss_pct: 5.0,
+            lag_secs: 30, sizing_multiplier: 0.1, paper_balance: 10000.0, poll_interval_secs: 30,
+            hl_paper: true }
     }
 
     fn make_trade(id: &str, w: &str, m: &str, s: TradeStatus) -> CopyTrade {
         CopyTrade { id: id.into(), timestamp: Utc::now().to_rfc3339(), wallet_address: w.into(),
             market: m.into(), direction: Direction::Long, size_usd: 100.0, entry_price: 60000.0,
             status: s, close_reason: None, exit_price: None, pnl_usd: None,
-            whale_size_usd: 1000.0, sizing_multiplier: 0.1 }
+            whale_size_usd: 1000.0, sizing_multiplier: 0.1,
+            entry_fee: None, exit_fee: None, borrow_fee: None, hours_held: None }
     }
 
     fn make_wp(coin: &str, size: &str, entry_px: &str) -> WalletPosition {

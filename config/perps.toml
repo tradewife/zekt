@@ -327,15 +327,16 @@ refresh_url = "https://hypurrscan.io/api/auth/refresh"
 
 [strategy.funding-capture]
 # Minimum annualized funding rate (%) to trigger entry
-min_annualized_rate_pct = 20.0
+# Lowered from 20.0 to 10.0 to capture current HL market conditions (highest rate ~13%)
+min_annualized_rate_pct = 10.0
 # Exit when annualized funding rate drops below this (%)
-exit_annualized_rate_pct = 5.0
+exit_annualized_rate_pct = 3.0
 # Maximum position hold time (hours)
 max_position_hours = 72
 # Leverage for funding capture positions
 leverage = 1.0
 # Position clip size in USD
-clip_size_usd = 200.0
+clip_size_usd = 50.0
 
 # =============================================================================
 # PIPELINE — Orchestrator configuration

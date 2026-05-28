@@ -6,6 +6,10 @@ mod flash_api;
 mod funding_capture;
 #[allow(dead_code)]
 mod hl_info;
+#[allow(dead_code)]
+mod hl_paper;
+#[allow(dead_code)]
+mod market_data;
 mod monitor;
 mod paper;
 #[allow(dead_code)]
@@ -55,6 +59,10 @@ struct Args {
     /// Paper trading -- full open/monitor/close loop against live prices, simulated PnL, no real transactions
     #[arg(long, default_value_t = false)]
     paper: bool,
+
+    /// HL paper trading -- simulate perpetual futures on Hyperliquid using live HL data, HL fee model
+    #[arg(long, default_value_t = false)]
+    hl_paper: bool,
 
     /// Starting balance for paper trading (USD), defaults to 1000
     #[arg(long, default_value_t = 1000.0)]
@@ -163,57 +171,80 @@ async fn main() -> anyhow::Result<()> {
         std::process::exit(1);
     }
 
-    match (args.dry_run, args.paper, args.backtest) {
-        (true, true, _) => {
-            anyhow::bail!("Cannot use --dry-run and --paper together");
-        }
-        (true, _, true) | (_, true, true) => {
-            anyhow::bail!("Cannot use --backtest with --dry-run or --paper");
-        }
-        (true, false, false) => {
-            tracing::warn!("DRY RUN -- single preview, then exit");
-            run_dry(config).await
-        }
-        (false, true, false) => {
-            // Determine if this is multi-strategy multi-market mode
-            let strategies_list = args.strategies.as_deref()
-                .map(|s| s.split(',').map(|s| s.trim()).collect::<Vec<_>>());
-            let markets_list = args.markets.as_deref()
-                .map(|s| s.split(',').map(|s| s.trim().to_uppercase()).collect::<Vec<_>>());
+    // Mutually-exclusive mode flags
+    let mode_flags = [
+        ("--dry-run", args.dry_run),
+        ("--paper", args.paper),
+        ("--hl-paper", args.hl_paper),
+        ("--backtest", args.backtest),
+    ];
+    let active_modes: Vec<&str> = mode_flags
+        .iter()
+        .filter(|(_, on)| *on)
+        .map(|(name, _)| *name)
+        .collect();
+    if active_modes.len() > 1 {
+        anyhow::bail!("Cannot use {} together", active_modes.join(" and "));
+    }
 
-            if strategies_list.is_some() || markets_list.is_some() {
-                tracing::warn!("PAPER TRADING (MULTI) -- multi-strategy multi-market mode");
-                let resolved_strategies = strategies_list.unwrap_or_else(|| vec![strategy_name.as_str()]);
-                let resolved_markets = markets_list.unwrap_or_else(|| vec![config.flash.market.clone()]);
-                run_multi_paper(
-                    config,
-                    args.paper_balance,
-                    resolved_strategies,
-                    resolved_markets,
-                    &args.paper_output,
-                ).await
-            } else {
-                tracing::warn!("PAPER TRADING -- full loop, simulated PnL, NO real transactions");
-                run_paper(config, args.paper_balance, args.strategy.as_deref()).await
-            }
-        }
-        (false, false, true) => {
-            run_backtest(
+    if args.dry_run {
+        tracing::warn!("DRY RUN -- single preview, then exit");
+        return run_dry(config).await;
+    }
+    if args.paper {
+        // Determine if this is multi-strategy multi-market mode
+        let strategies_list = args.strategies.as_deref()
+            .map(|s| s.split(',').map(|s| s.trim()).collect::<Vec<_>>());
+        let markets_list = args.markets.as_deref()
+            .map(|s| s.split(',').map(|s| s.trim().to_uppercase()).collect::<Vec<_>>());
+
+        if strategies_list.is_some() || markets_list.is_some() {
+            tracing::warn!("PAPER TRADING (MULTI) -- multi-strategy multi-market mode");
+            let resolved_strategies = strategies_list.unwrap_or_else(|| vec![strategy_name.as_str()]);
+            let resolved_markets = markets_list.unwrap_or_else(|| vec![config.flash.market.clone()]);
+            return run_multi_paper(
                 config,
-                args.strategies.as_deref(),
-                args.markets.as_deref(),
-                args.backtest_start.as_deref(),
-                args.backtest_end.as_deref(),
-                &args.backtest_interval,
                 args.paper_balance,
-                args.backtest_fee_rate,
-            ).await
-        }
-        (false, false, false) => {
-            tracing::warn!("LIVE TRADING -- real transactions with real funds");
-            run_live(config, args.strategy.as_deref()).await
+                resolved_strategies,
+                resolved_markets,
+                &args.paper_output,
+            ).await;
+        } else {
+            tracing::warn!("PAPER TRADING -- full loop, simulated PnL, NO real transactions");
+            return run_paper(config, args.paper_balance, args.strategy.as_deref()).await;
         }
     }
+    if args.hl_paper {
+        tracing::warn!("HL PAPER TRADING -- Hyperliquid fee model, live HL prices");
+        let strategies_list: Vec<String> = args.strategies.as_deref()
+            .map(|s| s.split(',').map(|s| s.trim().to_string()).collect())
+            .unwrap_or_else(|| vec![strategy_name.clone()]);
+        let markets_list: Vec<String> = args.markets.as_deref()
+            .map(|s| s.split(',').map(|s| s.trim().to_uppercase()).collect())
+            .unwrap_or_else(|| vec![config.flash.market.clone()]);
+        return run_hl_paper(
+            config,
+            strategies_list,
+            markets_list,
+            args.paper_balance,
+            &args.paper_output,
+        ).await;
+    }
+    if args.backtest {
+        return run_backtest(
+            config,
+            args.strategies.as_deref(),
+            args.markets.as_deref(),
+            args.backtest_start.as_deref(),
+            args.backtest_end.as_deref(),
+            &args.backtest_interval,
+            args.paper_balance,
+            args.backtest_fee_rate,
+        ).await;
+    }
+
+    tracing::warn!("LIVE TRADING -- real transactions with real funds");
+    run_live(config, args.strategy.as_deref()).await
 }
 
 async fn run_live(config: config::Config, strategy_name: Option<&str>) -> anyhow::Result<()> {
@@ -261,6 +292,76 @@ async fn run_multi_paper(
         tracing::info!("Received shutdown signal, finishing current tick...");
         running.store(false, Ordering::Relaxed);
     });
+
+    engine.run().await
+}
+
+async fn run_hl_paper(
+    config: config::Config,
+    strategy_names: Vec<String>,
+    markets: Vec<String>,
+    starting_balance: f64,
+    output_dir: &str,
+) -> anyhow::Result<()> {
+    use hl_paper::{HlPaperConfig, HlPaperEngine};
+    use market_data::HlDataProvider;
+
+    let provider = HlDataProvider::new();
+    let hl_config = HlPaperConfig {
+        poll_interval_secs: config.agent.poll_interval_secs,
+        max_total_notional_usd: config.risk.max_total_notional_usd,
+    };
+
+    let engine = HlPaperEngine::new(
+        provider,
+        hl_config,
+        strategy_names,
+        &|name: &str| -> anyhow::Result<Box<dyn crate::strategy::Strategy>> {
+            let sub_table = config.strategy.get_sub_table(name);
+            let params = config.strategy.get_params(name).unwrap_or_else(|_| {
+                crate::strategy::StrategyParams {
+                    direction_bias: "neutral".to_string(),
+                    momentum_threshold_pct: 0.15,
+                    lookback_count: 60,
+                    scale_in_clips: 1,
+                    clip_size_usd: 100.0,
+                    max_hold_secs: 1800,
+                    take_profit_pct: 2.5,
+                    stop_loss_pct: 1.0,
+                    trailing_stop_pct: 0.8,
+                    trailing_activation_pct: 1.5,
+                    cooldown_after_loss_secs: 300,
+                    use_native_tp_sl: true,
+                }
+            });
+            crate::strategy::create_strategy_from_config(name, sub_table, params)
+        },
+        markets,
+        starting_balance,
+        output_dir,
+    )?;
+
+    let running = engine.shutdown_handle();
+
+    // Handle SIGINT via ctrlc.
+    let running_int = running.clone();
+    let _ = ctrlc::set_handler(move || {
+        tracing::info!("Received SIGINT, finishing current tick...");
+        running_int.store(false, Ordering::Relaxed);
+    });
+
+    // Handle SIGTERM so `timeout` and process managers trigger a clean shutdown.
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{signal, SignalKind};
+        let mut sigterm = signal(SignalKind::terminate())?;
+        let running_term = running.clone();
+        tokio::spawn(async move {
+            sigterm.recv().await;
+            tracing::info!("Received SIGTERM, finishing current tick...");
+            running_term.store(false, Ordering::Relaxed);
+        });
+    }
 
     engine.run().await
 }
@@ -417,4 +518,93 @@ fn parse_backtest_time(input: Option<&str>, label: &str) -> anyhow::Result<i64> 
         "Invalid --backtest-{} time: '{}'. Use ISO 8601 (2025-05-01T00:00:00Z) or date-only (2025-05-01)",
         label, s
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use clap::Parser;
+
+    use super::Args;
+
+    #[test]
+    fn test_hl_paper_flag_parsed() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper"]);
+        assert!(args.is_ok(), "Failed to parse --hl-paper: {:?}", args.err());
+        assert!(args.unwrap().hl_paper);
+    }
+
+    #[test]
+    fn test_hl_paper_default_balance() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper"]).unwrap();
+        assert!((args.paper_balance - 1000.0).abs() < f64::EPSILON,
+            "Default paper balance should be 1000, got {}", args.paper_balance);
+    }
+
+    #[test]
+    fn test_hl_paper_custom_balance() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper", "--paper-balance", "5000"]).unwrap();
+        assert!((args.paper_balance - 5000.0).abs() < f64::EPSILON,
+            "Custom balance should be 5000, got {}", args.paper_balance);
+    }
+
+    #[test]
+    fn test_hl_paper_multi_strategy() {
+        let args = Args::try_parse_from([
+            "zekt", "--hl-paper",
+            "--strategies", "momentum-scalper,mean-reversion",
+        ]).unwrap();
+        assert!(args.hl_paper);
+        let strategies: Vec<&str> = args.strategies.as_deref().unwrap().split(',').collect();
+        assert_eq!(strategies, vec!["momentum-scalper", "mean-reversion"]);
+    }
+
+    #[test]
+    fn test_hl_paper_multi_market() {
+        let args = Args::try_parse_from([
+            "zekt", "--hl-paper",
+            "--markets", "BTC,SOL,ETH",
+        ]).unwrap();
+        assert!(args.hl_paper);
+        let markets: Vec<&str> = args.markets.as_deref().unwrap().split(',').collect();
+        assert_eq!(markets, vec!["BTC", "SOL", "ETH"]);
+    }
+
+    #[test]
+    fn test_hl_paper_missing_markets_uses_default() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper"]).unwrap();
+        assert!(args.hl_paper);
+        // No --markets provided; should be None (runtime falls back to config default)
+        assert!(args.markets.is_none());
+    }
+
+    #[test]
+    fn test_hl_paper_missing_strategies_uses_default() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper"]).unwrap();
+        assert!(args.hl_paper);
+        // No --strategies provided; should be None (runtime falls back to config active)
+        assert!(args.strategies.is_none());
+    }
+
+    #[test]
+    fn test_hl_paper_default_output_dir() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper"]).unwrap();
+        assert_eq!(args.paper_output, "data/paper-results");
+    }
+
+    #[test]
+    fn test_hl_paper_conflicts_with_paper() {
+        // Both flags set — the runtime check in main() rejects this,
+        // but clap will happily parse both; the mode-exclusivity check
+        // happens inside main().
+        let args = Args::try_parse_from(["zekt", "--hl-paper", "--paper"]).unwrap();
+        assert!(args.hl_paper);
+        assert!(args.paper);
+    }
+
+    #[test]
+    fn test_hl_paper_conflicts_with_backtest() {
+        let args = Args::try_parse_from(["zekt", "--hl-paper", "--backtest"]).unwrap();
+        assert!(args.hl_paper);
+        assert!(args.backtest);
+    }
 }

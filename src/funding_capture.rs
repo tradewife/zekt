@@ -449,6 +449,14 @@ impl Strategy for FundingRateCaptureStrategy {
             pool_data: None,
         }
     }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
 }
 
 /// Helper to create an exit signal matching the position direction.
