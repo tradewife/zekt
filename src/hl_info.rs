@@ -15,6 +15,43 @@ use tracing::{debug, info, warn};
 /// Default base URL for the Hyperliquid Info API.
 pub const HL_INFO_URL: &str = "https://api.hyperliquid.xyz/info";
 
+/// Hardcoded IP addresses for `api.hyperliquid.xyz` used as DNS fallback.
+///
+/// When DNS resolution fails intermittently, the client retries each IP in
+/// order via `reqwest::ClientBuilder::resolve()`, which pins the hostname to
+/// the IP while preserving TLS SNI (no certificate mismatch).
+///
+/// Last verified: 2026-05-30.
+const HL_API_FALLBACK_IPS: &[&str] = &[
+    "108.158.20.109",
+    "108.158.20.70",
+    "108.158.20.106",
+    "108.158.20.67",
+];
+
+/// Check if an `anyhow::Error` chain contains a reqwest connect/DNS error.
+///
+/// Connect errors include DNS resolution failures, TCP connection refused,
+/// and TLS handshake failures. Retrying via a fallback IP is appropriate for
+/// all of these.
+fn is_connect_error(err: &anyhow::Error) -> bool {
+    err.chain().any(|cause| {
+        cause
+            .downcast_ref::<reqwest::Error>()
+            .map(|r| r.is_connect())
+            .unwrap_or(false)
+    })
+}
+
+/// Extract the hostname from a URL string (e.g. `"https://api.hyperliquid.xyz/info"`
+/// → `"api.hyperliquid.xyz"`).
+fn extract_host(url: &str) -> Option<&str> {
+    url.strip_prefix("https://")
+        .or_else(|| url.strip_prefix("http://"))
+        .and_then(|rest| rest.split('/').next())
+        .and_then(|host| host.split(':').next())
+}
+
 // ---------------------------------------------------------------------------
 // Client
 // ---------------------------------------------------------------------------
@@ -48,16 +85,19 @@ impl HlInfoClient {
         Self::new(HL_INFO_URL)
     }
 
-    // -- Internal POST helper ------------------------------------------------
+    // -- Internal POST helpers -----------------------------------------------
 
-    async fn post<T: serde::de::DeserializeOwned>(
+    /// Send a POST request and parse the JSON response.
+    ///
+    /// This is the core HTTP method used by both the primary path and the
+    /// DNS-fallback retry path.
+    async fn send_post<T: serde::de::DeserializeOwned>(
         &self,
         body: &serde_json::Value,
         label: &str,
+        client: &Client,
     ) -> Result<T> {
-        debug!("HL Info POST {} — {}", self.base_url, label);
-        let resp = self
-            .client
+        let resp = client
             .post(&self.base_url)
             .header("Content-Type", "application/json")
             .json(body)
@@ -78,6 +118,95 @@ impl HlInfoClient {
 
         serde_json::from_str::<T>(&text)
             .with_context(|| format!("Failed to parse {} response: {}", label, &text[..text.len().min(500)]))
+    }
+
+    /// POST with automatic DNS-fallback retry.
+    ///
+    /// 1. Try the default client (normal DNS).
+    /// 2. On connect/DNS error, retry each hardcoded IP in sequence by
+    ///    building a temporary `reqwest::Client` with `resolve()` pinned to
+    ///    the fallback IP. TLS SNI still uses the correct hostname, so
+    ///    certificate validation passes.
+    /// 3. If all fallback IPs fail, return the original error.
+    async fn post<T: serde::de::DeserializeOwned>(
+        &self,
+        body: &serde_json::Value,
+        label: &str,
+    ) -> Result<T> {
+        debug!("HL Info POST {} — {}", self.base_url, label);
+
+        // 1. Try the default client first
+        match self.send_post(body, label, &self.client).await {
+            Ok(result) => Ok(result),
+            Err(e) if is_connect_error(&e) => {
+                warn!(
+                    "DNS/connect error for {} ({}), trying {} fallback IPs",
+                    self.base_url,
+                    label,
+                    HL_API_FALLBACK_IPS.len()
+                );
+                self.post_with_fallback_ips(body, label, e).await
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Iterate through `HL_API_FALLBACK_IPS` and retry the POST on each.
+    async fn post_with_fallback_ips<T: serde::de::DeserializeOwned>(
+        &self,
+        body: &serde_json::Value,
+        label: &str,
+        original_err: anyhow::Error,
+    ) -> Result<T> {
+        let host = match extract_host(&self.base_url) {
+            Some(h) => h.to_string(),
+            None => return Err(original_err),
+        };
+
+        for ip_str in HL_API_FALLBACK_IPS {
+            let ip: std::net::IpAddr = match ip_str.parse() {
+                Ok(ip) => ip,
+                Err(_) => continue,
+            };
+            let addr = std::net::SocketAddr::new(ip, 443);
+
+            info!("Retrying HL Info POST ({}) via fallback IP {}", label, ip_str);
+
+            let fallback_client = match Client::builder()
+                .timeout(Duration::from_secs(30))
+                .resolve(&host, addr)
+                .build()
+            {
+                Ok(c) => c,
+                Err(build_err) => {
+                    warn!(
+                        "Failed to build fallback client for IP {}: {}",
+                        ip_str, build_err
+                    );
+                    continue;
+                }
+            };
+
+            match self.send_post(body, label, &fallback_client).await {
+                Ok(result) => {
+                    info!(
+                        "HL Info POST ({}) succeeded via fallback IP {}",
+                        label, ip_str
+                    );
+                    return Ok(result);
+                }
+                Err(e) => {
+                    warn!("Fallback IP {} failed for {}: {}", ip_str, label, e);
+                    continue;
+                }
+            }
+        }
+
+        Err(original_err.context(format!(
+            "All {} DNS fallback IPs exhausted for {}",
+            HL_API_FALLBACK_IPS.len(),
+            label
+        )))
     }
 
     // -- Public API methods --------------------------------------------------
@@ -1144,5 +1273,40 @@ mod tests {
     fn test_hl_info_client_default() {
         let client = HlInfoClient::default_client();
         assert_eq!(client.base_url, HL_INFO_URL);
+    }
+
+    // =======================================================================
+    // DNS fallback
+    // =======================================================================
+
+    #[test]
+    fn test_fallback_ips_parse_correctly() {
+        for ip_str in HL_API_FALLBACK_IPS {
+            let ip: std::net::IpAddr = ip_str
+                .parse()
+                .unwrap_or_else(|_| panic!("{} should be a valid IP address", ip_str));
+            let addr = std::net::SocketAddr::new(ip, 443);
+            assert!(addr.is_ipv4(), "{} should be IPv4", ip_str);
+            assert_eq!(addr.port(), 443);
+        }
+        assert_eq!(HL_API_FALLBACK_IPS.len(), 4);
+    }
+
+    #[test]
+    fn test_extract_host() {
+        assert_eq!(
+            extract_host("https://api.hyperliquid.xyz/info"),
+            Some("api.hyperliquid.xyz")
+        );
+        assert_eq!(
+            extract_host("https://api.hyperliquid.xyz:443/info"),
+            Some("api.hyperliquid.xyz")
+        );
+        assert_eq!(
+            extract_host("http://localhost:8080/test"),
+            Some("localhost")
+        );
+        assert_eq!(extract_host("not-a-url"), None);
+        assert_eq!(extract_host(""), None);
     }
 }
