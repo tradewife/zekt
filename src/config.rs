@@ -788,7 +788,8 @@ max_positions = 5
         assert_eq!(fc_table.get("max_position_hours").unwrap().as_integer(), Some(72));
         assert_eq!(fc_table.get("leverage").unwrap().as_float(), Some(1.0));
         assert_eq!(fc_table.get("clip_size_usd").unwrap().as_float(), Some(100.0));
-        assert_eq!(fc_table.get("stop_loss_pct").unwrap().as_float(), Some(1.5));
+        assert_eq!(fc_table.get("stop_loss_pct").unwrap().as_float(), Some(3.0));
+        assert_eq!(fc_table.get("min_hold_before_sl_mins").unwrap().as_integer(), Some(120));
 
         // Existing strategy sub-tables still work
         assert!(config.strategy.get_sub_table("lp-consumption").is_some());

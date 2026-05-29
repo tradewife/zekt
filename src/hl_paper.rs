@@ -247,6 +247,10 @@ pub struct HlPaperConfig {
     /// Maximum 24h price volatility (%) to allow entry. Markets exceeding this are skipped.
     /// Set to 0.0 to disable the filter.
     pub max_24h_volatility_pct: f64,
+    /// Minimum hold time (seconds) before stop-loss is allowed to trigger.
+    /// Prevents premature SL on freshly opened funding-capture positions,
+    /// giving them time to accumulate funding revenue. Default: 7200 (2 hours).
+    pub min_hold_before_sl_secs: u64,
 }
 
 impl Default for HlPaperConfig {
@@ -255,6 +259,7 @@ impl Default for HlPaperConfig {
             poll_interval_secs: 300,
             max_total_notional_usd: 50_000.0,
             max_24h_volatility_pct: 5.0,
+            min_hold_before_sl_secs: 7200,
         }
     }
 }
@@ -282,6 +287,7 @@ pub struct HlPaperEngine<P: MarketDataProvider> {
     poll_interval_secs: u64,
     max_total_notional_usd: f64,
     max_24h_volatility_pct: f64,
+    min_hold_before_sl_secs: u64,
     output_dir: String,
     running: Arc<AtomicBool>,
     start_time: DateTime<Utc>,
@@ -313,6 +319,7 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
         let poll_interval_secs = config.poll_interval_secs;
         let max_total_notional_usd = config.max_total_notional_usd;
         let max_24h_volatility_pct = config.max_24h_volatility_pct;
+        let min_hold_before_sl_secs = config.min_hold_before_sl_secs;
 
         let mut market_stats = HashMap::new();
         for m in &markets {
@@ -351,6 +358,7 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
             poll_interval_secs,
             max_total_notional_usd,
             max_24h_volatility_pct,
+            min_hold_before_sl_secs,
             output_dir: output_dir.to_string(),
             running: Arc::new(AtomicBool::new(true)),
             start_time: Utc::now(),
@@ -624,7 +632,7 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
         };
 
         // Software-side SL/TP/trailing (fast exits before strategy signal).
-        if let Some(reason) = check_soft_exits(&ctx) {
+        if let Some(reason) = check_soft_exits(&ctx, self.min_hold_before_sl_secs) {
             // Need to drop borrows before close_position.
             drop(params);
             self.close_position(key, current_price, reason)?;
@@ -1004,15 +1012,24 @@ impl<P: MarketDataProvider> HlPaperEngine<P> {
 // ---------------------------------------------------------------------------
 
 /// Check software-side stop-loss, take-profit, trailing, and time stop.
-fn check_soft_exits(ctx: &PositionContext) -> Option<ExitReason> {
+///
+/// `min_hold_before_sl_secs` — if > 0, stop-loss is suppressed while the
+/// position has been held for fewer seconds than this threshold. Other exit
+/// types (time-stop, TP, trailing) are **not** affected.
+fn check_soft_exits(ctx: &PositionContext, min_hold_before_sl_secs: u64) -> Option<ExitReason> {
     let pnl_pct = if ctx.is_long {
         (ctx.current_price - ctx.entry_price) / ctx.entry_price * 100.0
     } else {
         (ctx.entry_price - ctx.current_price) / ctx.entry_price * 100.0
     };
 
-    // Stop-loss.
-    if pnl_pct <= -ctx.stop_loss_pct {
+    // Stop-loss — suppressed during minimum-hold window.
+    if min_hold_before_sl_secs > 0 && ctx.hold_secs < min_hold_before_sl_secs {
+        debug!(
+            "SL skip: held {}s < min {}s (pnl={:.2}%)",
+            ctx.hold_secs, min_hold_before_sl_secs, pnl_pct
+        );
+    } else if pnl_pct <= -ctx.stop_loss_pct {
         return Some(ExitReason::StopLoss);
     }
 
@@ -1626,7 +1643,16 @@ mod tests {
         prices.insert("BTC".to_string(), 60000.0);
 
         let provider = make_mock_provider(prices, funding);
-        let mut engine = build_engine(provider, vec!["BTC"], 1000.0);
+        // Use min_hold_before_sl_secs = 0 so SL can fire immediately in tests.
+        let mut engine = build_engine_with_config(
+            provider,
+            vec!["BTC"],
+            1000.0,
+            HlPaperConfig {
+                min_hold_before_sl_secs: 0,
+                ..HlPaperConfig::default()
+            },
+        );
 
         // Open position.
         engine.tick().await.unwrap();
@@ -1859,7 +1885,7 @@ mod tests {
             trailing_stop_pct: 1.0,
             trailing_activation_pct: 2.0,
         };
-        assert_eq!(check_soft_exits(&ctx), Some(ExitReason::StopLoss));
+        assert_eq!(check_soft_exits(&ctx, 0), Some(ExitReason::StopLoss));
     }
 
     #[test]
@@ -1876,7 +1902,7 @@ mod tests {
             trailing_stop_pct: 1.0,
             trailing_activation_pct: 2.0,
         };
-        assert_eq!(check_soft_exits(&ctx), Some(ExitReason::TakeProfit));
+        assert_eq!(check_soft_exits(&ctx, 0), Some(ExitReason::TakeProfit));
     }
 
     #[test]
@@ -1893,7 +1919,7 @@ mod tests {
             trailing_stop_pct: 0.0,
             trailing_activation_pct: 0.0,
         };
-        assert_eq!(check_soft_exits(&ctx), Some(ExitReason::TimeStop));
+        assert_eq!(check_soft_exits(&ctx, 0), Some(ExitReason::TimeStop));
     }
 
     #[test]
@@ -1912,7 +1938,7 @@ mod tests {
         };
         // Peak profit = (105-100)/100 = 5% > 2% activation
         // Retracement = (105-103)/105 = 1.9% > 1.0% trailing
-        assert_eq!(check_soft_exits(&ctx), Some(ExitReason::TrailingStop));
+        assert_eq!(check_soft_exits(&ctx, 0), Some(ExitReason::TrailingStop));
     }
 
     #[test]
@@ -1929,7 +1955,7 @@ mod tests {
             trailing_stop_pct: 1.0,
             trailing_activation_pct: 2.0,
         };
-        assert!(check_soft_exits(&ctx).is_none());
+        assert!(check_soft_exits(&ctx, 0).is_none());
     }
 
     // -----------------------------------------------------------------------
@@ -2010,6 +2036,7 @@ mod tests {
         let config = HlPaperConfig::default();
         assert_eq!(config.poll_interval_secs, 300);
         assert_eq!(config.max_total_notional_usd, 50_000.0);
+        assert_eq!(config.min_hold_before_sl_secs, 7200);
     }
 
     // -----------------------------------------------------------------------
@@ -2484,6 +2511,113 @@ mod tests {
         assert!(
             engine.has_position("funding-capture", "BTC"),
             "Should open position when volatility threshold is set very high (100%)"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Min-hold-before-SL: SL skipped when held less than minimum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_min_hold_skips_stoploss() {
+        // Position held 60s (< 7200s minimum), price down 4% (exceeds 3% SL).
+        // SL should be suppressed.
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 95.0, // -5% < -3% SL — would normally trigger
+            peak_price: 100.0,
+            hold_secs: 60,        // only 60s held
+            max_hold_secs: 86400,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 3.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        assert!(
+            check_soft_exits(&ctx, 7200).is_none(),
+            "SL should be skipped when hold time < min_hold_before_sl_secs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Min-hold-before-SL: SL triggers once hold time exceeds minimum
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_min_hold_allows_stoploss_after_expiry() {
+        // Position held 8000s (> 7200s minimum), price down 4% (exceeds 3% SL).
+        // SL should fire.
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 95.0, // -5% < -3% SL
+            peak_price: 100.0,
+            hold_secs: 8000,     // > 7200s minimum
+            max_hold_secs: 86400,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 3.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        assert_eq!(
+            check_soft_exits(&ctx, 7200),
+            Some(ExitReason::StopLoss),
+            "SL should fire once hold time exceeds min_hold_before_sl_secs"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Min-hold-before-SL: funding-drop exit still works during min hold
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_min_hold_does_not_block_funding_exit() {
+        // The min_hold filter only suppresses stop-loss. Other exits like
+        // take-profit should still work. This test verifies TP fires even
+        // when hold time is below the minimum.
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 93.0, // short +7% → exceeds 5% TP
+            peak_price: 93.0,
+            hold_secs: 60,       // well below 7200s
+            max_hold_secs: 86400,
+            take_profit_pct: 5.0,
+            stop_loss_pct: 3.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        assert_eq!(
+            check_soft_exits(&ctx, 7200),
+            Some(ExitReason::TakeProfit),
+            "TP should still work during min-hold period"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Min-hold-before-SL: time stop still works during min hold
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_min_hold_does_not_block_time_stop() {
+        // Time-stop should fire regardless of min-hold-before-SL.
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 99.0, // no SL or TP trigger
+            peak_price: 99.0,
+            hold_secs: 3600,
+            max_hold_secs: 3600, // time stop triggered
+            take_profit_pct: 5.0,
+            stop_loss_pct: 3.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        assert_eq!(
+            check_soft_exits(&ctx, 7200),
+            Some(ExitReason::TimeStop),
+            "Time-stop should fire even during min-hold period"
         );
     }
 }

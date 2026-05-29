@@ -338,8 +338,10 @@ leverage = 1.0
 # Position clip size in USD
 # Increased from 50.0 to 100.0 — better fee ratio (fees are fixed %)
 clip_size_usd = 100.0
-# Stop-loss percentage — tightened from 3.0 to 1.5 for funding capture
-stop_loss_pct = 1.5
+# Stop-loss percentage — default/floor for funding capture
+stop_loss_pct = 3.0
+# Minimum hold time (minutes) before stop-loss activates — gives funding time to accrue
+min_hold_before_sl_mins = 120
 
 # =============================================================================
 # PIPELINE — Orchestrator configuration

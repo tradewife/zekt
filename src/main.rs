@@ -307,10 +307,22 @@ async fn run_hl_paper(
     use market_data::HlDataProvider;
 
     let provider = HlDataProvider::new();
+
+    // Read min_hold_before_sl from funding-capture sub-table (default: 120 minutes = 7200s).
+    let min_hold_before_sl_secs = config
+        .strategy
+        .get_sub_table("funding-capture")
+        .and_then(|t| t.as_table())
+        .and_then(|t| t.get("min_hold_before_sl_mins"))
+        .and_then(|v| v.as_integer())
+        .map(|mins| (mins * 60) as u64)
+        .unwrap_or(7200);
+
     let hl_config = HlPaperConfig {
         poll_interval_secs: config.agent.poll_interval_secs,
         max_total_notional_usd: config.risk.max_total_notional_usd,
         max_24h_volatility_pct: 5.0, // skip entry when 24h volatility exceeds 5%
+        min_hold_before_sl_secs,
     };
 
     let engine = HlPaperEngine::new(
