@@ -450,6 +450,7 @@ impl Strategy for FundingRateCaptureStrategy {
             strength: self.current_rate() / self.params.min_annualized_rate_pct * 50.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -516,6 +517,7 @@ mod tests {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 

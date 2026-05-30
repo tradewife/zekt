@@ -2010,6 +2010,7 @@ mod multi_tests {
             strength: 50.0,
             volatility_pct: 1.0,
             pool_data: Some(pool_snap.clone()),
+            ext: None,
         };
         assert!(snapshot.pool_data.is_some());
         let pd = snapshot.pool_data.unwrap();
@@ -2055,6 +2056,7 @@ mod multi_tests {
             strength: 50.0,
             volatility_pct: 1.0,
             pool_data: None,
+            ext: None,
         };
         let signal = strategy.detect_entry(&snap_no_pool);
         assert!(matches!(signal, crate::signal::Signal::NoSignal),
@@ -2075,8 +2077,8 @@ mod multi_tests {
                 long_utilization_velocity: 0.8,
                 short_utilization_velocity: 0.1,
             }),
+            ext: None,
         };
-
         // Feed enough consecutive ticks to reach confirmation threshold (3)
         let mut signal = crate::signal::Signal::NoSignal;
         for _ in 0..3 {

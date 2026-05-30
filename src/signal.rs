@@ -93,6 +93,38 @@ pub struct MomentumSnapshot {
     /// Pool utilization data for LP consumption detection.
     /// None when pool data is unavailable (e.g., API failure or strategy doesn't use it).
     pub pool_data: Option<PoolSnapshot>,
+    /// Extended market data for advanced strategies (liquidation cascade, etc.).
+    /// None for strategies that don't use this data.
+    pub ext: Option<MarketExtension>,
+}
+
+/// Extended market data for advanced strategies (liquidation cascade, etc.).
+/// Carries additional market metrics populated by the engine/caller and consumed
+/// by strategies that need richer context than basic price/volume data.
+#[derive(Debug, Clone, Default)]
+pub struct MarketExtension {
+    /// Liquidation zone data from the capture module.
+    pub liquidation_zones: Option<Vec<crate::liquidation::LiquidationZone>>,
+    /// Timestamp of the liquidation zone data capture (for staleness detection).
+    pub zone_capture_timestamp_ms: Option<i64>,
+    /// Route cost in basis points (from RouteCostOracle).
+    pub route_cost_bps: Option<f64>,
+    /// VWAP (volume-weighted average price).
+    pub vwap: Option<f64>,
+    /// Bid-ask spread in percentage.
+    pub spread_pct: Option<f64>,
+    /// Order book depth at the nearest liquidation zone, in USD.
+    pub depth_usd: Option<f64>,
+    /// Volume z-score relative to recent history.
+    pub volume_zscore: Option<f64>,
+    /// Forced-flow velocity (from liquidation events).
+    pub forced_flow_velocity: Option<f64>,
+    /// Current regime label (from RegimeDetector).
+    pub regime_label: Option<String>,
+    /// Whether a liquidation burst has been detected recently.
+    pub liquidation_burst_detected: bool,
+    /// Market symbol (e.g., "BTC", "SOL") for pending-trade deduplication.
+    pub symbol: Option<String>,
 }
 
 /// Pool utilization snapshot used by LP consumption strategies.
@@ -146,6 +178,7 @@ impl MomentumDetector {
                 strength: 0.0,
                 volatility_pct: 0.0,
                 pool_data: None,
+                ext: None,
             };
         }
 
@@ -226,6 +259,7 @@ impl MomentumDetector {
             strength,
             volatility_pct: max_drawdown,
             pool_data: None,
+            ext: None,
         }
     }
 

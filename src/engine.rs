@@ -33,6 +33,16 @@ impl ScalperEngine {
             sub_table,
             fallback_params,
         )?;
+
+        // Paper-only enforcement: liquidation-cascade-hunter is blocked in live engine
+        if strategy.name() == "liquidation-cascade-hunter" {
+            anyhow::bail!(
+                "Strategy '{}' is paper-only and cannot be used with the live engine. \
+                 Use --paper or --backtest mode instead.",
+                strategy.name()
+            );
+        }
+
         let risk = Arc::new(RiskManager::new(config.risk.clone(), 0.0));
         let trade_log = TradeLog::new("perps-trades.json");
 

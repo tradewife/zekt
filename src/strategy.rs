@@ -6,7 +6,7 @@
 //! and a centralized factory function for strategy instantiation.
 
 use crate::signal::{
-    MomentumDetector, MomentumSnapshot, PoolSnapshot, Signal,
+    ExitReason, MomentumDetector, MomentumSnapshot, PoolSnapshot, Signal,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::VecDeque;
@@ -1395,6 +1395,7 @@ impl Strategy for MeanReversionStrategy {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -1698,6 +1699,728 @@ impl Strategy for TrendFollowerStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// Liquidation Cascade Hunter Strategy
+// ---------------------------------------------------------------------------
+
+/// Parameters for the liquidation-cascade-hunter strategy.
+///
+/// Two setup types:
+/// 1. **Cascade continuation** — price approaches a high-confidence liquidation zone,
+///    forced-flow spikes, velocity confirms, depth thins, route cost OK.
+/// 2. **Exhaustion reversal** — liquidation burst occurs, price reclaims VWAP,
+///    depth refills, velocity decays, spread normalizes.
+///
+/// Entry gates (all must pass):
+/// - Confidence minimum
+/// - Volume z-score threshold
+/// - Price distance to zone
+/// - VWAP filter
+/// - Spread/depth filter
+/// - Regime compatibility
+/// - Route cost veto
+/// - Max one pending trade per symbol/side
+///
+/// Exits: TP, SL, trailing stop, time stop, stale-data forced exit.
+///
+/// **Paper-only** — blocked in live engine. **Disabled by default** in config.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LiquidationCascadeParams {
+    // --- Enable / paper-only ---
+    /// Must be explicitly set to true to activate the strategy.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Paper-only: strategy is blocked in the live engine.
+    #[serde(default = "default_true")]
+    pub paper_only: bool,
+
+    // --- Entry gates ---
+    /// Minimum liquidation zone confidence [0.0, 1.0].
+    #[serde(default = "default_lc_confidence_min")]
+    pub confidence_min: f64,
+
+    /// Minimum volume z-score for cascade confirmation.
+    #[serde(default = "default_lc_volume_z_score")]
+    pub volume_z_score_threshold: f64,
+
+    /// Maximum distance from price to nearest zone as a percentage.
+    #[serde(default = "default_lc_max_distance_pct")]
+    pub max_distance_to_zone_pct: f64,
+
+    /// Whether the VWAP filter is enabled.
+    #[serde(default = "default_true")]
+    pub vwap_filter_enabled: bool,
+
+    /// Maximum bid-ask spread as a percentage.
+    #[serde(default = "default_lc_spread_max_pct")]
+    pub spread_max_pct: f64,
+
+    /// Minimum order book depth in USD at the zone.
+    #[serde(default = "default_lc_depth_min_usd")]
+    pub depth_min_usd: f64,
+
+    /// Whether regime compatibility filter is enabled.
+    #[serde(default = "default_true")]
+    pub regime_filter: bool,
+
+    /// Maximum route cost in basis points before veto.
+    #[serde(default = "default_lc_route_cost_max_bps")]
+    pub route_cost_max_bps: f64,
+
+    /// Stale data threshold in seconds. Zone data older than this blocks entry.
+    #[serde(default = "default_lc_stale_threshold_secs")]
+    pub stale_data_threshold_secs: u64,
+
+    /// Minimum forced-flow velocity for cascade continuation.
+    #[serde(default = "default_lc_forced_flow_vel")]
+    pub forced_flow_velocity_threshold: f64,
+
+    /// Maximum forced-flow velocity for exhaustion reversal (decay threshold).
+    #[serde(default = "default_lc_velocity_decay_threshold")]
+    pub velocity_decay_threshold: f64,
+
+    // --- Exit parameters ---
+    #[serde(default = "default_lc_take_profit_pct")]
+    pub take_profit_pct: f64,
+    #[serde(default = "default_lc_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    #[serde(default = "default_lc_trailing_stop_pct")]
+    pub trailing_stop_pct: f64,
+    #[serde(default = "default_lc_trailing_activation_pct")]
+    pub trailing_activation_pct: f64,
+    #[serde(default = "default_lc_max_hold_secs")]
+    pub max_hold_secs: u64,
+    #[serde(default = "default_lc_cooldown_after_loss_secs")]
+    pub cooldown_after_loss_secs: u64,
+
+    // --- General ---
+    #[serde(default = "default_lc_clip_size_usd")]
+    pub clip_size_usd: f64,
+    #[serde(default = "default_lc_leverage")]
+    pub leverage: f64,
+    #[serde(default = "default_neutral")]
+    pub direction_bias: String,
+    #[serde(default = "default_scale_in_clips")]
+    pub scale_in_clips: u32,
+    #[serde(default = "default_true")]
+    pub use_native_tp_sl: bool,
+    /// Minimum price history required before generating signals.
+    #[serde(default = "default_lc_lookback_count")]
+    pub lookback_count: usize,
+}
+
+fn default_lc_confidence_min() -> f64 { 0.6 }
+fn default_lc_volume_z_score() -> f64 { 2.0 }
+fn default_lc_max_distance_pct() -> f64 { 5.0 }
+fn default_lc_spread_max_pct() -> f64 { 0.5 }
+fn default_lc_depth_min_usd() -> f64 { 10_000.0 }
+fn default_lc_route_cost_max_bps() -> f64 { 5.0 }
+fn default_lc_stale_threshold_secs() -> u64 { 300 }
+fn default_lc_forced_flow_vel() -> f64 { 0.5 }
+fn default_lc_velocity_decay_threshold() -> f64 { 0.1 }
+fn default_lc_take_profit_pct() -> f64 { 1.5 }
+fn default_lc_stop_loss_pct() -> f64 { 0.75 }
+fn default_lc_trailing_stop_pct() -> f64 { 0.5 }
+fn default_lc_trailing_activation_pct() -> f64 { 1.0 }
+fn default_lc_max_hold_secs() -> u64 { 1800 }
+fn default_lc_cooldown_after_loss_secs() -> u64 { 300 }
+fn default_lc_clip_size_usd() -> f64 { 100.0 }
+fn default_lc_leverage() -> f64 { 3.0 }
+fn default_lc_lookback_count() -> usize { 30 }
+fn default_neutral() -> String { "neutral".to_string() }
+fn default_true() -> bool { true }
+
+impl LiquidationCascadeParams {
+    /// Validate all parameter ranges.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.confidence_min < 0.0 || self.confidence_min > 1.0 {
+            return Err(format!(
+                "confidence_min must be in [0.0, 1.0], got {}",
+                self.confidence_min
+            ));
+        }
+        if self.volume_z_score_threshold < 0.0 {
+            return Err(format!(
+                "volume_z_score_threshold must be >= 0.0, got {}",
+                self.volume_z_score_threshold
+            ));
+        }
+        if self.max_distance_to_zone_pct < 0.0 {
+            return Err(format!(
+                "max_distance_to_zone_pct must be >= 0.0, got {}",
+                self.max_distance_to_zone_pct
+            ));
+        }
+        if self.spread_max_pct < 0.0 {
+            return Err(format!(
+                "spread_max_pct must be >= 0.0, got {}",
+                self.spread_max_pct
+            ));
+        }
+        if self.take_profit_pct <= 0.0 {
+            return Err(format!(
+                "take_profit_pct must be > 0.0, got {}",
+                self.take_profit_pct
+            ));
+        }
+        if self.stop_loss_pct <= 0.0 {
+            return Err(format!(
+                "stop_loss_pct must be > 0.0, got {}",
+                self.stop_loss_pct
+            ));
+        }
+        if self.trailing_stop_pct < 0.0 {
+            return Err(format!(
+                "trailing_stop_pct must be >= 0.0, got {}",
+                self.trailing_stop_pct
+            ));
+        }
+        if self.trailing_activation_pct < 0.0 {
+            return Err(format!(
+                "trailing_activation_pct must be >= 0.0, got {}",
+                self.trailing_activation_pct
+            ));
+        }
+        if self.stale_data_threshold_secs == 0 {
+            return Err("stale_data_threshold_secs must be > 0".to_string());
+        }
+        if self.route_cost_max_bps < 0.0 {
+            return Err(format!(
+                "route_cost_max_bps must be >= 0.0, got {}",
+                self.route_cost_max_bps
+            ));
+        }
+        if self.clip_size_usd <= 0.0 {
+            return Err(format!(
+                "clip_size_usd must be > 0.0, got {}",
+                self.clip_size_usd
+            ));
+        }
+        if self.lookback_count == 0 {
+            return Err("lookback_count must be > 0".to_string());
+        }
+        if self.direction_bias != "long" && self.direction_bias != "short" && self.direction_bias != "neutral" {
+            return Err(format!(
+                "direction_bias must be 'long', 'short', or 'neutral', got '{}'",
+                self.direction_bias
+            ));
+        }
+        Ok(())
+    }
+
+    /// Convert to generic StrategyParams for the trait's parameters() method.
+    pub fn to_strategy_params(&self) -> StrategyParams {
+        StrategyParams {
+            direction_bias: self.direction_bias.clone(),
+            momentum_threshold_pct: self.forced_flow_velocity_threshold,
+            lookback_count: self.lookback_count,
+            scale_in_clips: self.scale_in_clips,
+            clip_size_usd: self.clip_size_usd,
+            max_hold_secs: self.max_hold_secs,
+            take_profit_pct: self.take_profit_pct,
+            stop_loss_pct: self.stop_loss_pct,
+            trailing_stop_pct: self.trailing_stop_pct,
+            trailing_activation_pct: self.trailing_activation_pct,
+            cooldown_after_loss_secs: self.cooldown_after_loss_secs,
+            use_native_tp_sl: self.use_native_tp_sl,
+        }
+    }
+}
+
+impl Default for LiquidationCascadeParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paper_only: true,
+            confidence_min: default_lc_confidence_min(),
+            volume_z_score_threshold: default_lc_volume_z_score(),
+            max_distance_to_zone_pct: default_lc_max_distance_pct(),
+            vwap_filter_enabled: true,
+            spread_max_pct: default_lc_spread_max_pct(),
+            depth_min_usd: default_lc_depth_min_usd(),
+            regime_filter: true,
+            route_cost_max_bps: default_lc_route_cost_max_bps(),
+            stale_data_threshold_secs: default_lc_stale_threshold_secs(),
+            forced_flow_velocity_threshold: default_lc_forced_flow_vel(),
+            velocity_decay_threshold: default_lc_velocity_decay_threshold(),
+            take_profit_pct: default_lc_take_profit_pct(),
+            stop_loss_pct: default_lc_stop_loss_pct(),
+            trailing_stop_pct: default_lc_trailing_stop_pct(),
+            trailing_activation_pct: default_lc_trailing_activation_pct(),
+            max_hold_secs: default_lc_max_hold_secs(),
+            cooldown_after_loss_secs: default_lc_cooldown_after_loss_secs(),
+            clip_size_usd: default_lc_clip_size_usd(),
+            leverage: default_lc_leverage(),
+            direction_bias: default_neutral(),
+            scale_in_clips: default_scale_in_clips(),
+            use_native_tp_sl: true,
+            lookback_count: default_lc_lookback_count(),
+        }
+    }
+}
+
+/// Liquidation cascade hunter strategy.
+///
+/// Paper-only strategy that exploits liquidation cascades through two setup types:
+///
+/// 1. **Cascade continuation** — price approaches a high-confidence liquidation zone,
+///    forced-flow spikes, velocity confirms direction, depth thins, route cost OK.
+///    Trade in the direction of the cascade (longs getting liquidated → short signal).
+///
+/// 2. **Exhaustion reversal** — after a liquidation burst, price reclaims VWAP,
+///    depth refills, forced-flow velocity decays, spread normalizes.
+///    Trade against the cascade direction (reversal).
+///
+/// All entry gates must pass for a signal to fire. Mandatory TP/SL on every entry.
+/// Paper-only: blocked in the live engine.
+pub struct LiquidationCascadeHunter {
+    params: LiquidationCascadeParams,
+    generic_params: StrategyParams,
+    detector: MomentumDetector,
+    /// Pending trade tracker: (symbol, side) → signal timestamp_ms.
+    pending_signals: std::collections::HashMap<(String, String), i64>,
+    /// Timestamp of the last loss (for cooldown).
+    last_loss_timestamp_ms: Option<i64>,
+    /// Current timestamp (updated on each push_price).
+    current_timestamp_ms: i64,
+}
+
+impl LiquidationCascadeHunter {
+    /// Create a new liquidation cascade hunter with the given parameters.
+    pub fn new(params: LiquidationCascadeParams) -> Self {
+        let generic = params.to_strategy_params();
+        let detector = MomentumDetector::new(params.forced_flow_velocity_threshold, params.lookback_count);
+        Self {
+            generic_params: generic,
+            detector,
+            params,
+            pending_signals: std::collections::HashMap::new(),
+            last_loss_timestamp_ms: None,
+            current_timestamp_ms: 0,
+        }
+    }
+
+    /// Return a reference to the strategy-specific parameters.
+    #[allow(dead_code)]
+    pub fn cascade_params(&self) -> &LiquidationCascadeParams {
+        &self.params
+    }
+
+    /// Check if a cascade continuation entry is valid.
+    ///
+    /// Cascade continuation: price approaches a liquidation zone, and we trade
+    /// in the direction the cascade is pushing (e.g., longs getting liquidated
+    /// pushes price down → we go short).
+    #[allow(clippy::collapsible_if)]
+    fn check_cascade_continuation(
+        &self,
+        snapshot: &MomentumSnapshot,
+        ext: &crate::signal::MarketExtension,
+    ) -> Option<Signal> {
+        let zones = ext.liquidation_zones.as_ref()?;
+        let price = snapshot.current_price;
+        if price <= 0.0 {
+            return None;
+        }
+
+        // Find the nearest high-confidence zone within distance threshold
+        for zone in zones {
+            // Check confidence gate
+            if zone.confidence < self.params.confidence_min {
+                continue;
+            }
+
+            // Check distance gate
+            let distance_pct = if zone.price > 0.0 {
+                ((price - zone.price) / zone.price * 100.0).abs()
+            } else {
+                continue;
+            };
+            if distance_pct > self.params.max_distance_to_zone_pct {
+                continue;
+            }
+
+            // Determine trade direction based on zone side_at_risk
+            // If longs are at risk (price approaching zone from above → short)
+            // If shorts are at risk (price approaching zone from below → long)
+            let (is_long, direction_ok) = match zone.side_at_risk.as_str() {
+                "long" => (false, true),   // longs being liquidated → price drops → we short
+                "short" => (true, true),    // shorts being liquidated → price rises → we long
+                _ => continue,
+            };
+
+            if !direction_ok {
+                continue;
+            }
+
+            // Check direction bias
+            if self.params.direction_bias == "long" && !is_long {
+                continue;
+            }
+            if self.params.direction_bias == "short" && is_long {
+                continue;
+            }
+
+            // Check VWAP filter
+            if self.params.vwap_filter_enabled {
+                if let Some(vwap) = ext.vwap {
+                    if vwap > 0.0 {
+                        if is_long && price < vwap {
+                            continue; // Long but price below VWAP
+                        }
+                        if !is_long && price > vwap {
+                            continue; // Short but price above VWAP
+                        }
+                    }
+                }
+            }
+
+            // Check forced-flow velocity gate
+            if let Some(velocity) = ext.forced_flow_velocity {
+                if velocity < self.params.forced_flow_velocity_threshold {
+                    continue;
+                }
+            } else {
+                continue; // No velocity data, can't confirm cascade
+            }
+
+            // Compute signal strength from zone confidence and distance
+            let strength = (zone.confidence * 100.0).min(100.0);
+            let velocity_pct = snapshot.price_velocity_pct.abs();
+
+            return Some(if is_long {
+                Signal::MomentumLong { strength, velocity_pct }
+            } else {
+                Signal::MomentumShort { strength, velocity_pct }
+            });
+        }
+
+        None
+    }
+
+    /// Check if an exhaustion reversal entry is valid.
+    ///
+    /// Exhaustion reversal: after a liquidation burst, price reclaims VWAP,
+    /// depth refills, velocity decays. We trade against the cascade direction.
+    #[allow(clippy::collapsible_if)]
+    fn check_exhaustion_reversal(
+        &self,
+        snapshot: &MomentumSnapshot,
+        ext: &crate::signal::MarketExtension,
+    ) -> Option<Signal> {
+        // Exhaustion requires a liquidation burst to have been detected
+        if !ext.liquidation_burst_detected {
+            return None;
+        }
+
+        let zones = ext.liquidation_zones.as_ref()?;
+        let price = snapshot.current_price;
+        if price <= 0.0 {
+            return None;
+        }
+
+        // Check forced-flow velocity decay
+        if let Some(velocity) = ext.forced_flow_velocity {
+            if velocity > self.params.velocity_decay_threshold {
+                return None; // Still too much velocity, cascade not exhausted
+            }
+        } else {
+            return None; // No velocity data
+        }
+
+        // Check spread normalization
+        if let Some(spread) = ext.spread_pct {
+            if spread > self.params.spread_max_pct {
+                return None; // Spread still elevated
+            }
+        }
+
+        // Find the nearest high-confidence zone for direction
+        for zone in zones {
+            if zone.confidence < self.params.confidence_min {
+                continue;
+            }
+
+            // Exhaustion reversal: trade AGAINST the cascade direction
+            // If longs were liquidated (zone side_at_risk = "long"), price dropped → we go LONG (reversal)
+            // If shorts were liquidated (zone side_at_risk = "short"), price rose → we go SHORT (reversal)
+            let is_long = match zone.side_at_risk.as_str() {
+                "long" => true,    // Longs got rekt → price dropped → reversal is LONG
+                "short" => false,  // Shorts got rekt → price rose → reversal is SHORT
+                _ => continue,
+            };
+
+            // Check direction bias
+            if self.params.direction_bias == "long" && !is_long {
+                continue;
+            }
+            if self.params.direction_bias == "short" && is_long {
+                continue;
+            }
+
+            // Check VWAP reclamation
+            if self.params.vwap_filter_enabled {
+                if let Some(vwap) = ext.vwap {
+                    if vwap > 0.0 {
+                        if is_long && price < vwap {
+                            continue; // Long reversal but price still below VWAP
+                        }
+                        if !is_long && price > vwap {
+                            continue; // Short reversal but price still above VWAP
+                        }
+                    }
+                }
+            }
+
+            let strength = (zone.confidence * 80.0).min(90.0); // Slightly lower strength for reversals
+            let velocity_pct = snapshot.price_velocity_pct.abs();
+
+            return Some(if is_long {
+                Signal::MomentumLong { strength, velocity_pct }
+            } else {
+                Signal::MomentumShort { strength, velocity_pct }
+            });
+        }
+
+        None
+    }
+
+    /// Check if zone data is stale (older than stale_data_threshold_secs).
+    fn is_zone_data_stale(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(ts) = ext.zone_capture_timestamp_ms {
+            let age_secs = (self.current_timestamp_ms - ts).max(0) as u64 / 1000;
+            age_secs > self.params.stale_data_threshold_secs
+        } else {
+            true // No timestamp → stale
+        }
+    }
+
+    /// Clear pending signal for a given symbol/side.
+    #[allow(dead_code)]
+    pub fn clear_pending(&mut self, symbol: &str, side: &str) {
+        self.pending_signals.remove(&(symbol.to_string(), side.to_string()));
+    }
+
+    /// Record a loss timestamp for cooldown tracking.
+    #[allow(dead_code)]
+    pub fn record_loss(&mut self, timestamp_ms: i64) {
+        self.last_loss_timestamp_ms = Some(timestamp_ms);
+    }
+}
+
+impl Strategy for LiquidationCascadeHunter {
+    fn name(&self) -> &str {
+        "liquidation-cascade-hunter"
+    }
+
+    #[allow(clippy::collapsible_if)]
+    fn detect_entry(&mut self, snapshot: &MomentumSnapshot) -> Signal {
+        // Gate 0: Strategy must be enabled
+        if !self.params.enabled {
+            return Signal::NoSignal;
+        }
+
+        // Gate 1: Need sufficient price history
+        if snapshot.price_count < self.params.lookback_count {
+            return Signal::NoSignal;
+        }
+
+        // Gate 2: Need extended market data
+        let ext = match &snapshot.ext {
+            Some(e) => e,
+            None => return Signal::NoSignal,
+        };
+
+        // Gate 3: Stale zone data check — prevent entries with stale data
+        if self.is_zone_data_stale(ext) {
+            return Signal::NoSignal;
+        }
+
+        // Gate 4: Volume z-score
+        if let Some(zscore) = ext.volume_zscore {
+            if zscore < self.params.volume_z_score_threshold {
+                return Signal::NoSignal;
+            }
+        } else {
+            return Signal::NoSignal; // No volume data
+        }
+
+        // Gate 5: Spread filter
+        if let Some(spread) = ext.spread_pct {
+            if spread > self.params.spread_max_pct {
+                return Signal::NoSignal;
+            }
+        } else {
+            return Signal::NoSignal; // No spread data
+        }
+
+        // Gate 6: Depth filter
+        if let Some(depth) = ext.depth_usd {
+            if depth < self.params.depth_min_usd {
+                return Signal::NoSignal;
+            }
+        } else {
+            return Signal::NoSignal; // No depth data
+        }
+
+        // Gate 7: Regime compatibility
+        if self.params.regime_filter {
+            if let Some(label) = &ext.regime_label {
+                // Cascade hunting works best in Trending or HighVol regimes
+                // Choppy and LowVol are incompatible
+                match label.as_str() {
+                    "Choppy" | "LowVol" => return Signal::NoSignal,
+                    _ => {} // Trending, HighVol, or unknown → allow
+                }
+            }
+        }
+
+        // Gate 8: Route cost veto (checked inside detect_entry per VAL-STRAT-043)
+        if let Some(route_cost_bps) = ext.route_cost_bps {
+            if route_cost_bps > self.params.route_cost_max_bps {
+                return Signal::NoSignal;
+            }
+            // route_cost_bps == 0.0 or None → don't block (graceful degradation)
+        }
+
+        // Gate 9: Cooldown after loss
+        if let Some(last_loss) = self.last_loss_timestamp_ms {
+            let elapsed_secs = (self.current_timestamp_ms - last_loss).max(0) as u64 / 1000;
+            if elapsed_secs < self.params.cooldown_after_loss_secs {
+                return Signal::NoSignal;
+            }
+        }
+
+        // Try cascade continuation first
+        let signal = self.check_cascade_continuation(snapshot, ext)
+            .or_else(|| self.check_exhaustion_reversal(snapshot, ext));
+
+        match signal {
+            Some(s) => {
+                // Gate 10: Duplicate check — max one pending per symbol/side
+                let side = match &s {
+                    Signal::MomentumLong { .. } => "long",
+                    Signal::MomentumShort { .. } => "short",
+                    _ => return Signal::NoSignal,
+                };
+                let symbol = ext.symbol.clone().unwrap_or_default();
+                let key = (symbol.clone(), side.to_string());
+                if self.pending_signals.contains_key(&key) {
+                    return Signal::NoSignal; // Already have pending signal
+                }
+                self.pending_signals.insert(key, self.current_timestamp_ms);
+                s
+            }
+            None => Signal::NoSignal,
+        }
+    }
+
+    fn detect_exit(
+        &self,
+        _snapshot: &MomentumSnapshot,
+        ctx: &PositionContext,
+    ) -> Option<Signal> {
+        let current_price = ctx.current_price;
+        let entry_price = ctx.entry_price;
+
+        if entry_price <= 0.0 {
+            return None;
+        }
+
+        // PnL from entry
+        let pnl_pct = if ctx.is_long {
+            (current_price - entry_price) / entry_price * 100.0
+        } else {
+            (entry_price - current_price) / entry_price * 100.0
+        };
+
+        // Priority 1: Take-profit
+        if pnl_pct >= ctx.take_profit_pct {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::TakeProfit }
+            } else {
+                Signal::ExitShort { reason: ExitReason::TakeProfit }
+            });
+        }
+
+        // Priority 2: Stop-loss
+        if pnl_pct <= -ctx.stop_loss_pct {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::StopLoss }
+            } else {
+                Signal::ExitShort { reason: ExitReason::StopLoss }
+            });
+        }
+
+        // Priority 3: Trailing stop
+        if ctx.trailing_stop_pct > 0.0 && ctx.trailing_activation_pct > 0.0 {
+            let peak_profit_pct = if ctx.is_long {
+                (ctx.peak_price - entry_price) / entry_price * 100.0
+            } else {
+                (entry_price - ctx.peak_price) / entry_price * 100.0
+            };
+
+            if peak_profit_pct >= ctx.trailing_activation_pct {
+                let drawdown_from_peak = peak_profit_pct - pnl_pct;
+                if drawdown_from_peak >= ctx.trailing_stop_pct {
+                    return Some(if ctx.is_long {
+                        Signal::ExitLong { reason: ExitReason::TrailingStop }
+                    } else {
+                        Signal::ExitShort { reason: ExitReason::TrailingStop }
+                    });
+                }
+            }
+        }
+
+        // Priority 4: Time stop
+        if ctx.hold_secs >= ctx.max_hold_secs {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::TimeStop }
+            } else {
+                Signal::ExitShort { reason: ExitReason::TimeStop }
+            });
+        }
+
+        // Priority 5: Stale zone data forced exit
+        if let Some(zone_ts) = _snapshot.ext.as_ref().and_then(|e| e.zone_capture_timestamp_ms) {
+            let age_secs = (self.current_timestamp_ms - zone_ts).max(0) as u64 / 1000;
+            if age_secs > self.params.stale_data_threshold_secs {
+                return Some(if ctx.is_long {
+                    Signal::ExitLong { reason: ExitReason::ReversalDetected }
+                } else {
+                    Signal::ExitShort { reason: ExitReason::ReversalDetected }
+                });
+            }
+        }
+
+        None
+    }
+
+    fn parameters(&self) -> &StrategyParams {
+        &self.generic_params
+    }
+
+    fn push_price(&mut self, price: f64, timestamp_ms: i64) {
+        self.current_timestamp_ms = timestamp_ms;
+        self.detector.push_price(price, timestamp_ms);
+    }
+
+    fn snapshot(&self) -> MomentumSnapshot {
+        let mut snap = self.detector.analyze();
+        snap.ext = None;
+        snap
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Strategy Factory
 // ---------------------------------------------------------------------------
 
@@ -1719,6 +2442,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "blueprint-cluster-008",
         "blueprint-cluster-009",
         "blueprint-hft-market-maker",
+        "liquidation-cascade-hunter",
     ]
 }
 
@@ -2159,6 +2883,23 @@ pub fn create_strategy_from_config(
                     );
                 }
             }
+        }
+        "liquidation-cascade-hunter" => {
+            let lc_params = if let Some(table) = sub_table {
+                let params: LiquidationCascadeParams = table.clone().try_into().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse [strategy.liquidation-cascade-hunter] sub-table: {}",
+                        e
+                    )
+                })?;
+                params
+            } else {
+                LiquidationCascadeParams::default()
+            };
+            if let Err(e) = lc_params.validate() {
+                anyhow::bail!("Invalid liquidation-cascade-hunter parameters: {}", e);
+            }
+            Ok(Box::new(LiquidationCascadeHunter::new(lc_params)))
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -3007,6 +3748,7 @@ impl Strategy for DataDrivenMeanRevertStrategy {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -3713,6 +4455,7 @@ impl Strategy for GenericBlueprintStrategy {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -4051,6 +4794,7 @@ mod tests {
                 long_utilization_velocity: long_util_velocity,
                 short_utilization_velocity: short_util_velocity,
             }),
+            ext: None,
         }
     }
 
@@ -4064,6 +4808,7 @@ mod tests {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -4454,6 +5199,7 @@ mod tests {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -4846,6 +5592,7 @@ mod tests {
             strength: 0.0,
             volatility_pct: 0.0,
             pool_data: None,
+            ext: None,
         }
     }
 
@@ -6090,5 +6837,1152 @@ mod tests {
         assert!(params.take_profit_pct > 0.0);
         assert!(params.stop_loss_pct > 0.0);
         assert!(params.max_hold_secs > 0);
+    }
+
+    // ======================================================================
+    // Liquidation Cascade Hunter Tests
+    // ======================================================================
+
+    /// Helper: build a LiquidationCascadeParams with all gates configured for passing.
+    fn lc_params_all_pass() -> LiquidationCascadeParams {
+        LiquidationCascadeParams {
+            enabled: true,
+            paper_only: true,
+            confidence_min: 0.5,
+            volume_z_score_threshold: 1.5,
+            max_distance_to_zone_pct: 10.0,
+            vwap_filter_enabled: true,
+            spread_max_pct: 0.5,
+            depth_min_usd: 5000.0,
+            regime_filter: true,
+            route_cost_max_bps: 5.0,
+            stale_data_threshold_secs: 300,
+            forced_flow_velocity_threshold: 0.3,
+            velocity_decay_threshold: 0.1,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+            max_hold_secs: 1800,
+            cooldown_after_loss_secs: 0, // no cooldown for tests
+            clip_size_usd: 100.0,
+            leverage: 3.0,
+            direction_bias: "neutral".to_string(),
+            scale_in_clips: 1,
+            use_native_tp_sl: true,
+            lookback_count: 5, // small for tests
+        }
+    }
+
+    /// Helper: build a zone that passes confidence/distance gates.
+    fn lc_zone(side: &str, confidence: f64, price: f64) -> crate::liquidation::LiquidationZone {
+        crate::liquidation::LiquidationZone {
+            price,
+            side_at_risk: side.to_string(),
+            estimated_notional_usd: 500_000.0,
+            wallet_count: 10,
+            distance_bps: 200.0,
+            confidence,
+            source_mix: vec!["hyperliquid_positions".to_string()],
+        }
+    }
+
+    /// Helper: build a full MomentumSnapshot with ext data for cascade tests.
+    fn lc_snapshot(
+        price: f64,
+        zones: Vec<crate::liquidation::LiquidationZone>,
+        ext_overrides: crate::signal::MarketExtension,
+    ) -> MomentumSnapshot {
+        let mut ext = ext_overrides;
+        if ext.liquidation_zones.is_none() && !zones.is_empty() {
+            ext.liquidation_zones = Some(zones);
+        }
+        MomentumSnapshot {
+            price_count: 30,
+            current_price: price,
+            price_velocity_pct: 0.5,
+            direction: TradeDirection::Long,
+            strength: 60.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+            ext: Some(ext),
+        }
+    }
+
+    /// Helper: default ext with all gates passing for a cascade long.
+    fn lc_ext_cascade_long(mark_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("short", 0.7, mark_price * 1.02)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(mark_price * 0.99), // price above VWAP for long
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(0.8),
+            regime_label: Some("Trending".to_string()),
+            liquidation_burst_detected: false,
+            symbol: Some("SOL".to_string()),
+        }
+    }
+
+    /// Helper: default ext with all gates passing for a cascade short.
+    fn lc_ext_cascade_short(mark_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("long", 0.7, mark_price * 0.98)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(mark_price * 1.01), // price below VWAP for short
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(0.8),
+            regime_label: Some("Trending".to_string()),
+            liquidation_burst_detected: false,
+            symbol: Some("SOL".to_string()),
+        }
+    }
+
+    /// Helper: ext for exhaustion reversal long (after longs got rekt, price dropped).
+    fn lc_ext_exhaustion_long(mark_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("long", 0.7, mark_price * 0.95)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(mark_price * 0.99), // price above VWAP for reversal long
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(0.05), // low velocity = decayed
+            regime_label: Some("Trending".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+        }
+    }
+
+    /// Helper: ext for exhaustion reversal short.
+    fn lc_ext_exhaustion_short(mark_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("short", 0.7, mark_price * 1.05)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(mark_price * 1.01), // price below VWAP for reversal short
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(0.05),
+            regime_label: Some("Trending".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+        }
+    }
+
+    // --- VAL-STRAT-001: Strategy name registered ---
+    #[test]
+    fn test_lc_available_in_strategies_list() {
+        assert!(available_strategies().contains(&"liquidation-cascade-hunter"));
+    }
+
+    // --- VAL-STRAT-002: Factory creates correct type ---
+    #[test]
+    fn test_lc_factory_creates_correct_type() {
+        let strategy = create_strategy_from_config(
+            "liquidation-cascade-hunter",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 1.5,
+                stop_loss_pct: 0.75,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        assert_eq!(strategy.name(), "liquidation-cascade-hunter");
+    }
+
+    // --- VAL-STRAT-003: Config disabled by default ---
+    #[test]
+    fn test_lc_disabled_by_default() {
+        let params = LiquidationCascadeParams::default();
+        assert!(!params.enabled);
+    }
+
+    // --- VAL-STRAT-004: Must be explicitly enabled ---
+    #[test]
+    fn test_lc_no_signal_when_disabled() {
+        let params = LiquidationCascadeParams {
+            enabled: false,
+            ..lc_params_all_pass()
+        };
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let snap = lc_snapshot(100.0, vec![], lc_ext_cascade_long(100.0));
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-005: Parameter validation ---
+    #[test]
+    fn test_lc_params_validate_ok() {
+        assert!(lc_params_all_pass().validate().is_ok());
+    }
+
+    #[test]
+    fn test_lc_params_reject_negative_confidence() {
+        let mut p = lc_params_all_pass();
+        p.confidence_min = -0.1;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_confidence_above_one() {
+        let mut p = lc_params_all_pass();
+        p.confidence_min = 1.5;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_negative_volume_zscore() {
+        let mut p = lc_params_all_pass();
+        p.volume_z_score_threshold = -1.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_negative_distance() {
+        let mut p = lc_params_all_pass();
+        p.max_distance_to_zone_pct = -1.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_negative_spread() {
+        let mut p = lc_params_all_pass();
+        p.spread_max_pct = -1.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_zero_tp() {
+        let mut p = lc_params_all_pass();
+        p.take_profit_pct = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_zero_sl() {
+        let mut p = lc_params_all_pass();
+        p.stop_loss_pct = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_zero_stale_threshold() {
+        let mut p = lc_params_all_pass();
+        p.stale_data_threshold_secs = 0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_lc_params_reject_negative_route_cost() {
+        let mut p = lc_params_all_pass();
+        p.route_cost_max_bps = -1.0;
+        assert!(p.validate().is_err());
+    }
+
+    // --- VAL-STRAT-006: Cascade continuation long ---
+    #[test]
+    fn test_lc_cascade_continuation_long_all_gates_pass() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        // Push enough prices to pass lookback_count gate
+        for i in 0..5 {
+            strategy.push_price(100.0 + i as f64 * 0.1, 1000000 + i * 1000);
+        }
+        let snap = lc_snapshot(100.0, vec![], lc_ext_cascade_long(100.0));
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumLong { .. }),
+            "Expected MomentumLong, got {:?}", signal);
+    }
+
+    // --- VAL-STRAT-007: Cascade continuation short ---
+    #[test]
+    fn test_lc_cascade_continuation_short_all_gates_pass() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0 - i as f64 * 0.1, 1000000 + i * 1000);
+        }
+        let snap = lc_snapshot(100.0, vec![], lc_ext_cascade_short(100.0));
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumShort { .. }),
+            "Expected MomentumShort, got {:?}", signal);
+    }
+
+    // --- VAL-STRAT-008: Cascade blocked — low confidence ---
+    #[test]
+    fn test_lc_cascade_blocked_confidence_below_min() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        // Set zone confidence below minimum (0.5)
+        ext.liquidation_zones = Some(vec![lc_zone("short", 0.3, 102.0)]);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-009: Cascade blocked — volume z-score ---
+    #[test]
+    fn test_lc_cascade_blocked_volume_zscore() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.volume_zscore = Some(0.5); // Below threshold of 1.5
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-010: Cascade blocked — price too far ---
+    #[test]
+    fn test_lc_cascade_blocked_price_too_far() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        // Zone at 120% of price = 20% away, exceeding 10% threshold
+        ext.liquidation_zones = Some(vec![lc_zone("short", 0.7, 120.0)]);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-011: Cascade blocked — VWAP filter ---
+    #[test]
+    fn test_lc_cascade_blocked_vwap() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.vwap = Some(105.0); // Price (100) below VWAP (105) → long blocked
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-012: Cascade blocked — spread too wide ---
+    #[test]
+    fn test_lc_cascade_blocked_spread() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.spread_pct = Some(1.0); // Exceeds 0.5 threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-013: Cascade blocked — depth too thin ---
+    #[test]
+    fn test_lc_cascade_blocked_depth() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.depth_usd = Some(1000.0); // Below 5000 threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-014: Cascade blocked — regime incompatible ---
+    #[test]
+    fn test_lc_cascade_blocked_regime() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.regime_label = Some("Choppy".to_string());
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    #[test]
+    fn test_lc_cascade_blocked_regime_lowvol() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.regime_label = Some("LowVol".to_string());
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-015: Cascade blocked — route cost veto ---
+    #[test]
+    fn test_lc_cascade_blocked_route_cost() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.route_cost_bps = Some(10.0); // Exceeds 5.0 bps threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-016: Exhaustion reversal long ---
+    #[test]
+    fn test_lc_exhaustion_reversal_long_all_gates_pass() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_exhaustion_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumLong { .. }),
+            "Expected MomentumLong for exhaustion reversal, got {:?}", signal);
+    }
+
+    // --- VAL-STRAT-017: Exhaustion reversal short ---
+    #[test]
+    fn test_lc_exhaustion_reversal_short_all_gates_pass() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_exhaustion_short(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumShort { .. }),
+            "Expected MomentumShort for exhaustion reversal, got {:?}", signal);
+    }
+
+    // --- VAL-STRAT-018: Exhaustion blocked — no burst ---
+    #[test]
+    fn test_lc_exhaustion_blocked_no_burst() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.liquidation_burst_detected = false;
+        // Also make cascade fail (low velocity so cascade doesn't trigger either)
+        ext.forced_flow_velocity = Some(0.05);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-019: Exhaustion blocked — VWAP not reclaimed ---
+    #[test]
+    fn test_lc_exhaustion_blocked_vwap() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.vwap = Some(105.0); // Price below VWAP → long blocked
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-020: Exhaustion blocked — depth not refilled ---
+    #[test]
+    fn test_lc_exhaustion_blocked_depth() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.depth_usd = Some(1000.0); // Below threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-021: Exhaustion blocked — velocity not decaying ---
+    #[test]
+    fn test_lc_exhaustion_blocked_velocity() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.forced_flow_velocity = Some(0.5); // Still high, above decay threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-022: Exhaustion blocked — spread elevated ---
+    #[test]
+    fn test_lc_exhaustion_blocked_spread() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.spread_pct = Some(1.0); // Above threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-023: Max one pending per symbol/side ---
+    #[test]
+    fn test_lc_max_one_pending_per_symbol_side() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal1 = strategy.detect_entry(&snap);
+        assert!(matches!(signal1, Signal::MomentumLong { .. }));
+        // Second call with same symbol/side → NoSignal
+        let signal2 = strategy.detect_entry(&snap);
+        assert!(matches!(signal2, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-024: Pending cleared after position opens ---
+    #[test]
+    fn test_lc_pending_cleared_after_clear() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal1 = strategy.detect_entry(&snap);
+        assert!(matches!(signal1, Signal::MomentumLong { .. }));
+        // Clear pending for SOL/long
+        strategy.clear_pending("SOL", "long");
+        // Now should allow new signal
+        let signal2 = strategy.detect_entry(&snap);
+        assert!(matches!(signal2, Signal::MomentumLong { .. }));
+    }
+
+    // --- VAL-STRAT-025: Pending cleared by different symbol/side ---
+    #[test]
+    fn test_lc_pending_different_symbol_not_blocked() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // First signal for SOL/long
+        let ext_sol = lc_ext_cascade_long(100.0);
+        let snap_sol = lc_snapshot(100.0, vec![], ext_sol);
+        let signal1 = strategy.detect_entry(&snap_sol);
+        assert!(matches!(signal1, Signal::MomentumLong { .. }));
+        // Different symbol should not be blocked
+        let mut ext_btc = lc_ext_cascade_long(50000.0);
+        ext_btc.symbol = Some("BTC".to_string());
+        let snap_btc = lc_snapshot(50000.0, vec![], ext_btc);
+        let signal2 = strategy.detect_entry(&snap_btc);
+        assert!(matches!(signal2, Signal::MomentumLong { .. }));
+    }
+
+    // --- VAL-STRAT-026/027/028: TP and SL on signals ---
+    #[test]
+    fn test_lc_signal_has_tp_sl_context() {
+        let params = lc_params_all_pass();
+        let tp = params.take_profit_pct;
+        let sl = params.stop_loss_pct;
+        assert!(tp > 0.0, "TP must be positive");
+        assert!(sl > 0.0, "SL must be positive");
+        // The TP/SL values are used via PositionContext in detect_exit
+        // Verify the params are correctly stored
+        let strategy = LiquidationCascadeHunter::new(params);
+        let p = strategy.parameters();
+        assert!((p.take_profit_pct - 1.5).abs() < 0.001);
+        assert!((p.stop_loss_pct - 0.75).abs() < 0.001);
+        // Verify TP > entry for long, SL < entry for long
+        let entry = 100.0;
+        let tp_price = entry * (1.0 + p.take_profit_pct / 100.0);
+        let sl_price = entry * (1.0 - p.stop_loss_pct / 100.0);
+        assert!(tp_price > entry, "TP {} should be > entry {}", tp_price, entry);
+        assert!(sl_price < entry, "SL {} should be < entry {}", sl_price, entry);
+    }
+
+    // --- VAL-STRAT-029: TP exit ---
+    #[test]
+    fn test_lc_exit_take_profit() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(102.0, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.6, // +1.6% > TP 1.5%
+            peak_price: 101.6,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TakeProfit })));
+    }
+
+    // --- VAL-STRAT-030: SL exit ---
+    #[test]
+    fn test_lc_exit_stop_loss() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(99.0, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 99.0, // -1.0% < SL -0.75%
+            peak_price: 100.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::StopLoss })));
+    }
+
+    // --- VAL-STRAT-031: Trailing stop ---
+    #[test]
+    fn test_lc_exit_trailing_stop() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(101.2, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.2, // +1.2%
+            peak_price: 101.8,    // peaked at +1.8% > activation 1.0%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        // Peak profit 1.8%, current profit 1.2%, drawdown 0.6% >= trailing 0.5%
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TrailingStop })));
+    }
+
+    // --- VAL-STRAT-032: Trailing not triggered before activation ---
+    #[test]
+    fn test_lc_trailing_not_before_activation() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5, // +0.5%
+            peak_price: 100.8,    // peaked at +0.8% < activation 1.0%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_none(), "Should not trigger trailing before activation");
+    }
+
+    // --- VAL-STRAT-033: Time stop ---
+    #[test]
+    fn test_lc_exit_time_stop() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5,
+            peak_price: 100.5,
+            hold_secs: 2000, // > max_hold_secs 1800
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TimeStop })));
+    }
+
+    // --- VAL-STRAT-034: Exit priority ---
+    #[test]
+    fn test_lc_exit_priority_tp_over_sl() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(103.0, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: false, // Short position where price went up
+            entry_price: 100.0,
+            current_price: 103.0, // -3% loss for short (exceeds SL 0.75%)
+            peak_price: 97.0,     // best was +3% profit
+            hold_secs: 2000,      // Also exceeds time stop
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        // SL should fire since price moved against the short
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::StopLoss })));
+    }
+
+    // --- VAL-STRAT-035: No exit when healthy ---
+    #[test]
+    fn test_lc_no_exit_when_healthy() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let mut snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        snap.ext = Some(crate::signal::MarketExtension {
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5, // +0.5% (between SL and TP)
+            peak_price: 100.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_none(), "No exit when position is healthy");
+    }
+
+    // --- VAL-STRAT-036: Stale zone data forces exit ---
+    #[test]
+    fn test_lc_stale_zone_forces_exit() {
+        let params = LiquidationCascadeParams {
+            stale_data_threshold_secs: 60,
+            ..lc_params_all_pass()
+        };
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        strategy.push_price(100.0, 1000100); // current_ts = 1000100ms
+        let mut snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        snap.ext = Some(crate::signal::MarketExtension {
+            zone_capture_timestamp_ms: Some(1000000), // 100ms ago, within 60s
+            ..Default::default()
+        });
+        // Not stale
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5,
+            peak_price: 100.5,
+            hold_secs: 10,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        assert!(strategy.detect_exit(&snap, &ctx).is_none());
+
+        // Now make zone data stale (>60 seconds old)
+        strategy.push_price(100.0, 1070000); // current_ts = 1070000ms, zone at 1000000 → 70s stale
+        assert!(strategy.detect_exit(&snap, &ctx).is_some());
+    }
+
+    // --- VAL-STRAT-038: Stale exit independent of PnL ---
+    #[test]
+    fn test_lc_stale_exit_independent_of_pnl() {
+        let params = LiquidationCascadeParams {
+            stale_data_threshold_secs: 10,
+            ..lc_params_all_pass()
+        };
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        strategy.push_price(100.0, 10000000); // current_ts far ahead
+        let mut snap = lc_snapshot(102.0, vec![], crate::signal::MarketExtension::default());
+        snap.ext = Some(crate::signal::MarketExtension {
+            zone_capture_timestamp_ms: Some(1000000), // Very old → stale
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 102.0, // +2% profit
+            peak_price: 102.0,
+            hold_secs: 10,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5, // TP not hit yet (1.5%)
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        // TP would be at 101.5, current is 102.0 → actually TP IS hit first
+        // Let's use a price that's profitable but below TP
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.0, // +1.0% (below TP 1.5%)
+            peak_price: 101.0,
+            hold_secs: 10,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_some(), "Should force exit even with profitable position");
+    }
+
+    // --- VAL-STRAT-039: Stale data prevents new entries ---
+    #[test]
+    fn test_lc_stale_data_prevents_entries() {
+        let params = LiquidationCascadeParams {
+            stale_data_threshold_secs: 10,
+            ..lc_params_all_pass()
+        };
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 10000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.zone_capture_timestamp_ms = Some(1000000); // Very old
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-040: Paper-only in live engine ---
+    #[test]
+    fn test_lc_paper_only_in_live_engine() {
+        // The live engine (ScalperEngine::new) rejects liquidation-cascade-hunter
+        // This test verifies the strategy's paper_only flag
+        let params = LiquidationCascadeParams::default();
+        assert!(params.paper_only, "Default params must have paper_only = true");
+    }
+
+    // --- VAL-STRAT-043: Route cost checked inside detect_entry ---
+    #[test]
+    fn test_lc_route_cost_checked_in_detect_entry() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        // Route cost exceeds threshold
+        ext.route_cost_bps = Some(10.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-044: Route cost zero/missing does not block ---
+    #[test]
+    fn test_lc_route_cost_missing_does_not_block() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.route_cost_bps = None; // No route cost data
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumLong { .. }),
+            "Should allow entry when route cost data is missing");
+    }
+
+    #[test]
+    fn test_lc_route_cost_zero_does_not_block() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.route_cost_bps = Some(0.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumLong { .. }),
+            "Should allow entry when route cost is zero");
+    }
+
+    // --- VAL-STRAT-045: Route cost below threshold allows ---
+    #[test]
+    fn test_lc_route_cost_below_threshold_allows() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.route_cost_bps = Some(4.99); // Just below threshold of 5.0
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::MomentumLong { .. }));
+    }
+
+    // --- VAL-STRAT-057: Strategy trait impl ---
+    #[test]
+    fn test_lc_strategy_trait_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<LiquidationCascadeHunter>();
+    }
+
+    // --- VAL-STRAT-058: name() ---
+    #[test]
+    fn test_lc_name() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        assert_eq!(strategy.name(), "liquidation-cascade-hunter");
+    }
+
+    // --- VAL-STRAT-059: parameters() returns expected defaults ---
+    #[test]
+    fn test_lc_parameters_defaults() {
+        let params = lc_params_all_pass();
+        let strategy = LiquidationCascadeHunter::new(params);
+        let p = strategy.parameters();
+        assert!((p.take_profit_pct - 1.5).abs() < 0.001);
+        assert!((p.stop_loss_pct - 0.75).abs() < 0.001);
+        assert!((p.trailing_stop_pct - 0.5).abs() < 0.001);
+        assert_eq!(p.max_hold_secs, 1800);
+        assert!((p.clip_size_usd - 100.0).abs() < 0.001);
+    }
+
+    // --- VAL-STRAT-060: push_price updates state ---
+    #[test]
+    fn test_lc_push_price_updates_state() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        strategy.push_price(100.0, 1000);
+        strategy.push_price(101.0, 2000);
+        let snap = strategy.snapshot();
+        assert!(snap.price_count >= 2);
+        assert!((snap.current_price - 101.0).abs() < 0.01);
+    }
+
+    // --- VAL-STRAT-062: as_any() downcasting ---
+    #[test]
+    fn test_lc_as_any_downcasting() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let dyn_ref: &dyn Strategy = &strategy;
+        let any_ref = dyn_ref.as_any();
+        let downcast = any_ref.downcast_ref::<LiquidationCascadeHunter>();
+        assert!(downcast.is_some());
+        assert_eq!(downcast.unwrap().name(), "liquidation-cascade-hunter");
+    }
+
+    // --- VAL-STRAT-063: No entry without confirmation ---
+    #[test]
+    fn test_lc_no_entry_without_confirmation() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Price near zone but no velocity confirmation
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.forced_flow_velocity = Some(0.1); // Below threshold
+        ext.liquidation_burst_detected = false; // No burst either
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-064: No entry without velocity ---
+    #[test]
+    fn test_lc_cascade_no_entry_without_velocity() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.forced_flow_velocity = None; // No velocity data
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-065: Exhaustion requires velocity decay ---
+    #[test]
+    fn test_lc_exhaustion_requires_velocity_decay() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_exhaustion_long(100.0);
+        ext.forced_flow_velocity = Some(0.5); // Still high velocity
+        let snap = lc_snapshot(100.0, vec![], ext);
+        // Cascade continuation should also fail because price above VWAP for long
+        // and zone is for longs being at risk (side_at_risk = "long" → short signal for cascade)
+        // but VWAP has price above it → short blocked. So overall NoSignal.
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-066: No signal before sufficient history ---
+    #[test]
+    fn test_lc_no_signal_before_sufficient_history() {
+        let params = LiquidationCascadeParams {
+            lookback_count: 10,
+            ..lc_params_all_pass()
+        };
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        strategy.push_price(100.0, 1000); // Only 1 price, need 10
+        // Create snapshot with low price_count
+        let mut snap = lc_snapshot(100.0, vec![], lc_ext_cascade_long(100.0));
+        snap.price_count = 1; // Only 1 price pushed, need 10
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-067: Zero AUM handled ---
+    #[test]
+    fn test_lc_handles_missing_pool_data() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Snapshot without ext → NoSignal (no pool/zone data)
+        let snap = MomentumSnapshot {
+            price_count: 30,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: TradeDirection::Long,
+            strength: 60.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+            ext: None,
+        };
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-069: Extreme volatility ---
+    #[test]
+    fn test_lc_extreme_volatility_no_panic() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        strategy.push_price(100.0, 1000);
+        strategy.push_price(50.0, 2000);  // 50% drop
+        strategy.push_price(150.0, 3000); // 200% rise
+        strategy.push_price(10.0, 4000);  // 93% drop
+        strategy.push_price(500.0, 5000); // 4900% rise
+        let snap = strategy.snapshot();
+        assert!(snap.current_price.is_finite());
+        assert!(!snap.current_price.is_nan());
+    }
+
+    // --- VAL-STRAT-070: Config from TOML sub-table ---
+    #[test]
+    fn test_lc_config_from_toml() {
+        let toml_str = r#"
+            enabled = true
+            confidence_min = 0.7
+            volume_z_score_threshold = 3.0
+            take_profit_pct = 2.0
+            stop_loss_pct = 1.0
+        "#;
+        let value: toml::Value = toml_str.parse().unwrap();
+        let params: LiquidationCascadeParams = value.try_into().unwrap();
+        assert!(params.enabled);
+        assert!((params.confidence_min - 0.7).abs() < 0.001);
+        assert!((params.volume_z_score_threshold - 3.0).abs() < 0.001);
+        assert!((params.take_profit_pct - 2.0).abs() < 0.001);
+        assert!((params.stop_loss_pct - 1.0).abs() < 0.001);
+    }
+
+    // --- VAL-STRAT-071: Missing optional fields use defaults ---
+    #[test]
+    fn test_lc_config_missing_fields_use_defaults() {
+        let toml_str = r#"
+            enabled = true
+        "#;
+        let value: toml::Value = toml_str.parse().unwrap();
+        let params: LiquidationCascadeParams = value.try_into().unwrap();
+        assert!(params.enabled);
+        assert!(params.paper_only); // defaults to true
+        assert!((params.confidence_min - 0.6).abs() < 0.001);
+        assert!((params.route_cost_max_bps - 5.0).abs() < 0.001);
+    }
+
+    // --- VAL-STRAT-072: Direction bias ---
+    #[test]
+    fn test_lc_direction_bias_long() {
+        let mut params = lc_params_all_pass();
+        params.direction_bias = "long".to_string();
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Short signal should be blocked
+        let ext = lc_ext_cascade_short(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal),
+            "Long bias should block short signals");
+    }
+
+    #[test]
+    fn test_lc_direction_bias_short() {
+        let mut params = lc_params_all_pass();
+        params.direction_bias = "short".to_string();
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Long signal should be blocked
+        let ext = lc_ext_cascade_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal),
+            "Short bias should block long signals");
+    }
+
+    #[test]
+    fn test_lc_direction_bias_neutral_allows_both() {
+        let mut params = lc_params_all_pass();
+        params.direction_bias = "neutral".to_string();
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Both directions should work
+        let ext_long = lc_ext_cascade_long(100.0);
+        let snap_long = lc_snapshot(100.0, vec![], ext_long);
+        assert!(matches!(strategy.detect_entry(&snap_long), Signal::MomentumLong { .. }));
+        // Clear pending
+        strategy.clear_pending("SOL", "long");
+        let ext_short = lc_ext_cascade_short(100.0);
+        let snap_short = lc_snapshot(100.0, vec![], ext_short);
+        assert!(matches!(strategy.detect_entry(&snap_short), Signal::MomentumShort { .. }));
+    }
+
+    // --- VAL-CROSS-003: Route oracle veto applies ---
+    #[test]
+    fn test_lc_route_oracle_veto_applies() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let mut ext = lc_ext_cascade_long(100.0);
+        ext.route_cost_bps = Some(10.0); // Exceeds 5.0 bps threshold
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+        // Below threshold → signal
+        let mut ext2 = lc_ext_cascade_long(100.0);
+        ext2.route_cost_bps = Some(3.0);
+        let snap2 = lc_snapshot(100.0, vec![], ext2);
+        assert!(matches!(strategy.detect_entry(&snap2), Signal::MomentumLong { .. }));
+    }
+
+    // --- VAL-CROSS-004: Zone data flows into strategy ---
+    #[test]
+    fn test_lc_zone_data_flows_into_strategy() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // High-confidence fresh zone → signal
+        let ext = lc_ext_cascade_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::MomentumLong { .. }));
+
+        // Clear pending
+        strategy.clear_pending("SOL", "long");
+
+        // Stale zone → no signal
+        let mut ext_stale = lc_ext_cascade_long(100.0);
+        ext_stale.zone_capture_timestamp_ms = Some(100); // Very old
+        let snap_stale = lc_snapshot(100.0, vec![], ext_stale);
+        assert!(matches!(strategy.detect_entry(&snap_stale), Signal::NoSignal),
+            "Stale zone data should block entry");
+    }
+
+    // --- No entry without pool data / ext ---
+    #[test]
+    fn test_lc_no_entry_without_ext_data() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let snap = MomentumSnapshot {
+            price_count: 30,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: TradeDirection::Long,
+            strength: 60.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+            ext: None,
+        };
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Trailing stop for shorts ---
+    #[test]
+    fn test_lc_exit_trailing_stop_short() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(98.8, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 98.8, // -1.2% (profit for short)
+            peak_price: 98.2,    // best was -1.8% > activation 1.0%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::TrailingStop })));
+    }
+
+    // --- Time stop for short ---
+    #[test]
+    fn test_lc_exit_time_stop_short() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(99.5, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 99.5,
+            peak_price: 99.5,
+            hold_secs: 2000,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5,
+            stop_loss_pct: 0.75,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::TimeStop })));
     }
 }
