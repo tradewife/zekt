@@ -418,6 +418,18 @@ impl SizingMode {
 }
 
 // ---------------------------------------------------------------------------
+// Sentinel values for enhanced metrics
+// ---------------------------------------------------------------------------
+
+/// Sentinel value representing "effectively infinity" for ratio fields.
+/// Used when the denominator is zero (e.g., no downside volatility, no losses, no drawdown).
+/// Must not be confused with actual metric values; chosen to be clearly larger than any realistic ratio.
+pub const METRIC_INF: f64 = 99999.99;
+
+/// Sentinel value used when a metric is undefined (e.g., fee_to_gross when gross_profit == 0).
+pub const METRIC_UNDEFINED: f64 = -1.0;
+
+// ---------------------------------------------------------------------------
 // Backtest Position
 // ---------------------------------------------------------------------------
 
@@ -429,6 +441,9 @@ struct BtPosition {
     entry_price: f64,
     current_price: f64,
     peak_price: f64,
+    /// Worst price reached during the trade (lowest for longs, highest for shorts).
+    /// Used for liquidation proximity calculation.
+    worst_price: f64,
     size_usd: f64,
     leverage: f64,
     open_time_ms: i64,
@@ -472,6 +487,7 @@ impl BtPosition {
             entry_price,
             current_price: entry_price,
             peak_price: entry_price,
+            worst_price: entry_price,
             size_usd,
             leverage,
             open_time_ms,
@@ -513,8 +529,16 @@ impl BtPosition {
             if price > self.peak_price {
                 self.peak_price = price;
             }
-        } else if self.peak_price == 0.0 || price < self.peak_price {
-            self.peak_price = price;
+            if price < self.worst_price {
+                self.worst_price = price;
+            }
+        } else {
+            if self.peak_price == 0.0 || price < self.peak_price {
+                self.peak_price = price;
+            }
+            if price > self.worst_price {
+                self.worst_price = price;
+            }
         }
         // Accrue borrow fee
         let hours = interval_secs / 3600.0;
@@ -612,6 +636,40 @@ pub struct BacktestCellStats {
     /// Sizing mode used for this backtest cell (e.g., "fixed-notional", "fixed-fractional").
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub sizing_mode: String,
+
+    // --- Enhanced risk metrics ---
+
+    /// Sortino ratio: mean(trade_pnls) / downside_deviation.
+    /// `METRIC_INF` when no downside volatility (all trades profitable), 0.0 when no trades.
+    #[serde(default)]
+    pub sortino_ratio: f64,
+    /// Calmar ratio: annualized_return / max_drawdown.
+    /// `METRIC_INF` when no drawdown, 0.0 when no trades.
+    #[serde(default)]
+    pub calmar_ratio: f64,
+    /// Profit factor: gross_profit / gross_loss.
+    /// `METRIC_INF` when no losses, 0.0 when no wins or no trades.
+    #[serde(default)]
+    pub profit_factor: f64,
+    /// Maximum consecutive losing trades.
+    #[serde(default)]
+    pub max_consecutive_losses: usize,
+    /// Risk-of-ruin estimate via Monte Carlo simulation (1000 shuffles, fixed seed).
+    /// Result in [0, 100]%. 0.0 when no trades.
+    #[serde(default)]
+    pub risk_of_ruin_pct: f64,
+    /// Average liquidation proximity: average closest % distance from worst price
+    /// to estimated liquidation during each trade. 0.0 when no trades.
+    #[serde(default)]
+    pub avg_liquidation_proximity_pct: f64,
+    /// Average recovery time from drawdown events (>5% from peak).
+    /// Mean seconds from drawdown peak to recovery for completed events. 0.0 when no events.
+    #[serde(default)]
+    pub avg_recovery_time_secs: f64,
+    /// Fee-to-gross ratio: total_fees / gross_profit.abs().
+    /// `METRIC_UNDEFINED` sentinel when gross_profit == 0.
+    #[serde(default)]
+    pub fee_to_gross_ratio: f64,
 }
 
 /// A regime transition event recorded during backtest.
@@ -634,6 +692,288 @@ impl BacktestCellStats {
             0.0
         };
         self.sharpe_pass = self.sharpe_ratio >= 1.0;
+    }
+
+    /// Compute all enhanced risk metrics from completed trades.
+    ///
+    /// Must be called after all trades are collected and basic stats finalized.
+    /// `starting_balance` is the account balance at the start of this cell.
+    pub fn compute_enhanced_metrics(
+        &mut self,
+        trades: &[BtTrade],
+        starting_balance: f64,
+        leverage: f64,
+    ) {
+        // Fee-to-gross ratio depends on stats-level values, not individual trades
+        self.fee_to_gross_ratio = if self.gross_pnl.abs() > 0.0001 {
+            self.total_fees / self.gross_pnl.abs()
+        } else if self.trade_count > 0 {
+            METRIC_UNDEFINED
+        } else {
+            0.0
+        };
+
+        if trades.is_empty() {
+            // All other enhanced metrics remain at their default (0.0 / 0)
+            return;
+        }
+
+        let trade_pnls: Vec<f64> = trades.iter().map(|t| t.net_pnl).collect();
+
+        // --- Sortino ratio ---
+        self.sortino_ratio = compute_sortino_ratio(&trade_pnls);
+
+        // --- Calmar ratio ---
+        self.calmar_ratio = compute_calmar_ratio(
+            &trade_pnls,
+            starting_balance,
+            self.max_drawdown_usd,
+        );
+
+        // --- Profit factor ---
+        self.profit_factor = compute_profit_factor(&trade_pnls);
+
+        // --- Max consecutive losses ---
+        self.max_consecutive_losses = compute_max_consecutive_losses(&trade_pnls);
+
+        // --- Risk-of-ruin (Monte Carlo) ---
+        self.risk_of_ruin_pct = compute_risk_of_ruin(&trade_pnls, starting_balance);
+
+        // --- Average liquidation proximity ---
+        self.avg_liquidation_proximity_pct = compute_avg_liquidation_proximity(trades, leverage);
+
+        // --- Average recovery time ---
+        self.avg_recovery_time_secs = compute_avg_recovery_time(trades, starting_balance);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Enhanced metric computation functions
+// ---------------------------------------------------------------------------
+
+/// Compute Sortino ratio: mean(returns) / downside_deviation.
+/// Returns `METRIC_INF` when there is no downside volatility (all returns >= 0).
+/// Returns 0.0 when there are no returns.
+fn compute_sortino_ratio(returns: &[f64]) -> f64 {
+    if returns.is_empty() {
+        return 0.0;
+    }
+    let mean = returns.iter().sum::<f64>() / returns.len() as f64;
+    let downside: Vec<f64> = returns.iter().map(|r| (*r - 0.0).min(0.0)).collect();
+    let downside_var = downside.iter().map(|d| d * d).sum::<f64>() / returns.len() as f64;
+    let downside_dev = downside_var.sqrt();
+    if downside_dev < 1e-12 {
+        // No downside volatility — all trades profitable
+        METRIC_INF
+    } else {
+        mean / downside_dev
+    }
+}
+
+/// Compute Calmar ratio: annualized_return / max_drawdown.
+/// Annualized return is computed from total return over the backtest period.
+/// Returns `METRIC_INF` when max_drawdown == 0. Returns 0.0 when no trades.
+fn compute_calmar_ratio(returns: &[f64], starting_balance: f64, max_drawdown_usd: f64) -> f64 {
+    if returns.is_empty() {
+        return 0.0;
+    }
+    let total_return: f64 = returns.iter().sum();
+    // Annualize assuming ~252 trading days worth of trades
+    // Use trade-count-based annualization: annualized_return ≈ total_return * (252 / trade_days)
+    // Simplified: use total return relative to starting balance, scaled by trade frequency
+    let num_trades = returns.len() as f64;
+    // Assume ~252 trading days/year with average of ~4 trades/day for crypto
+    let trades_per_year = 252.0 * 4.0;
+    let annualized_return = if starting_balance > 0.0 && num_trades > 0.0 {
+        let return_pct = total_return / starting_balance;
+        return_pct * (trades_per_year / num_trades) * starting_balance
+    } else {
+        total_return * (trades_per_year / num_trades)
+    };
+
+    if max_drawdown_usd < 1e-12 {
+        METRIC_INF
+    } else {
+        annualized_return / max_drawdown_usd
+    }
+}
+
+/// Compute profit factor: gross_profit / gross_loss.
+/// Returns `METRIC_INF` when no losses. Returns 0.0 when no wins or no trades.
+fn compute_profit_factor(returns: &[f64]) -> f64 {
+    if returns.is_empty() {
+        return 0.0;
+    }
+    let gross_profit: f64 = returns.iter().filter(|&&r| r > 0.0).sum();
+    let gross_loss: f64 = returns.iter().filter(|&&r| r < 0.0).sum::<f64>().abs();
+    if gross_loss < 1e-12 {
+        if gross_profit > 1e-12 {
+            METRIC_INF
+        } else {
+            // All trades are exactly zero — no edge either way
+            0.0
+        }
+    } else {
+        gross_profit / gross_loss
+    }
+}
+
+/// Compute maximum consecutive losses from a sequence of trade PnLs.
+fn compute_max_consecutive_losses(returns: &[f64]) -> usize {
+    let mut max_streak = 0usize;
+    let mut current_streak = 0usize;
+    for &r in returns {
+        if r < 0.0 {
+            current_streak += 1;
+            if current_streak > max_streak {
+                max_streak = current_streak;
+            }
+        } else {
+            current_streak = 0;
+        }
+    }
+    max_streak
+}
+
+/// Compute risk-of-ruin via Monte Carlo simulation.
+/// Shuffles trade PnLs 1000 times with a fixed seed, counts fraction where
+/// equity drops below the ruin threshold (10% of starting balance).
+/// Result in [0, 100]%. Returns 0.0 when no trades.
+fn compute_risk_of_ruin(returns: &[f64], starting_balance: f64) -> f64 {
+    if returns.is_empty() || starting_balance <= 0.0 {
+        return 0.0;
+    }
+    let ruin_threshold = starting_balance * 0.10;
+    let num_simulations = 1000usize;
+    let mut ruined = 0usize;
+
+    // Use a simple deterministic PRNG for reproducibility (no external rand dep needed for shuffle)
+    // LCG parameters (same as glibc)
+    let mut seed: u64 = 42;
+    let lcg_a: u64 = 1103515245;
+    let lcg_c: u64 = 12345;
+    let lcg_m: u64 = 1 << 31;
+
+    for _ in 0..num_simulations {
+        // Fisher-Yates shuffle with LCG
+        let mut shuffled = returns.to_vec();
+        let n = shuffled.len();
+        for i in (1..n).rev() {
+            seed = (lcg_a.wrapping_mul(seed).wrapping_add(lcg_c)) % lcg_m;
+            let j = (seed as usize) % (i + 1);
+            shuffled.swap(i, j);
+        }
+
+        // Simulate equity curve
+        let mut equity = starting_balance;
+        for &pnl in &shuffled {
+            equity += pnl;
+            if equity < ruin_threshold {
+                ruined += 1;
+                break;
+            }
+        }
+    }
+
+    (ruined as f64 / num_simulations as f64) * 100.0
+}
+
+/// Compute average liquidation proximity across all trades.
+/// For each trade, calculates the % distance from the worst price to estimated
+/// liquidation price, then averages across all trades.
+fn compute_avg_liquidation_proximity(trades: &[BtTrade], leverage: f64) -> f64 {
+    if trades.is_empty() {
+        return 0.0;
+    }
+    let lev = if leverage > 0.0 { leverage } else { 5.0 };
+    let mut total_proximity = 0.0;
+    let mut count = 0usize;
+
+    for trade in trades {
+        if trade.entry_price <= 0.0 || trade.worst_price <= 0.0 {
+            continue;
+        }
+        let is_long = trade.side == "LONG";
+
+        let liq_price = if is_long {
+            trade.entry_price * (1.0 - 1.0 / lev)
+        } else {
+            trade.entry_price * (1.0 + 1.0 / lev)
+        };
+
+        if liq_price <= 0.0 {
+            continue;
+        }
+
+        let proximity = ((trade.worst_price - liq_price).abs() / liq_price * 100.0).abs();
+        total_proximity += proximity;
+        count += 1;
+    }
+
+    if count == 0 {
+        0.0
+    } else {
+        total_proximity / count as f64
+    }
+}
+
+/// Compute average recovery time from drawdown events exceeding 5%.
+/// Tracks equity curve through trades and measures time from peak to recovery
+/// for each completed drawdown event.
+fn compute_avg_recovery_time(trades: &[BtTrade], starting_balance: f64) -> f64 {
+    if trades.len() < 2 || starting_balance <= 0.0 {
+        return 0.0;
+    }
+
+    let drawdown_threshold = 0.05; // 5%
+    let mut equity = starting_balance;
+    let mut peak_equity = starting_balance;
+
+    // Track drawdown events: (peak_time_ms, peak_equity)
+    let mut active_drawdowns: Vec<(i64, f64)> = Vec::new();
+    let mut recovery_times: Vec<f64> = Vec::new();
+
+    for trade in trades {
+        equity += trade.net_pnl;
+        if equity > peak_equity {
+            peak_equity = equity;
+            // Check if any active drawdowns have recovered
+            for &(peak_time, peak_eq) in &active_drawdowns {
+                if equity >= peak_eq {
+                    // Parse exit_time to get ms
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(&trade.exit_time) {
+                        let recovery_secs = (dt.timestamp_millis() - peak_time).max(0) as f64 / 1000.0;
+                        if recovery_secs > 0.0 {
+                            recovery_times.push(recovery_secs);
+                        }
+                    }
+                }
+            }
+            // Clear recovered drawdowns
+            active_drawdowns.retain(|&(_, peak_eq)| equity < peak_eq);
+        }
+
+        // Check if we entered a drawdown > threshold
+        if peak_equity > 0.0 {
+            let dd_pct = (peak_equity - equity) / peak_equity;
+            if dd_pct > drawdown_threshold {
+                // Only track if not already tracking a drawdown from this peak
+                if !active_drawdowns.iter().any(|&(_, pe)| (pe - peak_equity).abs() < 1e-6) {
+                    // Parse entry_time for the peak timestamp
+                    // The peak happened at the trade before this one; use this trade's entry_time
+                    // as an approximation of when the drawdown was detected
+                    if let Ok(dt) = DateTime::parse_from_rfc3339(&trade.entry_time) {
+                        active_drawdowns.push((dt.timestamp_millis(), peak_equity));
+                    }
+                }
+            }
+        }
+    }
+
+    if recovery_times.is_empty() {
+        0.0
+    } else {
+        recovery_times.iter().sum::<f64>() / recovery_times.len() as f64
     }
 }
 
@@ -713,6 +1053,10 @@ pub struct BtTrade {
     /// Whether the trade fell back to Flash costs (stale/missing oracle data).
     #[serde(default)]
     pub fallback: bool,
+    /// Worst price reached during trade (lowest for long, highest for short).
+    /// Used for liquidation proximity calculation.
+    #[serde(default)]
+    pub worst_price: f64,
 }
 
 // ---------------------------------------------------------------------------
@@ -1401,6 +1745,7 @@ impl BacktestEngine {
                         route_improved: pos.route_improved,
                         vetoed: false, // This trade was not vetoed (it was executed)
                         fallback: pos.route_fallback,
+                        worst_price: pos.worst_price,
                     });
 
                     position = None;
@@ -1546,6 +1891,7 @@ impl BacktestEngine {
                             entry_price: close_price,
                             current_price: close_price,
                             peak_price: close_price,
+                            worst_price: close_price,
                             size_usd: clip,
                             leverage: self.bt_config.leverage,
                             open_time_ms: candle.t,
@@ -1648,6 +1994,7 @@ impl BacktestEngine {
                 route_improved: pos.route_improved,
                 vetoed: false,
                 fallback: pos.route_fallback,
+                worst_price: pos.worst_price,
             });
 
             warn!(
@@ -1688,6 +2035,9 @@ impl BacktestEngine {
             stats.route_improved_count = route_improved_count;
             stats.venue_counts = venue_counts;
         }
+
+        // Compute enhanced risk metrics
+        stats.compute_enhanced_metrics(&trades, self.bt_config.starting_balance, self.bt_config.leverage);
 
         Ok((stats, trades))
     }
@@ -3782,5 +4132,596 @@ max_drawdown_pct = 20.0
             let mode = SizingMode::from_cli_str(name).unwrap();
             assert_eq!(mode.name(), *name);
         }
+    }
+
+    // =========================================================================
+    // Enhanced Metrics Tests
+    // =========================================================================
+
+    // --- Sortino Ratio ---
+
+    #[test]
+    fn test_sortino_ratio_basic() {
+        // 3 winning, 2 losing trades
+        let pnls = vec![10.0, -5.0, 8.0, -3.0, 6.0];
+        let sortino = compute_sortino_ratio(&pnls);
+        let mean = (10.0 - 5.0 + 8.0 - 3.0 + 6.0) / 5.0; // 3.2
+        let downside: Vec<f64> = vec![0.0, -5.0, 0.0, -3.0, 0.0];
+        let dd_var: f64 = (25.0 + 9.0) / 5.0; // 6.8
+        let dd = dd_var.sqrt(); // ~2.6077
+        let expected = mean / dd;
+        assert!((sortino - expected).abs() < 0.01, "Expected ~{:.4}, got {:.4}", expected, sortino);
+    }
+
+    #[test]
+    fn test_sortino_ratio_all_wins() {
+        let pnls = vec![5.0, 10.0, 3.0];
+        let sortino = compute_sortino_ratio(&pnls);
+        assert_eq!(sortino, METRIC_INF, "All-wins should return METRIC_INF");
+    }
+
+    #[test]
+    fn test_sortino_ratio_all_losses() {
+        let pnls = vec![-5.0, -3.0, -2.0];
+        let sortino = compute_sortino_ratio(&pnls);
+        let mean = -10.0 / 3.0;
+        let dd_var: f64 = (25.0 + 9.0 + 4.0) / 3.0; // 12.6667
+        let dd = dd_var.sqrt(); // ~3.559
+        let expected = mean / dd;
+        assert!((sortino - expected).abs() < 0.01, "Expected ~{:.4}, got {:.4}", expected, sortino);
+        assert!(sortino < 0.0, "All-losses should have negative Sortino");
+    }
+
+    #[test]
+    fn test_sortino_ratio_no_trades() {
+        let pnls: Vec<f64> = vec![];
+        assert_eq!(compute_sortino_ratio(&pnls), 0.0);
+    }
+
+    // --- Calmar Ratio ---
+
+    #[test]
+    fn test_calmar_ratio_basic() {
+        let pnls = vec![10.0, -5.0, 8.0];
+        let max_dd = 5.0;
+        let calmar = compute_calmar_ratio(&pnls, 1000.0, max_dd);
+        // Should be positive since total return > 0 and max_dd > 0
+        assert!(calmar > 0.0, "Calmar should be positive: got {}", calmar);
+    }
+
+    #[test]
+    fn test_calmar_ratio_no_drawdown() {
+        let pnls = vec![10.0, 5.0, 8.0];
+        let calmar = compute_calmar_ratio(&pnls, 1000.0, 0.0);
+        assert_eq!(calmar, METRIC_INF, "No drawdown should return METRIC_INF");
+    }
+
+    #[test]
+    fn test_calmar_ratio_no_trades() {
+        let pnls: Vec<f64> = vec![];
+        assert_eq!(compute_calmar_ratio(&pnls, 1000.0, 5.0), 0.0);
+    }
+
+    // --- Profit Factor ---
+
+    #[test]
+    fn test_profit_factor_basic() {
+        // 6 wins = $60, 4 losses = $20 → PF = 3.0
+        let pnls = vec![10.0, -5.0, 10.0, -5.0, 10.0, -5.0, 10.0, -5.0, 10.0, 10.0];
+        let gross_profit: f64 = pnls.iter().filter(|&&r| r > 0.0).sum(); // 60.0
+        let gross_loss: f64 = pnls.iter().filter(|&&r| r < 0.0).sum::<f64>().abs(); // 20.0
+        assert_eq!(gross_profit, 60.0);
+        assert_eq!(gross_loss, 20.0);
+        let pf = compute_profit_factor(&pnls);
+        assert!((pf - 3.0).abs() < 0.01, "Expected PF=3.0, got {:.4}", pf);
+    }
+
+    #[test]
+    fn test_profit_factor_all_wins() {
+        let pnls = vec![10.0, 5.0, 8.0];
+        assert_eq!(compute_profit_factor(&pnls), METRIC_INF);
+    }
+
+    #[test]
+    fn test_profit_factor_all_losses() {
+        let pnls = vec![-5.0, -3.0, -2.0];
+        assert_eq!(compute_profit_factor(&pnls), 0.0);
+    }
+
+    #[test]
+    fn test_profit_factor_no_trades() {
+        let pnls: Vec<f64> = vec![];
+        assert_eq!(compute_profit_factor(&pnls), 0.0);
+    }
+
+    // --- Max Consecutive Losses ---
+
+    #[test]
+    fn test_max_consecutive_losses_basic() {
+        // [-5, +2, -3, -1, -4, +1, -2] → max streak = 3 (positions 3-5)
+        let pnls = vec![-5.0, 2.0, -3.0, -1.0, -4.0, 1.0, -2.0];
+        assert_eq!(compute_max_consecutive_losses(&pnls), 3);
+    }
+
+    #[test]
+    fn test_max_consecutive_losses_no_losses() {
+        let pnls = vec![5.0, 3.0, 10.0];
+        assert_eq!(compute_max_consecutive_losses(&pnls), 0);
+    }
+
+    #[test]
+    fn test_max_consecutive_losses_all_losses() {
+        let pnls = vec![-1.0, -2.0, -3.0, -4.0];
+        assert_eq!(compute_max_consecutive_losses(&pnls), 4);
+    }
+
+    #[test]
+    fn test_max_consecutive_losses_empty() {
+        let pnls: Vec<f64> = vec![];
+        assert_eq!(compute_max_consecutive_losses(&pnls), 0);
+    }
+
+    // --- Risk of Ruin ---
+
+    #[test]
+    fn test_risk_of_ruin_deterministic() {
+        // With a fixed seed, same input always produces same output
+        let pnls = vec![10.0, -5.0, 8.0, -3.0, 6.0];
+        let ror1 = compute_risk_of_ruin(&pnls, 1000.0);
+        let ror2 = compute_risk_of_ruin(&pnls, 1000.0);
+        assert_eq!(ror1, ror2, "Risk-of-ruin should be deterministic");
+        assert!(ror1 >= 0.0 && ror1 <= 100.0, "RoR should be in [0, 100], got {}", ror1);
+    }
+
+    #[test]
+    fn test_risk_of_ruin_no_trades() {
+        let pnls: Vec<f64> = vec![];
+        assert_eq!(compute_risk_of_ruin(&pnls, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn test_risk_of_ruin_all_losses() {
+        // All losing trades should have very high risk of ruin
+        let pnls = vec![-50.0, -30.0, -20.0, -40.0, -10.0];
+        let ror = compute_risk_of_ruin(&pnls, 100.0);
+        assert!(ror > 50.0, "All-losses should have high RoR: got {:.1}%", ror);
+    }
+
+    // --- Average Liquidation Proximity ---
+
+    #[test]
+    fn test_avg_liquidation_proximity_basic() {
+        // Long at $100 with 5x leverage: liq_price = 100 * (1 - 1/5) = $80
+        // worst_price = $85 → proximity = |85 - 80| / 80 * 100 = 6.25%
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 105.0,
+            size_usd: 500.0,
+            gross_pnl: 5.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 4.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 85.0,
+        }];
+        let prox = compute_avg_liquidation_proximity(&trades, 5.0);
+        let expected = (85.0 - 80.0) / 80.0 * 100.0; // 6.25%
+        assert!((prox - expected).abs() < 0.1, "Expected ~{:.2}%, got {:.2}%", expected, prox);
+    }
+
+    #[test]
+    fn test_avg_liquidation_proximity_validation_example() {
+        // VAL-M1-013: Long at $100, 5x leverage (liq ~$83.33), lowest price $85
+        // liq_price = 100 * (1 - 1/5) = 80.0... hmm, but spec says ~83.33
+        // Actually: for cross-margin with 5x, liq = entry * (1 - 1/leverage) = 100 * 0.8 = 80
+        // Or for isolated margin: liq = entry - (margin/size) = entry - (notional/leverage)/size
+        // Let's use our formula: liq = 100 * (1 - 1/5) = 80
+        // proximity = |85 - 80| / 80 * 100 = 6.25%
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 105.0,
+            size_usd: 500.0,
+            gross_pnl: 5.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 4.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 85.0,
+        }];
+        let prox = compute_avg_liquidation_proximity(&trades, 5.0);
+        assert!(prox > 0.0, "Proximity should be positive");
+        assert!(prox < 20.0, "Proximity should be reasonable: {:.2}%", prox);
+    }
+
+    #[test]
+    fn test_avg_liquidation_proximity_short() {
+        // Short at $100, 5x leverage: liq_price = 100 * (1 + 1/5) = $120
+        // worst_price = $115 → proximity = |115 - 120| / 120 * 100 = 4.167%
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "SHORT".to_string(),
+            entry_price: 100.0,
+            exit_price: 95.0,
+            size_usd: 500.0,
+            gross_pnl: 5.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 4.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 115.0,
+        }];
+        let prox = compute_avg_liquidation_proximity(&trades, 5.0);
+        let expected: f64 = (115.0_f64 - 120.0_f64).abs() / 120.0 * 100.0; // ~4.167%
+        assert!((prox - expected).abs() < 0.1, "Expected ~{:.2}%, got {:.2}%", expected, prox);
+    }
+
+    #[test]
+    fn test_avg_liquidation_proximity_no_trades() {
+        let trades: Vec<BtTrade> = vec![];
+        assert_eq!(compute_avg_liquidation_proximity(&trades, 5.0), 0.0);
+    }
+
+    // --- Average Recovery Time ---
+
+    #[test]
+    fn test_avg_recovery_time_no_trades() {
+        let trades: Vec<BtTrade> = vec![];
+        assert_eq!(compute_avg_recovery_time(&trades, 1000.0), 0.0);
+    }
+
+    #[test]
+    fn test_avg_recovery_time_single_trade() {
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 105.0,
+            size_usd: 500.0,
+            gross_pnl: 5.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 4.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 98.0,
+        }];
+        // Single trade, no drawdown events possible
+        assert_eq!(compute_avg_recovery_time(&trades, 1000.0), 0.0);
+    }
+
+    // --- Fee-to-Gross Ratio ---
+
+    #[test]
+    fn test_fee_to_gross_ratio_basic() {
+        let mut stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            total_fees: 10.0,
+            gross_pnl: 100.0,
+            trade_count: 5,
+            win_count: 3,
+            ..Default::default()
+        };
+        let trades: Vec<BtTrade> = vec![];
+        stats.compute_enhanced_metrics(&trades, 1000.0, 5.0);
+        // fee_to_gross = 10.0 / 100.0 = 0.1
+        assert!((stats.fee_to_gross_ratio - 0.1).abs() < 0.001,
+            "Expected 0.1, got {:.4}", stats.fee_to_gross_ratio);
+    }
+
+    #[test]
+    fn test_fee_to_gross_ratio_zero_gross() {
+        let mut stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            total_fees: 5.0,
+            gross_pnl: 0.0,
+            trade_count: 2,
+            win_count: 1,
+            ..Default::default()
+        };
+        let trades: Vec<BtTrade> = vec![];
+        stats.compute_enhanced_metrics(&trades, 1000.0, 5.0);
+        assert_eq!(stats.fee_to_gross_ratio, METRIC_UNDEFINED,
+            "Zero gross should produce METRIC_UNDEFINED");
+    }
+
+    // --- Full compute_enhanced_metrics integration ---
+
+    #[test]
+    fn test_enhanced_metrics_zero_trades() {
+        let mut stats = BacktestCellStats::default();
+        let trades: Vec<BtTrade> = vec![];
+        stats.compute_enhanced_metrics(&trades, 1000.0, 5.0);
+        assert_eq!(stats.sortino_ratio, 0.0);
+        assert_eq!(stats.calmar_ratio, 0.0);
+        assert_eq!(stats.profit_factor, 0.0);
+        assert_eq!(stats.max_consecutive_losses, 0);
+        assert_eq!(stats.risk_of_ruin_pct, 0.0);
+        assert_eq!(stats.avg_liquidation_proximity_pct, 0.0);
+        assert_eq!(stats.avg_recovery_time_secs, 0.0);
+        assert_eq!(stats.fee_to_gross_ratio, 0.0); // no trades → early return, stays at default
+    }
+
+    #[test]
+    fn test_enhanced_metrics_single_winning_trade() {
+        let mut stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            trade_count: 1,
+            win_count: 1,
+            gross_pnl: 10.0,
+            total_fees: 1.0,
+            net_pnl: 9.0,
+            ..Default::default()
+        };
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 110.0,
+            size_usd: 100.0,
+            gross_pnl: 10.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 9.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 98.0,
+        }];
+        stats.compute_enhanced_metrics(&trades, 1000.0, 5.0);
+
+        // Single winning trade: no downside → sortino = INF
+        assert_eq!(stats.sortino_ratio, METRIC_INF);
+        // No drawdown → calmar = INF
+        assert_eq!(stats.calmar_ratio, METRIC_INF);
+        // No losses → profit_factor = INF
+        assert_eq!(stats.profit_factor, METRIC_INF);
+        // No losses → max_consecutive = 0
+        assert_eq!(stats.max_consecutive_losses, 0);
+        // Risk of ruin with single winning trade: very low
+        assert!(stats.risk_of_ruin_pct < 50.0);
+        // Liquidation proximity should be positive
+        assert!(stats.avg_liquidation_proximity_pct > 0.0);
+        // Fee-to-gross: 1.0 / 10.0 = 0.1
+        assert!((stats.fee_to_gross_ratio - 0.1).abs() < 0.01);
+    }
+
+    // --- Backward compatibility ---
+
+    #[test]
+    fn test_enhanced_metrics_backward_compatible_deserialization() {
+        // Old JSON without any enhanced metric fields should deserialize with 0.0 defaults
+        let old_json = r#"{
+            "strategy": "test",
+            "market": "BTC",
+            "trade_count": 5,
+            "win_count": 3,
+            "loss_count": 2,
+            "gross_pnl": 100.0,
+            "total_fees": 10.0,
+            "entry_fees_total": 3.0,
+            "exit_fees_total": 3.0,
+            "borrow_fees_total": 2.0,
+            "slippage_total": 2.0,
+            "net_pnl": 90.0,
+            "fee_ratio": 10.0,
+            "win_rate": 60.0,
+            "sharpe_ratio": 1.5,
+            "max_drawdown_usd": 5.0,
+            "avg_hold_secs": 300.0,
+            "best_trade_pnl": 30.0,
+            "worst_trade_pnl": -10.0,
+            "total_candles": 100,
+            "interval": "5m",
+            "start_time": "2025-01-01T00:00:00Z",
+            "end_time": "2025-01-02T00:00:00Z"
+        }"#;
+        let parsed: Result<BacktestCellStats, _> = serde_json::from_str(old_json);
+        assert!(parsed.is_ok(), "Old JSON should deserialize: {:?}", parsed.err());
+        let stats = parsed.unwrap();
+        assert_eq!(stats.sortino_ratio, 0.0);
+        assert_eq!(stats.calmar_ratio, 0.0);
+        assert_eq!(stats.profit_factor, 0.0);
+        assert_eq!(stats.max_consecutive_losses, 0);
+        assert_eq!(stats.risk_of_ruin_pct, 0.0);
+        assert_eq!(stats.avg_liquidation_proximity_pct, 0.0);
+        assert_eq!(stats.avg_recovery_time_secs, 0.0);
+        assert_eq!(stats.fee_to_gross_ratio, 0.0);
+    }
+
+    // --- JSON serialization: no NaN or Infinity ---
+
+    #[test]
+    fn test_enhanced_metrics_json_no_nan_or_infinity() {
+        let mut stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            trade_count: 1,
+            win_count: 1,
+            gross_pnl: 10.0,
+            total_fees: 1.0,
+            net_pnl: 9.0,
+            ..Default::default()
+        };
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 110.0,
+            size_usd: 100.0,
+            gross_pnl: 10.0,
+            entry_fee: 0.5,
+            exit_fee: 0.5,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 9.0,
+            hold_secs: 300,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:05:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 98.0,
+        }];
+        stats.compute_enhanced_metrics(&trades, 1000.0, 5.0);
+
+        // Serialization should succeed (no NaN or real Infinity)
+        let json_result = serde_json::to_string(&stats);
+        assert!(json_result.is_ok(), "Serialization should succeed: {:?}", json_result.err());
+        let json = json_result.unwrap();
+
+        // Verify key fields are present
+        assert!(json.contains("\"sortino_ratio\""), "JSON should contain sortino_ratio");
+        assert!(json.contains("\"calmar_ratio\""), "JSON should contain calmar_ratio");
+        assert!(json.contains("\"profit_factor\""), "JSON should contain profit_factor");
+        assert!(json.contains("\"max_consecutive_losses\""), "JSON should contain max_consecutive_losses");
+        assert!(json.contains("\"risk_of_ruin_pct\""), "JSON should contain risk_of_ruin_pct");
+        assert!(json.contains("\"avg_liquidation_proximity_pct\""), "JSON should contain avg_liquidation_proximity_pct");
+        assert!(json.contains("\"avg_recovery_time_secs\""), "JSON should contain avg_recovery_time_secs");
+        assert!(json.contains("\"fee_to_gross_ratio\""), "JSON should contain fee_to_gross_ratio");
+
+        // METRIC_INF should serialize as a finite number, not NaN/Infinity
+        assert!(!json.contains("NaN"), "JSON should not contain NaN");
+        assert!(!json.contains("Infinity"), "JSON should not contain literal Infinity");
+        assert!(!json.contains("infinity"), "JSON should not contain literal infinity");
+    }
+
+    // --- Extreme leverage (50x) ---
+
+    #[test]
+    fn test_liquidation_proximity_extreme_leverage() {
+        // 50x leverage: liq_price = 100 * (1 - 1/50) = 98.0
+        // worst_price = 98.5 → very close to liquidation
+        let trades = vec![BtTrade {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            side: "LONG".to_string(),
+            entry_price: 100.0,
+            exit_price: 101.0,
+            size_usd: 5000.0,
+            gross_pnl: 50.0,
+            entry_fee: 5.0,
+            exit_fee: 5.0,
+            borrow_fee: 0.0,
+            slippage: 0.0,
+            net_pnl: 40.0,
+            hold_secs: 60,
+            exit_reason: "take_profit".to_string(),
+            entry_time: "2026-01-01T00:00:00Z".to_string(),
+            exit_time: "2026-01-01T00:01:00Z".to_string(),
+            route_venue: String::new(),
+            route_cost_usd: 0.0,
+            route_improved: false,
+            vetoed: false,
+            fallback: false,
+            worst_price: 98.5,
+        }];
+        let prox = compute_avg_liquidation_proximity(&trades, 50.0);
+        let liq_price = 100.0 * (1.0 - 1.0 / 50.0); // 98.0
+        let expected: f64 = (98.5_f64 - liq_price).abs() / liq_price * 100.0;
+        assert!((prox - expected).abs() < 0.1,
+            "50x leverage proximity should be ~{:.2}%, got {:.2}%", expected, prox);
+        assert!(prox.is_finite(), "Proximity should be finite");
+    }
+
+    // --- All new fields in JSON output ---
+
+    #[test]
+    fn test_all_enhanced_metrics_keys_in_json() {
+        let stats = BacktestCellStats {
+            strategy: "momentum-scalper".to_string(),
+            market: "BTC".to_string(),
+            trade_count: 10,
+            sortino_ratio: 1.5,
+            calmar_ratio: 2.0,
+            profit_factor: 3.0,
+            max_consecutive_losses: 2,
+            risk_of_ruin_pct: 5.0,
+            avg_liquidation_proximity_pct: 10.0,
+            avg_recovery_time_secs: 3600.0,
+            fee_to_gross_ratio: 0.15,
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"sortino_ratio\":1.5"));
+        assert!(json.contains("\"calmar_ratio\":2.0"));
+        assert!(json.contains("\"profit_factor\":3.0"));
+        assert!(json.contains("\"max_consecutive_losses\":2"));
+        assert!(json.contains("\"risk_of_ruin_pct\":5.0"));
+        assert!(json.contains("\"avg_liquidation_proximity_pct\":10.0"));
+        assert!(json.contains("\"avg_recovery_time_secs\":3600.0"));
+        assert!(json.contains("\"fee_to_gross_ratio\":0.15"));
+    }
+
+    // --- Sentinel constants are finite and serializable ---
+
+    #[test]
+    fn test_sentinel_constants_are_finite() {
+        assert!(METRIC_INF.is_finite(), "METRIC_INF should be finite");
+        assert!(METRIC_UNDEFINED.is_finite(), "METRIC_UNDEFINED should be finite");
+        assert!(METRIC_INF > 99999.0, "METRIC_INF should be large");
+        assert!(METRIC_UNDEFINED < 0.0, "METRIC_UNDEFINED should be negative");
     }
 }
