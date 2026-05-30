@@ -105,6 +105,10 @@ struct Args {
     /// Backtest cost mode: "flash-only" (default) or "imperial-route-oracle" (uses RouteCostOracle for cross-venue routing)
     #[arg(long, default_value = "flash-only")]
     cost_mode: String,
+
+    /// Sizing mode: "fixed-notional" (default), "fixed-fractional", "volatility-adjusted", "drawdown-throttled", "route-cost-adjusted"
+    #[arg(long, default_value = "fixed-notional")]
+    sizing_mode: String,
 }
 
 #[tokio::main]
@@ -255,6 +259,7 @@ async fn main() -> anyhow::Result<()> {
             args.paper_balance,
             args.backtest_fee_rate,
             &args.cost_mode,
+            &args.sizing_mode,
         ).await;
     }
 
@@ -448,10 +453,14 @@ async fn run_backtest(
     starting_balance: f64,
     fee_rate: f64,
     cost_mode: &str,
+    sizing_mode_str: &str,
 ) -> anyhow::Result<()> {
     use chrono::Utc;
 
     tracing::warn!("BACKTEST -- replaying Hyperliquid historical data through strategies");
+
+    // Parse sizing mode
+    let sizing_mode = backtest::SizingMode::from_cli_str(sizing_mode_str)?;
 
     // Parse strategies
     let strategy_names: Vec<String> = strategies
@@ -501,7 +510,7 @@ async fn run_backtest(
             .unwrap_or_default(),
     );
     tracing::info!("Interval: {}", interval);
-    tracing::info!("Fee rate: {:.2}%  |  Leverage: {}x  |  Balance: ${:.0}", fee_rate * 100.0, leverage, starting_balance);
+    tracing::info!("Fee rate: {:.2}%  |  Leverage: {}x  |  Balance: ${:.0}  |  Sizing: {}", fee_rate * 100.0, leverage, starting_balance, sizing_mode.name());
 
     let bt_config = backtest::BacktestConfig {
         strategies: strategy_names,
@@ -518,6 +527,7 @@ async fn run_backtest(
         walk_forward_train_ratio: 0.7,
         slippage_bps: 0.0, // Default: no slippage; set via config to enable
         cost_mode: cost_mode.to_string(),
+        sizing_mode,
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;

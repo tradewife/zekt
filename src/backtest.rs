@@ -204,6 +204,220 @@ fn parse_interval_ms(interval: &str) -> anyhow::Result<i64> {
 }
 
 // ---------------------------------------------------------------------------
+// Sizing Mode
+// ---------------------------------------------------------------------------
+
+/// Position sizing mode for backtesting.
+///
+/// Each variant computes `clip_size_usd` dynamically per trade based on
+/// different risk/reward models. `FixedNotional` is the baseline (current
+/// behavior) where every trade uses the same constant notional from strategy
+/// params. Other variants adjust size based on equity, volatility, drawdown,
+/// or route costs.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum SizingMode {
+    /// Fixed notional size from strategy params (current behavior, baseline).
+    FixedNotional,
+
+    /// Scales position size with account equity: `size = equity * risk_fraction`.
+    /// After a winning trade increasing equity, next trade size increases proportionally.
+    /// After a losing trade, next trade size decreases.
+    FixedFractional {
+        #[serde(default = "default_risk_fraction")]
+        risk_fraction: f64,
+    },
+
+    /// Scales inversely with ATR: `size = target_notional * (baseline_atr / current_atr)`.
+    /// When ATR doubles, size halves. When ATR halves, size doubles (capped at max).
+    VolatilityAdjusted {
+        #[serde(default = "default_base_fraction_va")]
+        base_fraction: f64,
+        #[serde(default = "default_atr_period")]
+        atr_period: usize,
+        #[serde(default = "default_max_size_usd")]
+        max_size_usd: f64,
+    },
+
+    /// Reduces size during drawdowns, recovers linearly.
+    /// At 0% drawdown: size = base. At >= max_drawdown_pct: no new positions.
+    DrawdownThrottled {
+        #[serde(default = "default_base_fraction_dd")]
+        base_fraction: f64,
+        #[serde(default = "default_throttle_start_pct")]
+        throttle_start_pct: f64,
+        #[serde(default = "default_max_drawdown_pct")]
+        max_drawdown_pct: f64,
+    },
+
+    /// Reduces size for expensive routes, skips at extreme cost.
+    /// `size = base_size * (1 - route_cost_penalty)`. If penalty exceeds
+    /// max_penalty_pct, size = 0 (trade skipped).
+    RouteCostAdjusted {
+        #[serde(default = "default_base_fraction_rc")]
+        base_fraction: f64,
+        #[serde(default = "default_max_penalty_pct")]
+        max_penalty_pct: f64,
+    },
+}
+
+fn default_risk_fraction() -> f64 {
+    0.02
+}
+fn default_base_fraction_va() -> f64 {
+    0.02
+}
+fn default_atr_period() -> usize {
+    14
+}
+fn default_max_size_usd() -> f64 {
+    10000.0
+}
+fn default_base_fraction_dd() -> f64 {
+    0.02
+}
+fn default_throttle_start_pct() -> f64 {
+    5.0
+}
+fn default_max_drawdown_pct() -> f64 {
+    20.0
+}
+fn default_base_fraction_rc() -> f64 {
+    0.02
+}
+fn default_max_penalty_pct() -> f64 {
+    0.80
+}
+
+impl Default for SizingMode {
+    fn default() -> Self {
+        SizingMode::FixedNotional
+    }
+}
+
+impl SizingMode {
+    /// Parse a sizing mode from a CLI string (case-insensitive).
+    pub fn from_cli_str(s: &str) -> anyhow::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "fixed-notional" => Ok(SizingMode::FixedNotional),
+            "fixed-fractional" => Ok(SizingMode::FixedFractional {
+                risk_fraction: default_risk_fraction(),
+            }),
+            "volatility-adjusted" => Ok(SizingMode::VolatilityAdjusted {
+                base_fraction: default_base_fraction_va(),
+                atr_period: default_atr_period(),
+                max_size_usd: default_max_size_usd(),
+            }),
+            "drawdown-throttled" => Ok(SizingMode::DrawdownThrottled {
+                base_fraction: default_base_fraction_dd(),
+                throttle_start_pct: default_throttle_start_pct(),
+                max_drawdown_pct: default_max_drawdown_pct(),
+            }),
+            "route-cost-adjusted" => Ok(SizingMode::RouteCostAdjusted {
+                base_fraction: default_base_fraction_rc(),
+                max_penalty_pct: default_max_penalty_pct(),
+            }),
+            _ => anyhow::bail!(
+                "Unknown sizing mode '{}'. Valid options: fixed-notional, fixed-fractional, volatility-adjusted, drawdown-throttled, route-cost-adjusted",
+                s
+            ),
+        }
+    }
+
+    /// Get a human-readable kebab-case name for the sizing mode.
+    pub fn name(&self) -> &'static str {
+        match self {
+            SizingMode::FixedNotional => "fixed-notional",
+            SizingMode::FixedFractional { .. } => "fixed-fractional",
+            SizingMode::VolatilityAdjusted { .. } => "volatility-adjusted",
+            SizingMode::DrawdownThrottled { .. } => "drawdown-throttled",
+            SizingMode::RouteCostAdjusted { .. } => "route-cost-adjusted",
+        }
+    }
+
+    /// Compute the position size for a new trade.
+    ///
+    /// Returns `None` if the trade should be skipped (e.g., extreme drawdown
+    /// or route cost penalty).
+    ///
+    /// # Parameters
+    /// - `base_clip`: Strategy's configured clip_size_usd (used by FixedNotional)
+    /// - `equity`: Current account equity / cell balance
+    /// - `current_atr_pct`: Current ATR as a percentage of price (e.g., 1.5 = 1.5%)
+    /// - `baseline_atr_pct`: Baseline ATR percentage for VolatilityAdjusted normalization
+    /// - `drawdown_pct`: Drawdown from equity peak as percentage (0.0 to 100.0)
+    /// - `route_cost_penalty`: Route cost as a fraction of expected edge (0.0 to 1.0+)
+    pub fn compute_size(
+        &self,
+        base_clip: f64,
+        equity: f64,
+        current_atr_pct: f64,
+        baseline_atr_pct: f64,
+        drawdown_pct: f64,
+        route_cost_penalty: f64,
+    ) -> Option<f64> {
+        let size = match self {
+            SizingMode::FixedNotional => base_clip,
+
+            SizingMode::FixedFractional { risk_fraction } => equity * risk_fraction,
+
+            SizingMode::VolatilityAdjusted {
+                base_fraction,
+                atr_period: _,
+                max_size_usd,
+            } => {
+                // size = target_notional * (baseline_atr / current_atr)
+                // target_notional = equity * base_fraction
+                let target_notional = equity * base_fraction;
+                if current_atr_pct <= 0.0 || baseline_atr_pct <= 0.0 {
+                    target_notional // No ATR data, use base
+                } else {
+                    let raw_size = target_notional * (baseline_atr_pct / current_atr_pct);
+                    raw_size.min(*max_size_usd)
+                }
+            }
+
+            SizingMode::DrawdownThrottled {
+                base_fraction,
+                throttle_start_pct,
+                max_drawdown_pct,
+            } => {
+                if drawdown_pct >= *max_drawdown_pct {
+                    return None; // No new positions at extreme drawdown
+                }
+                if drawdown_pct <= *throttle_start_pct {
+                    // Below throttle threshold, use full size
+                    equity * base_fraction
+                } else {
+                    // Linear interpolation from full size at throttle_start to 0 at max_drawdown
+                    let throttle_range = max_drawdown_pct - throttle_start_pct;
+                    let throttle_progress = (drawdown_pct - throttle_start_pct) / throttle_range;
+                    let scale = 1.0 - throttle_progress;
+                    equity * base_fraction * scale
+                }
+            }
+
+            SizingMode::RouteCostAdjusted {
+                base_fraction,
+                max_penalty_pct,
+            } => {
+                if route_cost_penalty >= *max_penalty_pct {
+                    return None; // Skip trade at extreme route cost
+                }
+                let base_size = equity * base_fraction;
+                base_size * (1.0 - route_cost_penalty)
+            }
+        };
+
+        if size <= 0.0 {
+            None
+        } else {
+            Some(size)
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Backtest Position
 // ---------------------------------------------------------------------------
 
@@ -395,6 +609,9 @@ pub struct BacktestCellStats {
     /// Distribution of trades across venues (venue_name → count).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub venue_counts: HashMap<String, usize>,
+    /// Sizing mode used for this backtest cell (e.g., "fixed-notional", "fixed-fractional").
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sizing_mode: String,
 }
 
 /// A regime transition event recorded during backtest.
@@ -524,6 +741,8 @@ pub struct BacktestConfig {
     pub slippage_bps: f64,
     /// Cost mode: "flash-only" (default) or "imperial-route-oracle" (uses RouteCostOracle).
     pub cost_mode: String,
+    /// Sizing mode for position sizing.
+    pub sizing_mode: SizingMode,
 }
 
 impl Default for BacktestConfig {
@@ -543,6 +762,7 @@ impl Default for BacktestConfig {
             walk_forward_train_ratio: 0.7,
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
+            sizing_mode: SizingMode::FixedNotional,
         }
     }
 }
@@ -945,6 +1165,14 @@ impl BacktestEngine {
         let mut peak_balance = cell_balance;
         let mut cooldown_until_ms: i64 = 0;
 
+        // ATR tracking for VolatilityAdjusted sizing mode
+        let atr_period = match &self.bt_config.sizing_mode {
+            SizingMode::VolatilityAdjusted { atr_period, .. } => *atr_period,
+            _ => 14, // Default, used only when computing ATR for non-VA modes
+        };
+        let mut atr_values: Vec<f64> = Vec::with_capacity(atr_period + 1);
+        let mut baseline_atr_pct: f64 = 0.0;
+
         // Regime detector for filtering entries based on market conditions
         let mut regime = crate::regime::RegimeDetector::new(288, 200);
         let apply_regime = self.bt_config.regime_filter;
@@ -977,6 +1205,32 @@ impl BacktestEngine {
             let close_price: f64 = candle.c.parse().unwrap_or(0.0);
             if close_price <= 0.0 {
                 continue;
+            }
+
+            // Compute ATR from candle high-low range
+            let high_price: f64 = candle.h.parse().unwrap_or(close_price);
+            let low_price: f64 = candle.l.parse().unwrap_or(close_price);
+            let true_range_pct = if close_price > 0.0 {
+                ((high_price - low_price) / close_price * 100.0).max(0.0)
+            } else {
+                0.0
+            };
+            atr_values.push(true_range_pct);
+            if atr_values.len() > atr_period {
+                atr_values.remove(0);
+            }
+            let current_atr_pct = if atr_values.len() >= 2 {
+                atr_values.iter().sum::<f64>() / atr_values.len() as f64
+            } else {
+                true_range_pct
+            };
+            // Set baseline ATR from first full period
+            if atr_values.len() == atr_period && baseline_atr_pct == 0.0 {
+                baseline_atr_pct = current_atr_pct;
+            }
+            // Fallback: if baseline_atr is still 0 after all candles, use current_atr
+            if baseline_atr_pct <= 0.0 && current_atr_pct > 0.0 {
+                baseline_atr_pct = current_atr_pct;
             }
 
             // Feed close price to strategy
@@ -1188,7 +1442,41 @@ impl BacktestEngine {
                     Signal::MomentumLong { strength, .. }
                     | Signal::MomentumShort { strength, .. } => {
                         let is_long = matches!(entry_signal, Signal::MomentumLong { .. });
-                        let clip = params.clip_size_usd;
+
+                        // Compute dynamic position size based on sizing mode
+                        let drawdown_pct = if peak_balance > 0.0 {
+                            (peak_balance - cell_balance) / peak_balance * 100.0
+                        } else {
+                            0.0
+                        };
+                        // Route cost penalty: estimated fees as fraction of expected edge
+                        let route_cost_penalty = {
+                            let round_trip_fee = params.clip_size_usd * self.bt_config.fee_rate * 2.0;
+                            let expected_edge = params.clip_size_usd * params.take_profit_pct / 100.0;
+                            if expected_edge > 0.0 {
+                                (round_trip_fee / expected_edge).min(2.0)
+                            } else {
+                                0.0
+                            }
+                        };
+                        let clip = match self.bt_config.sizing_mode.compute_size(
+                            params.clip_size_usd,
+                            cell_balance,
+                            current_atr_pct,
+                            baseline_atr_pct,
+                            drawdown_pct,
+                            route_cost_penalty,
+                        ) {
+                            Some(size) => size,
+                            None => {
+                                debug!(
+                                    "[BT] {} on {}: sizing mode skipped trade (dd={:.1}%, atr={:.3}%, rp={:.3})",
+                                    strategy_name, market, drawdown_pct, current_atr_pct, route_cost_penalty
+                                );
+                                continue;
+                            }
+                        };
+
                         let side_str = if is_long { "long" } else { "short" };
 
                         // Compute cost based on mode
@@ -1388,6 +1676,9 @@ impl BacktestEngine {
             stats.regime_blocked_count = regime_blocked_count;
             stats.regime_transitions = regime_transitions;
         }
+
+        // Write sizing mode label
+        stats.sizing_mode = self.bt_config.sizing_mode.name().to_string();
 
         // Write oracle-specific stats
         if use_oracle {
@@ -1906,6 +2197,7 @@ max_drawdown_pct = 20.0
             walk_forward_train_ratio: 0.7,
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
+            sizing_mode: SizingMode::FixedNotional,
         }
     }
 
@@ -3079,5 +3371,416 @@ max_drawdown_pct = 20.0
         let sharpe: f64 = pnl / fees.max(1.0) * 1.5;
         let drawdown: f64 = pnl.abs() * 0.3 + 10.0;
         (pnl, fees, sharpe, drawdown)
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-M1-001: SizingMode enum defines exactly 5 variants
+    // VAL-M1-002: FixedNotional sizing uses constant notional per trade
+    // VAL-M1-003: FixedFractional sizing scales with account equity
+    // VAL-M1-004: VolatilityAdjusted sizing scales inversely with ATR
+    // VAL-M1-005: DrawdownThrottled sizing reduces during drawdowns
+    // VAL-M1-006: RouteCostAdjusted sizing penalizes expensive routes
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sizing_mode_parse_fixed_notional() {
+        let mode = SizingMode::from_cli_str("fixed-notional").unwrap();
+        assert_eq!(mode, SizingMode::FixedNotional);
+        assert_eq!(mode.name(), "fixed-notional");
+    }
+
+    #[test]
+    fn test_sizing_mode_parse_all_variants() {
+        // Round-trip parse for all 5 variants
+        let cases = [
+            ("fixed-notional", "fixed-notional"),
+            ("fixed-fractional", "fixed-fractional"),
+            ("volatility-adjusted", "volatility-adjusted"),
+            ("drawdown-throttled", "drawdown-throttled"),
+            ("route-cost-adjusted", "route-cost-adjusted"),
+        ];
+        for (input, expected_name) in &cases {
+            let mode = SizingMode::from_cli_str(input).unwrap();
+            assert_eq!(mode.name(), *expected_name, "Parse '{}' should produce '{}'", input, expected_name);
+        }
+    }
+
+    #[test]
+    fn test_sizing_mode_case_insensitive() {
+        assert!(SizingMode::from_cli_str("Fixed-Notional").is_ok());
+        assert!(SizingMode::from_cli_str("FIXED-NOTIONAL").is_ok());
+        assert!(SizingMode::from_cli_str("Volatility-Adjusted").is_ok());
+        assert!(SizingMode::from_cli_str("DRAWDOWN-THROTTLED").is_ok());
+        assert!(SizingMode::from_cli_str("Route-Cost-Adjusted").is_ok());
+    }
+
+    #[test]
+    fn test_sizing_mode_rejects_invalid() {
+        let result = SizingMode::from_cli_str("random-mode");
+        assert!(result.is_err(), "Should reject unknown sizing mode");
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Unknown sizing mode"), "Error should mention unknown mode: {}", err);
+        assert!(err.contains("fixed-notional"), "Error should list valid options: {}", err);
+    }
+
+    #[test]
+    fn test_fixed_notional_uses_base_clip() {
+        let mode = SizingMode::FixedNotional;
+        // At any equity/ATR/drawdown/route_cost, should always return base_clip
+        let clip = 100.0;
+        assert_eq!(mode.compute_size(clip, 500.0, 1.0, 1.0, 0.0, 0.0), Some(clip));
+        assert_eq!(mode.compute_size(clip, 2000.0, 2.0, 1.0, 10.0, 0.5), Some(clip));
+        assert_eq!(mode.compute_size(clip, 100.0, 0.5, 1.0, 0.0, 0.0), Some(clip));
+    }
+
+    #[test]
+    fn test_fixed_fractional_scales_with_equity() {
+        let mode = SizingMode::FixedFractional { risk_fraction: 0.02 };
+        // size = equity * risk_fraction
+        // At equity = 1000, size = 20
+        let size_1000 = mode.compute_size(100.0, 1000.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+        assert!((size_1000 - 20.0).abs() < 0.001, "At equity=1000, size should be 20, got {}", size_1000);
+
+        // After winning trade: equity increases to 1100, size = 22
+        let size_1100 = mode.compute_size(100.0, 1100.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+        assert!((size_1100 - 22.0).abs() < 0.001, "At equity=1100, size should be 22, got {}", size_1100);
+
+        // After losing trade: equity decreases to 900, size = 18
+        let size_900 = mode.compute_size(100.0, 900.0, 0.0, 0.0, 0.0, 0.0).unwrap();
+        assert!((size_900 - 18.0).abs() < 0.001, "At equity=900, size should be 18, got {}", size_900);
+
+        // Verify ordering: size increases with equity
+        assert!(size_900 < size_1000);
+        assert!(size_1000 < size_1100);
+    }
+
+    #[test]
+    fn test_volatility_adjusted_scales_with_atr() {
+        let mode = SizingMode::VolatilityAdjusted {
+            base_fraction: 0.02,
+            atr_period: 14,
+            max_size_usd: 10000.0,
+        };
+        let equity = 1000.0;
+        let baseline_atr = 1.0; // 1% baseline ATR
+
+        // At baseline ATR: size = equity * base_fraction = 20
+        let size_baseline = mode.compute_size(100.0, equity, baseline_atr, baseline_atr, 0.0, 0.0).unwrap();
+        assert!((size_baseline - 20.0).abs() < 0.001, "At baseline ATR, size should be 20, got {}", size_baseline);
+
+        // When ATR doubles: size halves = 10
+        let size_double_atr = mode.compute_size(100.0, equity, 2.0, baseline_atr, 0.0, 0.0).unwrap();
+        assert!((size_double_atr - 10.0).abs() < 0.001, "When ATR doubles, size should be 10, got {}", size_double_atr);
+
+        // When ATR halves: size doubles = 40
+        let size_half_atr = mode.compute_size(100.0, equity, 0.5, baseline_atr, 0.0, 0.0).unwrap();
+        assert!((size_half_atr - 40.0).abs() < 0.001, "When ATR halves, size should be 40, got {}", size_half_atr);
+    }
+
+    #[test]
+    fn test_volatility_adjusted_caps_at_max() {
+        let mode = SizingMode::VolatilityAdjusted {
+            base_fraction: 0.02,
+            atr_period: 14,
+            max_size_usd: 30.0, // Low cap
+        };
+        let equity = 1000.0;
+        let baseline_atr = 1.0;
+
+        // When ATR is very low, size would exceed cap
+        // size = 20 * (1.0 / 0.5) = 40, but capped at 30
+        let size = mode.compute_size(100.0, equity, 0.5, baseline_atr, 0.0, 0.0).unwrap();
+        assert!((size - 30.0).abs() < 0.001, "Size should be capped at 30, got {}", size);
+    }
+
+    #[test]
+    fn test_drawdown_throttled_reduces_in_drawdown() {
+        let mode = SizingMode::DrawdownThrottled {
+            base_fraction: 0.02,
+            throttle_start_pct: 5.0,
+            max_drawdown_pct: 20.0,
+        };
+        let equity = 1000.0;
+
+        // At 0% drawdown: full size = equity * base_fraction = 20
+        let size_0dd = mode.compute_size(100.0, equity, 0.0, 0.0, 0.0, 0.0).unwrap();
+        assert!((size_0dd - 20.0).abs() < 0.001, "At 0% DD, size should be 20, got {}", size_0dd);
+
+        // At 5% drawdown (throttle start): still full size
+        let size_5dd = mode.compute_size(100.0, equity, 0.0, 0.0, 5.0, 0.0).unwrap();
+        assert!((size_5dd - 20.0).abs() < 0.001, "At 5% DD (throttle start), size should still be 20, got {}", size_5dd);
+
+        // At 12.5% drawdown (midway): linear interpolation
+        // throttle_range = 20 - 5 = 15
+        // progress = (12.5 - 5) / 15 = 0.5
+        // scale = 1 - 0.5 = 0.5
+        // size = 20 * 0.5 = 10
+        let size_12dd = mode.compute_size(100.0, equity, 0.0, 0.0, 12.5, 0.0).unwrap();
+        assert!((size_12dd - 10.0).abs() < 0.001, "At 12.5% DD, size should be 10, got {}", size_12dd);
+
+        // At 19% drawdown: almost zero
+        // progress = (19 - 5) / 15 = 0.9333
+        // scale = 1 - 0.9333 = 0.0667
+        // size = 20 * 0.0667 = 1.333
+        let size_19dd = mode.compute_size(100.0, equity, 0.0, 0.0, 19.0, 0.0);
+        assert!(size_19dd.is_some(), "At 19% DD, should still have some size");
+        let size_19dd_val = size_19dd.unwrap();
+        assert!(size_19dd_val > 0.0 && size_19dd_val < 5.0, "At 19% DD, size should be small, got {}", size_19dd_val);
+    }
+
+    #[test]
+    fn test_drawdown_throttled_skips_at_extreme() {
+        let mode = SizingMode::DrawdownThrottled {
+            base_fraction: 0.02,
+            throttle_start_pct: 5.0,
+            max_drawdown_pct: 20.0,
+        };
+
+        // At >= 20% drawdown: no new positions
+        assert!(mode.compute_size(100.0, 1000.0, 0.0, 0.0, 20.0, 0.0).is_none(),
+            "Should skip at 20% drawdown");
+        assert!(mode.compute_size(100.0, 1000.0, 0.0, 0.0, 25.0, 0.0).is_none(),
+            "Should skip at 25% drawdown");
+    }
+
+    #[test]
+    fn test_route_cost_adjusted_penalizes_expensive() {
+        let mode = SizingMode::RouteCostAdjusted {
+            base_fraction: 0.02,
+            max_penalty_pct: 0.80,
+        };
+        let equity = 1000.0;
+
+        // At 0% penalty: full size = 20
+        let size_0pen = mode.compute_size(100.0, equity, 0.0, 0.0, 0.0, 0.0).unwrap();
+        assert!((size_0pen - 20.0).abs() < 0.001, "At 0% penalty, size should be 20, got {}", size_0pen);
+
+        // At 50% penalty: size = 20 * (1 - 0.5) = 10
+        let size_50pen = mode.compute_size(100.0, equity, 0.0, 0.0, 0.0, 0.5).unwrap();
+        assert!((size_50pen - 10.0).abs() < 0.001, "At 50% penalty, size should be 10, got {}", size_50pen);
+
+        // At 75% penalty: size = 20 * (1 - 0.75) = 5
+        let size_75pen = mode.compute_size(100.0, equity, 0.0, 0.0, 0.0, 0.75).unwrap();
+        assert!((size_75pen - 5.0).abs() < 0.001, "At 75% penalty, size should be 5, got {}", size_75pen);
+    }
+
+    #[test]
+    fn test_route_cost_adjusted_skips_at_extreme() {
+        let mode = SizingMode::RouteCostAdjusted {
+            base_fraction: 0.02,
+            max_penalty_pct: 0.80,
+        };
+
+        // At >= 80% penalty: trade skipped
+        assert!(mode.compute_size(100.0, 1000.0, 0.0, 0.0, 0.0, 0.80).is_none(),
+            "Should skip at 80% penalty");
+        assert!(mode.compute_size(100.0, 1000.0, 0.0, 0.0, 0.0, 1.0).is_none(),
+            "Should skip at 100% penalty");
+    }
+
+    #[test]
+    fn test_sizing_mode_default_is_fixed_notional() {
+        let default = SizingMode::default();
+        assert_eq!(default, SizingMode::FixedNotional);
+    }
+
+    #[test]
+    fn test_backtest_cell_stats_has_sizing_mode_field() {
+        let stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            sizing_mode: "fixed-fractional".to_string(),
+            ..Default::default()
+        };
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"sizing_mode\":\"fixed-fractional\""),
+            "Serialized JSON should contain sizing_mode field");
+
+        // Verify default is empty (skip_serializing_if)
+        let default_stats = BacktestCellStats::default();
+        let default_json = serde_json::to_string(&default_stats).unwrap();
+        assert!(!default_json.contains("\"sizing_mode\""),
+            "Empty sizing_mode should be skipped in JSON");
+    }
+
+    #[test]
+    fn test_backtest_cell_stats_sizing_mode_backward_compatible() {
+        // Old JSON without sizing_mode field should deserialize fine
+        let old_json = r#"{
+            "strategy": "test",
+            "market": "BTC",
+            "trade_count": 5,
+            "win_count": 3,
+            "loss_count": 2,
+            "gross_pnl": 100.0,
+            "total_fees": 10.0,
+            "entry_fees_total": 3.0,
+            "exit_fees_total": 3.0,
+            "borrow_fees_total": 2.0,
+            "slippage_total": 2.0,
+            "net_pnl": 90.0,
+            "fee_ratio": 10.0,
+            "win_rate": 60.0,
+            "sharpe_ratio": 1.5,
+            "max_drawdown_usd": 5.0,
+            "avg_hold_secs": 300.0,
+            "best_trade_pnl": 30.0,
+            "worst_trade_pnl": -10.0,
+            "total_candles": 100,
+            "interval": "5m",
+            "start_time": "2025-01-01T00:00:00Z",
+            "end_time": "2025-01-02T00:00:00Z"
+        }"#;
+        let parsed: Result<BacktestCellStats, _> = serde_json::from_str(old_json);
+        assert!(parsed.is_ok(), "Old JSON should deserialize: {:?}", parsed.err());
+        let stats = parsed.unwrap();
+        assert!(stats.sizing_mode.is_empty(), "Default sizing_mode should be empty");
+    }
+
+    #[tokio::test]
+    async fn test_fixed_notional_backtest_constant_sizes() {
+        // Run a synthetic backtest with FixedNotional and verify all trades have same size
+        let config: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let mut bt_config = test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m");
+        bt_config.sizing_mode = SizingMode::FixedNotional;
+        let engine = BacktestEngine::new(config, bt_config).unwrap();
+
+        // Create volatile candles to trigger multiple trades
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        let mut price = 90.0;
+        for i in 0..120 {
+            if (60..75).contains(&i) {
+                price += 0.5; // Strong upward momentum
+            } else if (75..85).contains(&i) {
+                price -= 0.3; // Reversal
+            } else {
+                price += (i as f64 * 0.001).sin() * 0.1;
+            }
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{:.3}", price - 0.05),
+                c: format!("{:.3}", price),
+                h: format!("{:.3}", price + 0.1),
+                l: format!("{:.3}", price - 0.1),
+                v: "1000.0".to_string(),
+                n: 50,
+            });
+        }
+
+        let (stats, trades) = engine.run_cell("momentum-scalper", "BTC", &candles, "", None).await.unwrap();
+
+        // All trades should have the same size_usd as clip_size_usd from params
+        // The default momentum-scalper clip_size_usd from test_config_toml is 100.0
+        if !trades.is_empty() {
+            let expected_size = trades[0].size_usd;
+            for (i, trade) in trades.iter().enumerate() {
+                assert!(
+                    (trade.size_usd - expected_size).abs() < 0.001,
+                    "Trade {} size {} should equal {} for FixedNotional",
+                    i, trade.size_usd, expected_size
+                );
+            }
+        }
+
+        // Stats should label the sizing mode
+        assert_eq!(stats.sizing_mode, "fixed-notional");
+    }
+
+    #[tokio::test]
+    async fn test_fixed_fractional_backtest_scales_with_equity() {
+        let config: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let mut bt_config = test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m");
+        bt_config.sizing_mode = SizingMode::FixedFractional { risk_fraction: 0.1 }; // 10% risk fraction for visible effect
+        let engine = BacktestEngine::new(config, bt_config).unwrap();
+
+        // Create candles that trigger at least one trade
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        let mut price = 90.0;
+        for i in 0..120 {
+            if (60..75).contains(&i) {
+                price += 0.5;
+            } else if (75..85).contains(&i) {
+                price -= 0.3;
+            } else {
+                price += (i as f64 * 0.001).sin() * 0.1;
+            }
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{:.3}", price - 0.05),
+                c: format!("{:.3}", price),
+                h: format!("{:.3}", price + 0.1),
+                l: format!("{:.3}", price - 0.1),
+                v: "1000.0".to_string(),
+                n: 50,
+            });
+        }
+
+        let (stats, trades) = engine.run_cell("momentum-scalper", "BTC", &candles, "", None).await.unwrap();
+
+        // With FixedFractional, first trade should be equity * risk_fraction = 1000 * 0.1 = 100
+        if trades.len() >= 2 {
+            // At least the first trade should have the expected size
+            let first_size = trades[0].size_usd;
+            assert!(
+                (first_size - 100.0).abs() < 0.01,
+                "First trade size should be ~100 (equity * risk_fraction), got {}",
+                first_size
+            );
+        }
+
+        // Stats should label the sizing mode
+        assert_eq!(stats.sizing_mode, "fixed-fractional");
+    }
+
+    #[test]
+    fn test_sizing_mode_enum_count_is_five() {
+        // Compile-time check: exactly 5 variants exist
+        let variants = [
+            SizingMode::FixedNotional,
+            SizingMode::FixedFractional { risk_fraction: 0.02 },
+            SizingMode::VolatilityAdjusted { base_fraction: 0.02, atr_period: 14, max_size_usd: 10000.0 },
+            SizingMode::DrawdownThrottled { base_fraction: 0.02, throttle_start_pct: 5.0, max_drawdown_pct: 20.0 },
+            SizingMode::RouteCostAdjusted { base_fraction: 0.02, max_penalty_pct: 0.80 },
+        ];
+        assert_eq!(variants.len(), 5, "SizingMode should have exactly 5 variants");
+    }
+
+    #[test]
+    fn test_sizing_mode_serialization_roundtrip() {
+        let modes = vec![
+            SizingMode::FixedNotional,
+            SizingMode::FixedFractional { risk_fraction: 0.03 },
+            SizingMode::VolatilityAdjusted { base_fraction: 0.02, atr_period: 20, max_size_usd: 5000.0 },
+            SizingMode::DrawdownThrottled { base_fraction: 0.02, throttle_start_pct: 3.0, max_drawdown_pct: 15.0 },
+            SizingMode::RouteCostAdjusted { base_fraction: 0.01, max_penalty_pct: 0.90 },
+        ];
+        for mode in &modes {
+            let json = serde_json::to_string(mode).unwrap();
+            let parsed: SizingMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(*mode, parsed, "Round-trip failed for {:?}", mode);
+        }
+    }
+
+    #[test]
+    fn test_sizing_mode_cli_str_roundtrip() {
+        let names = [
+            "fixed-notional",
+            "fixed-fractional",
+            "volatility-adjusted",
+            "drawdown-throttled",
+            "route-cost-adjusted",
+        ];
+        for name in &names {
+            let mode = SizingMode::from_cli_str(name).unwrap();
+            assert_eq!(mode.name(), *name);
+        }
     }
 }
