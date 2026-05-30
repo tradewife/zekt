@@ -5,7 +5,7 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 
 **Autonomy level:** Semi-autonomous. Wallet discovery, analysis, backtesting, and paper trading run automatically. Live trading requires human approval.
 
-## Architecture: Intelligence Layer ↔ Execution Layer
+## Architecture: Intelligence Layer ↔ Routing Layer ↔ Execution Layer
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
@@ -54,6 +54,42 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
                                     │
                                     ▼
 ┌──────────────────────────────────────────────────────────────────┐
+│             ROUTING LAYER (Imperial + Route Cost Oracle)         │
+│                                                                   │
+│  Imperial API (https://api.imperial.space)                       │
+│    → Aggregates Flash Trade / Phoenix / GMTrade / Jupiter        │
+│    → 86 symbols across 4 venues                                  │
+│    → Public, no auth, 10 GET endpoints                           │
+│               │                                                   │
+│  RouteCostOracle (route_cost.rs)                                 │
+│    → Multi-venue cost estimation                                 │
+│    → Compares execution costs across venues                      │
+│    → min_improvement_bps gate to avoid noise                     │
+│               │                                                   │
+│  Backtest supports cost_mode: "flash-only" (default)              │
+│                                  or "imperial-route-oracle"      │
+└───────────────────────────────────┬──────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────┐
+│          LIQUIDATION INTELLIGENCE LAYER                           │
+│                                                                   │
+│  LiquidationZoneCapture (liquidation.rs)                         │
+│    → Multi-source liquidation zone fusion                        │
+│    → Confidence scoring + snapshot persistence                   │
+│    → Retention cleanup for stale snapshots                       │
+│               │                                                   │
+│  LiquidationCascadeHunter (strategy.rs)                          │
+│    → Two setup types for liquidation-driven entries              │
+│    → Replay validation with promotion gate                       │
+│               │                                                   │
+│  ReplayPipeline (replay.rs)                                      │
+│    → Replay validation for new strategies                        │
+│    → Promotion gate: paper → live requires threshold pass        │
+└───────────────────────────────────┬──────────────────────────────┘
+                                    │
+                                    ▼
+┌──────────────────────────────────────────────────────────────────┐
 │                  EXECUTION LAYER (Flash Trade)                    │
 │                                                                   │
 │  Market Scanner (scan-markets.rs)                                │
@@ -62,6 +98,8 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 │    → data/market-rankings.json                                   │
 │               │                                                   │
 │  Strategy Implementation (strategy.rs)                           │
+│    → 16 strategies: 5 original + 10 blueprint +                  │
+│      liquidation-cascade-hunter                                  │
 │    → Load blueprint JSON parameters                              │
 │    → Implement via Strategy trait (not hardcoded values)         │
 │               │                                                   │
@@ -87,18 +125,20 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 2. Analyze   → Python fill-level analysis → strategy blueprints
 3. Implement → Rust Strategy trait with data-driven parameters
 4. Backtest  → Validate on HL historical candles (Sharpe ≥ 1.0)
-5. Paper     → Confirm against live Flash Trade prices (24h+ run)
-6. Live      → Execute with real capital (human approval required)
+               Optional: cost_mode=imperial-route-oracle for multi-venue cost estimation
+5. Replay    → ReplayPipeline validates new strategies with promotion gate
+6. Paper     → Confirm against live Flash Trade prices (24h+ run)
+7. Live      → Execute with real capital (human approval required)
 ```
 
 ## Commands
 ```bash
 # Build and test
 cargo build --release
-cargo test    # 560 unit tests
+cargo test    # 736 unit tests
 
 # Python analysis tests
-python -m pytest analysis/tests/ -v
+python -m pytest analysis/tests/ -v    # 132 tests
 
 # Wallet discovery via QuickNode HyperCore API
 QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
@@ -111,6 +151,12 @@ QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
   --markets BTC,SOL,ETH \
   --backtest-start 2026-05-01 --backtest-end 2026-05-15 \
   --backtest-interval 5m --paper-balance 1000
+
+# Backtest with Imperial route oracle cost mode
+./target/release/zekt --backtest \
+  --strategies momentum-scalper --markets SOL \
+  --backtest-start 2026-05-15 --backtest-interval 5m \
+  --cost-mode imperial-route-oracle
 
 # Multi-strategy multi-market paper trading
 ./target/release/zekt --paper \
@@ -140,6 +186,7 @@ cargo run --bin pipeline -- --once  # single scan + report
 | `--backtest-end` | End time (default: now) |
 | `--backtest-interval` | Candle interval: 1m, 5m, 15m, 1h, 4h, 1d (default: 5m) |
 | `--backtest-fee-rate` | Fee rate as decimal (default: 0.001 = 0.1%) |
+| `--cost-mode` | Cost estimation mode: "flash" (default) or "imperial-route-oracle" |
 | `--paper` | Paper trading mode (live prices, simulated PnL) |
 | `--paper-balance` | Starting balance in USD (default: 1000) |
 | `--paper-output` | Output directory for paper results (default: data/paper-results) |
@@ -171,6 +218,24 @@ cargo run --bin pipeline -- --once  # single scan + report
 - `flash.pool` = "Crypto.1"
 - `flash.leverage` = 3.0
 - `flash.slippage_pct` = "0.5"
+
+### Imperial (Aggregator)
+- `imperial.enabled` = true
+- `imperial.base_url` = `https://api.imperial.space`
+- `imperial.timeout_secs` = 10
+- `imperial.cache_ttl_secs` = 60
+
+### Route Oracle
+- `route-oracle.enabled` = true
+- `route-oracle.min_improvement_bps` = 5
+
+### Liquidation
+- `liquidation.sources` = ["imperial", "hl", "flash"]
+- `liquidation.interval_secs` = 30
+- `liquidation.snapshot_dir` = "data/liquidation-snapshots"
+- `liquidation.cluster_threshold_bps` = 50
+- `liquidation.confidence_min` = 0.6
+- `liquidation.retention_secs` = 86400
 
 ### Strategy (shared defaults)
 - `strategy.active` = "momentum-scalper"
@@ -209,6 +274,7 @@ cargo run --bin pipeline -- --once  # single scan + report
 - `backtest.walk_forward_train_ratio` = 0.7
 - `backtest.slippage_bps` = 0.0
 - `backtest.regime_filter` = true
+- `backtest.cost_mode` = "flash-only" (or "imperial-route-oracle" for multi-venue cost estimation)
 
 ### Pipeline (orchestrator)
 - `pipeline.paper_balance` = 1000
@@ -221,9 +287,19 @@ cargo run --bin pipeline -- --once  # single scan + report
 ## Supported Markets (Flash Trade Crypto.1)
 SOL, BTC, ETH, ZEC, BNB, XAU, XAG, EUR, JPY, JUP, BONK, WIF, PENGU, FARTCOIN, and more.
 
+Imperial API aggregates **86 symbols across 4 venues** (Flash Trade, Phoenix, GMTrade, Jupiter).
+
 Backtesting also supports any Hyperliquid perps market (BTC, SOL, ETH, etc.).
 
 ## External APIs
+
+### Imperial API (Solana Perps Aggregator)
+- Base URL: `https://api.imperial.space`
+- Public, no auth required
+- 10 GET endpoints aggregating Flash Trade / Phoenix / GMTrade / Jupiter
+- 86 symbols across 4 venues
+- Used by `imperial.rs` (ImperialClient) for multi-venue data
+- Cached with configurable TTL (`imperial.cache_ttl_secs`)
 
 ### QuickNode HyperCore API (Primary HL Data Source)
 - Batch methods: `hl_batchClearinghouseStates`, `hl_batchPortfolioStates`
@@ -286,6 +362,34 @@ QuickNode HL API → userFills → data/fills/{address}.json
                     Backtest → Paper → (Human Approval) → Live
 ```
 
+### Imperial Route Oracle Flow
+```
+Imperial API → ImperialClient → market/price/venue data
+                                        │
+                              RouteCostOracle
+                              (multi-venue cost estimation)
+                                        │
+                              Backtest with cost_mode=imperial-route-oracle
+                              → compares execution costs across venues
+                              → min_improvement_bps gate avoids noise
+```
+
+### Liquidation Capture Flow
+```
+Imperial + HL + Flash APIs → liquidation zone data
+                                        │
+                              LiquidationZoneCapture
+                              (multi-source fusion, confidence scoring)
+                                        │
+                              data/liquidation-snapshots/ (persisted)
+                                        │
+                              LiquidationCascadeHunter (strategy)
+                              → two setup types for liquidation-driven entries
+                                        │
+                              ReplayPipeline (replay validation)
+                              → promotion gate: paper → live threshold
+```
+
 ## Shutdown
 ```bash
 Ctrl+C          # Graceful: finishes current tick
@@ -294,23 +398,27 @@ kill -9 <pid>   # Emergency
 ```
 
 ## Key Files
-- `src/strategy.rs` — Strategy trait + 5 implementations + factory (6000+ lines, 63 tests)
+- `src/strategy.rs` — Strategy trait + 16 implementations + factory (194 tests)
+- `src/liquidation.rs` — LiquidationZoneCapture: multi-source fusion, confidence scoring, snapshot persistence (101 tests)
+- `src/imperial.rs` — ImperialClient: read-only HTTP client for Imperial Solana perps aggregator (53 tests)
+- `src/replay.rs` — ReplayPipeline: replay validation with promotion gate (45 tests)
+- `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter, imperial-route-oracle cost mode) (42 tests)
 - `src/funding_capture.rs` — Funding rate capture strategy (40 tests)
-- `src/pnl_tracker.rs` — Combined PnL tracking across all strategies (10 tests)
+- `src/route_cost.rs` — RouteCostOracle: multi-venue cost estimation (27 tests)
+- `src/risk.rs` — Risk manager (daily/weekly reset, circuit breaker, consecutive loss, correlated exposure, ATR sizing, API degradation, divergence tracking) (28 tests)
+- `src/config.rs` — TOML config parser with imperial/route-oracle/liquidation sections (25 tests)
+- `src/paper.rs` — Paper trading: single engine + MultiPaperEngine (24 tests)
+- `src/regime.rs` — Market regime detector (LowVol/Trending/HighVol/Choppy) + strategy-specific compatibility rules (20 tests)
+- `src/pnl_tracker.rs` — Combined PnL tracking across all strategies
 - `src/hl_info.rs` — Hyperliquid Info API client (positions, funding rates, fills)
-- `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter)
-- `src/regime.rs` — Market regime detector (LowVol/Trending/HighVol/Choppy) + strategy-specific compatibility rules
-- `src/paper.rs` — Paper trading: single engine + MultiPaperEngine (1684 lines, 14 tests)
 - `src/engine.rs` — Live trading engine
 - `src/signal.rs` — MomentumDetector, MomentumSnapshot, Signal/ExitReason types
-- `src/risk.rs` — Risk manager (daily/weekly reset, circuit breaker, consecutive loss, correlated exposure, ATR sizing, API degradation, divergence tracking)
 - `src/flash_api.rs` — Flash Trade REST client
 - `src/executor.rs` — Solana tx signing
-- `src/config.rs` — TOML config parser
 - `src/main.rs` — CLI entrypoint, routes to backtest/paper/dry-run/live
-- `src/bin/pipeline.rs` — Pipeline orchestrator: alpha-scanner + copy-trader + whale-watcher + paper (14 tests)
+- `src/bin/pipeline.rs` — Pipeline orchestrator: alpha-scanner + copy-trader + whale-watcher + paper
 - `src/bin/alpha-scanner.rs` — Wallet discovery daemon (64 tests)
-- `src/bin/copy-trader.rs` — Position mirroring engine (85 tests)
+- `src/bin/copy-trader.rs` — Position mirroring engine (106 tests)
 - `src/bin/whale-watcher.rs` — WebSocket fill monitoring (41 tests)
 - `src/bin/scrape-leaderboards.rs` — Wallet discovery via QuickNode (22 tests)
 - `src/bin/analyze-wallet.rs` — Strategy classifier + blueprints (24 tests)
@@ -344,15 +452,25 @@ kill -9 <pid>   # Emergency
 - Paper-trading promotion gate (runbook, thresholds, monitoring checklist, human approval)
 - Final mission report with before/after metrics, next missions ranked by impact
 
+**M9 (Completed): Imperial Route Oracle + Liquidation-Zone** — 4-milestone mission covering:
+- **M1 Imperial Client** — ImperialClient in `imperial.rs`, read-only HTTP client for Imperial API (`https://api.imperial.space`). Public, no auth, 10 GET endpoints, aggregates Flash Trade/Phoenix/GMTrade/Jupiter (86 symbols). `[imperial]` config section. 53 tests.
+- **M2 Route Oracle + Blueprint Revalidation** — RouteCostOracle in `route_cost.rs`, multi-venue cost estimation with `min_improvement_bps` gate. Backtest `cost_mode: "imperial-route-oracle"`. Revalidated all blueprint strategies with route-aware costs. `[route-oracle]` config section. 27 tests.
+- **M3 Liquidation Capture** — LiquidationZoneCapture in `liquidation.rs`, multi-source fusion (imperial + hl + flash), confidence scoring, snapshot persistence with retention cleanup. `[liquidation]` config section. 101 tests.
+- **M4 Liquidation Strategy + Replay** — LiquidationCascadeHunter strategy (two setup types) + ReplayPipeline in `replay.rs` with promotion gate. 194 strategy tests (includes liquidation-cascade-hunter). 45 replay tests.
+
 ## Testing
-**Rust:** 711 unit tests total (414 main binary + 297 binary tests). Run with `cargo test`.
-- strategy.rs: 63 tests
+**Rust:** 736 unit tests total across 21 source modules and 8 binary modules. Run with `cargo test`.
+- strategy.rs: 194 tests (16 strategies including liquidation-cascade-hunter)
+- liquidation.rs: 101 tests (zone capture, fusion, confidence, persistence)
+- imperial.rs: 53 tests (ImperialClient, all 10 endpoints)
+- replay.rs: 45 tests (replay validation, promotion gate)
+- backtest.rs: 42 tests (walk-forward, slippage, regime filter, imperial-route-oracle cost mode)
 - funding_capture.rs: 40 tests
-- pnl_tracker.rs: 10 tests
-- paper.rs: 14 tests
-- backtest.rs: 17 tests (walk-forward, slippage, regime filter, fee decomposition)
-- regime.rs: 21 tests (regime labels, fingerprints, strategy compatibility)
-- risk.rs: 30 tests (daily/weekly reset, consecutive loss, correlated exposure, volatility sizing, API degradation, divergence)
+- route_cost.rs: 27 tests (multi-venue cost estimation, improvement gate)
+- risk.rs: 28 tests (daily/weekly reset, consecutive loss, correlated exposure, volatility sizing, API degradation, divergence)
+- config.rs: 25 tests (imperial/route-oracle/liquidation config sections)
+- paper.rs: 24 tests (MultiPaperEngine, position matrix, fee accounting)
+- regime.rs: 20 tests (regime labels, fingerprints, strategy compatibility)
 - pipeline.rs: 14 tests
 - analyze-wallet.rs: 24 tests
 - scrape-leaderboards.rs: 22 tests
@@ -361,14 +479,15 @@ kill -9 <pid>   # Emergency
 - whale-watcher.rs: 41 tests
 - scan-markets.rs: 18 tests
 - scrape-dextrabot.rs: 8 tests
-- config + hl_info + other: ~33 tests
 
 **Python:** 132 tests. Run with `python -m pytest analysis/tests/ -v`.
 
 ## TODO / Next Steps
 - [ ] **Strategy parameter optimization** — Walk-forward parameter sweep to find profitable configs (Mission A)
-- [ ] **Blueprint strategy validation** — Test data-driven strategies with regime filter and fee model (Mission B)
+- [ ] **Blueprint strategy validation** — Test data-driven strategies with regime filter, fee model, and route oracle (Mission B)
 - [ ] **Self-tuning parameters** — Adaptive thresholds based on recent trade performance (Mission C, inspired by Senpi Lynx)
+- [ ] **Liquidation strategy live validation** — Promote liquidation-cascade-hunter from paper to live after replay gate passes
+- [ ] **Route oracle live integration** — Use RouteCostOracle for real-time venue selection in live trading
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Monitoring loop with periodic re-scanning for new strategies
 - [x] ~~**QuickNode wallet scanner** — Batch scan HL wallets via HyperCore API~~ (done: M6)
@@ -378,7 +497,7 @@ kill -9 <pid>   # Emergency
 - [x] ~~Backtesting engine against historical prices~~ (done: Hyperliquid candleSnapshot)
 - [x] ~~LP detection~~ (done: lp-consumption strategy)
 - [x] ~~LP consumption rate signal~~ (done: lp-consumption strategy, pool data populated)
-- [x] ~~Unit tests~~ (done: 711 tests)
+- [x] ~~Unit tests~~ (done: 736 tests)
 - [x] ~~Fee-awareness~~ (done: per-trade fee tracking in paper + backtest engines)
 - [x] ~~P0 bug fixes~~ (done: borrow accrual, cross-cell limits, pool data)
 - [x] ~~Alpha scanner binary~~ (done: Dextrabot + Hypurrscan + HL enrichment, 64 tests)
@@ -391,3 +510,7 @@ kill -9 <pid>   # Emergency
 - [x] ~~Walk-forward validation~~ (done: train/test split with separate metrics)
 - [x] ~~Slippage model~~ (done: configurable basis points in backtest)
 - [x] ~~Paper-trading promotion gate~~ (done: runbook, thresholds, human approval checklist)
+- [x] ~~**Imperial Route Oracle** — Multi-venue cost estimation via Imperial API~~ (done: M9)
+- [x] ~~**Liquidation zone intelligence** — Multi-source fusion + confidence scoring~~ (done: M9)
+- [x] ~~**Liquidation cascade hunter** — Two setup types with replay validation~~ (done: M9)
+- [x] ~~**Replay validation pipeline** — Promotion gate for new strategies~~ (done: M9)

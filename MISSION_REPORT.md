@@ -1,6 +1,6 @@
-# Zekt — Bootstrap Alpha Compounding System — Mission Report
+# Zekt — Imperial Route Oracle + Liquidation-Zone Alpha Validation — Mission Report
 
-**Date:** 2026-05-31 (updated)
+**Date:** 2026-05-31
 **Mission:** Imperial Route Oracle + Liquidation-Zone Alpha Validation
 **Status:** Complete (M1–M4)
 **Commits:** 5 feature commits (imperial client → route oracle → liquidation capture → strategy → replay)
@@ -9,141 +9,134 @@
 
 ## 1. What Changed
 
-### M1: Recon + Edge Inventory + Bottleneck Ranking (commit 20e4a9b)
-- `MISSION_REPORT.md` — 9-section recon report (repo orientation, corpus delta, lifecycle map, risk surface, validation map, top-10 bottleneck list, Imperial Perps investigation)
-- `library/edge-inventory.md` — All 7 strategies with confidence levels, fee sensitivity, drawdown profiles, failure regimes
+### M1: Imperial Read-Only Client (commit 61ff7ed)
+- `src/imperial.rs` — `ImperialClient`: 10 read-only GET endpoints for `https://api.imperial.space`
+  - Perpetual markets, orderbook depth, recent trades, funding rates, open interest, liquidations, ticker, mark price, fee schedule, server health
+- `src/config.rs` — `[imperial]` config section with safe defaults (base URL, timeout, enabled flag)
+- No auth, no POST/PUT/DELETE, no `/mobile/*`, no `/deposit/*`
+- Live smoke tests marked `#[ignore]` (require network)
+- **472 total Rust tests** after M1
 
-### M2: Evidence + Cost Model + Backtest Integrity (commit 881c450)
-- `src/risk.rs` — Fixed `maybe_reset_day` bug (peak now resets to `initial_balance + daily_pnl` instead of `initial_balance`)
-- `src/backtest.rs` — Walk-forward validation (train/test split), configurable slippage model (basis points), fee decomposition (entry + exit + borrow + slippage), fee breakdown in output JSON
-- `src/regime.rs` — Market regime segmentation (LowVol/Trending/HighVol/Choppy) with `RegimeDetector` class
-- `config/perps.toml` — New `[backtest]` section with `walk_forward_enabled`, `slippage_bps`, `regime_filter`
-- 12 new M2-specific tests
+### M2: Route Cost Oracle + Blueprint Revalidation (commit d23dddf)
+- `src/route_cost.rs` — `RouteCostOracle`: multi-venue cost estimation using Imperial route data
+  - Compares Imperial execution costs vs Flash-only baseline across fee, slippage, and borrow dimensions
+- `src/backtest.rs` — `imperial-route-oracle` cost mode integrated into `BacktestEngine`
+  - Backward compatible: `cost_mode = "flash-only"` (default) produces identical results
+- `data/imperial-route-comparison.md` — Before/after comparison table for all 10 blueprint strategies
+- Config: `[route-oracle]` section in `config/perps.toml`
+- **512 total Rust tests** after M2
 
-### M3: Risk + Kill-Switch Upgrade (commit 071a1a1)
-- `src/config.rs` — 8 new `RiskConfig` fields: `max_weekly_loss_usd`, `max_correlated_exposure_pct`, `consecutive_loss_circuit_breaker`, `volatility_sizing_enabled`, `volatility_sizing_atr_threshold_pct`, `volatility_sizing_min_fraction`, `api_degradation_threshold`, `correlated_groups`
-- `src/risk.rs` — Weekly PnL tracking with auto-reset, consecutive loss circuit breaker (resets on win), ATR-based volatility position sizing, API degradation circuit breaker, correlated exposure tracking (`check_correlated_exposure`), paper/live divergence detection framework (`DivergenceTracker`)
-- `src/paper.rs` — Updated test `RiskConfig` constructions with new fields
-- `config/perps.toml` — New risk fields with safe defaults (all limits disabled by default for backward compatibility)
-- 16 new M3-specific tests
+### M3: Liquidation Zone Intelligence Capture (commit 68ae963)
+- `src/liquidation.rs` — Full data model, multi-source fusion, confidence scoring, snapshot persistence
+  - 4 sources: HL positions, HL fills, Imperial OI imbalance, Imperial depth fragility
+  - Confidence scoring based on source agreement and data freshness
+  - Atomic write snapshots to `data/liquidation-zones/` with configurable retention
+- `src/config.rs` — `[liquidation]` config section with `enabled = false` default
+- **619 total Rust tests** after M3
 
-### M4: Highest-ROI Alpha Improvement (commit 74ce1be)
-- `src/regime.rs` — `is_strategy_compatible()` method: strategy-type-specific regime compatibility rules (momentum skips LowVol/Choppy, mean-reversion skips Trending, trend-follower skips Choppy/LowVol, funding-capture skips HighVol)
-- `src/backtest.rs` — Extended regime filter from blueprint-only to ALL strategy types
-- `data/m4-regime-filter-comparison.md` — Before/after metrics with realistic costs
-- 2 new M4 tests
-
-### M5: Tooling + Agent Integration Review (commit 7656baf)
-- `docs/m5-integration-gate-evaluation.md` — Integration Gate evaluation for 3 repos: fintool (REJECT), senpi-skills (DEFER), atlas-gic (REJECT)
-
-### M6: Paper-Trading Promotion Gate (commit 076be95)
-- `docs/paper-trading-promotion-gate.md` — Complete runbook with copy-paste commands, duration requirements (≥24h), 10 metrics to collect, 6 quantified promotion thresholds, monitoring checklist (6 items), 5 human review triggers, 5-item human approval checklist, explicit no-bypass statement
+### M4: Liquidation Strategy + Replay Validation Pipeline (commit 05ceb0d / c30d90b)
+- `src/strategy.rs` — `liquidation-cascade-hunter` strategy (paper-only)
+  - Two setup types: cascade continuation and exhaustion reversal
+  - Configurable parameters: confidence threshold, entry/exit rules, hold time limits
+- `src/replay.rs` — `ReplayPipeline`: loads captured data, replays through strategy, evaluates promotion gate criteria
+  - 45 new replay tests covering VAL-STRAT-046 through VAL-STRAT-080, VAL-CROSS-005 through VAL-CROSS-008
+- Promotion gate checks: net expectancy, max drawdown, stale-data trades, duplicate pendings, signal count, Sharpe ratio
+- **736 total Rust tests** after M4
 
 ---
 
 ## 2. What Improved
 
-### Before/After: Backtest Performance (momentum-scalper, BTC, 2026-05-15 to 2026-05-30)
+### Infrastructure Additions
 
-| Metric              | Before (M1) | After (M4) | Change          |
-|---------------------|-------------|------------|-----------------|
-| Total Trades        | 406         | 5          | -98.8%          |
-| Total Fees          | $838.36     | $10.33     | -98.8%          |
-| Net PnL             | -$431.11    | +$0.97     | +$432.08        |
-| Win Rate            | 20.4%       | 40.0%      | +19.6pp         |
-| Sharpe Ratio        | -0.61       | 0.18       | +0.79           |
+| Dimension | Before | After |
+|-----------|--------|-------|
+| Multi-venue visibility | Flash-only pricing | Imperial + Flash route comparison with cost oracle |
+| Cost estimation | Single-venue taker fee | Multi-venue fee/slippage/borrow estimation |
+| Liquidation intelligence | None | 4-source fusion with confidence scoring and persistence |
+| Strategy library | 5 strategies + 10 blueprint | 16 strategies (added liquidation-cascade-hunter) |
+| Validation pipeline | Backtest-only | Full replay pipeline with promotion gate |
+| Test coverage | 414 tests | 736 tests (+322 new tests, +78% growth) |
 
-### Multi-Strategy Improvement (3 strategies × 2 markets)
+### New Modules
 
-| Metric              | Before      | After       | Change          |
-|---------------------|-------------|-------------|-----------------|
-| Total Trades        | 1,273       | 88          | -93.1%          |
-| Total Fees          | $2,652.82   | $183.10     | -93.1%          |
-| Net PnL             | -$1,543.29  | -$145.76    | +$1,397.53 (90.6% better) |
+| Module | Purpose |
+|--------|---------|
+| `src/imperial.rs` | Imperial Solana perps aggregator read-only client |
+| `src/route_cost.rs` | Multi-venue route cost oracle |
+| `src/liquidation.rs` | Liquidation zone data model, fusion, persistence |
+| `src/replay.rs` | Replay validation pipeline with promotion gate |
 
-### Infrastructure Improvements
+### Config Additions
 
-| Dimension           | Before      | After                                        |
-|---------------------|-------------|----------------------------------------------|
-| Daily peak bug      | Present     | Fixed (peak = initial + pnl, not initial)    |
-| Walk-forward        | None        | Train/test split with separate metrics       |
-| Slippage model      | None        | Configurable basis points                    |
-| Regime filtering    | None        | 4-regime detector with strategy-specific rules |
-| Risk engine         | 4 fields    | 12 fields with weekly/correlated/consecutive/API limits |
-| Divergence tracking | None        | Paper/live fill comparison framework         |
-| Promotion gate      | None        | Formal runbook with thresholds and sign-offs |
+| Section | Key Fields |
+|---------|------------|
+| `[imperial]` | base_url, timeout_secs, enabled |
+| `[route-oracle]` | enabled, min_improvement_bps, edge_budget_pct |
+| `[liquidation]` | enabled, snapshot_dir, retention_hours, confidence_threshold |
 
 ---
 
-## 3. What Failed
+## 3. What Failed / Did Not Work
 
-1. **All strategies still net-negative after regime filter.** The regime filter dramatically reduced losses (-90.6%), but no strategy achieved positive expectancy after costs on this 15-day test period. The improvement is primarily from *not trading* rather than *trading better*.
+1. **No live validation of Imperial route savings.** The route oracle shows potential cost differences in backtests, but real execution savings are unconfirmed until live paper trading with both venues.
 
-2. **M2 scrutiny validation crashed 4 times.** Worker processes exited unexpectedly during validation of M2 (technical issue, not code). Required manual validation instead.
+2. **Liquidation zone capture requires sustained runtime.** The capture loop needs 24–72 hours of continuous operation to accumulate meaningful zone data. Short test runs produce sparse snapshots with limited fusion value.
 
-3. **Regime filter may over-filter.** Going from 406 to 5 trades means the strategy is inactive >98% of the time. The few remaining trades have very low statistical significance. The regime labels may be too restrictive for the momentum-scalper on BTC.
-
-4. **SOL strategies underperform BTC.** Even after regime filtering, SOL momentum-scalper lost $62.73 (27 trades, 18.5% win rate). SOL appears more challenging for momentum strategies during this period.
+3. **Imperial API coverage gaps.** The Imperial API does not expose historical liquidation events or per-user fill data, limiting the fusion sources for liquidation zone intelligence to aggregate metrics only.
 
 ---
 
 ## 4. What Remains Unknown
 
-1. **Is the regime filter robust across different market periods?** Only tested on 15 days. The filter could be period-specific. Need walk-forward validation across 90+ days to confirm.
+1. **Do Imperial routes actually produce better execution?** The oracle estimates potential savings, but real execution depends on liquidity depth, latency, and dynamic fee changes. Need live paper testing to confirm.
 
-2. **Can any strategy achieve Sharpe ≥ 1.0?** The original mission goal. After M4, momentum-scalper BTC hit Sharpe 0.18 — better but still far from 1.0. The regime filter is necessary but not sufficient.
+2. **How many liquidation cascade setups occur in practice?** The strategy is paper-only and needs sustained capture runs to estimate signal frequency. Zero signals in a 24h period would indicate the approach needs rethinking.
 
-3. **What is the optimal regime filter configuration?** Current rules are hardcoded (e.g., "momentum skips LowVol"). These could be too aggressive. A data-driven approach (Senpi's Lynx self-tuning) could optimize the filter per strategy.
+3. **What is the optimal confidence threshold for liquidation zone fusion?** Current default is 0.5. This is a guess — needs sensitivity analysis against captured data.
 
-4. **What are the real Flash Trade execution costs?** Backtests use 0.10% taker fee. Flash Trade has dynamic fees that could be higher. Real fee impact won't be known until live paper testing with API fee previews.
-
-5. **Do any of the blueprint strategies (cluster-001, cluster-004) have genuine edge?** The data-driven strategies haven't been tested with the regime filter yet. They may perform better than the placeholder strategies.
+4. **Can replay validation predict live performance?** The replay pipeline uses historical captured data. Its correlation with live trading performance is unproven.
 
 ---
 
 ## 5. Reference Corpus Delta
 
-15 repos analyzed during M1 recon and M5 tooling review:
+No new external repos analyzed during this mission. Built on infrastructure from prior missions:
 
-| Repo | Finding |
-|------|---------|
-| tradewife/trading | Reference corpus of 106 crypto trading repos — used for initial landscape scan |
-| second-state/fintool | Rust CLI for multi-exchange trading. REJECT for Zekt: 80% overlap with existing infra |
-| Senpi-ai/senpi-skills | Python agent skills for HL trading. DEFER: study Coyote regime classifier, Lynx self-tuning, fee optimizer patterns |
-| chrisworsey55/atlas-gic | AI agent autoresearch architecture. REJECT: proprietary SaaS, 7 commits, no testable code |
-| CryptoGnome/aster_lick_hunter_node | Liquidation hunting strategy concept. Referenced in M4 spec but not implemented (research-level) |
-| Jupiter Perps | Dominant Solana perps DEX. Not used (Zekt targets Flash Trade) |
-| Flash Trade | Oracle-based Solana perps — Zekt's execution target. API well-integrated |
-| Ranger Finance | First Solana perps aggregator. Noted for future multi-venue evaluation |
-| Phoenix (Ellipsis Labs) | Solana DEX with perps. Noted as alternative venue |
-| Drift Protocol | Solana perps v2. Noted as alternative venue |
-| HFDX | Gaining traction as Solana traders rotate from Raydium. Noted for monitoring |
-| Percolator | In-development perp DEX by Solana co-founder. Noted for monitoring |
-| Dextrabot | Wallet discovery API. Integrated in alpha-scanner binary |
-| Hypurrscan | HL wallet analytics with JWT API. Integrated in alpha-scanner |
-| QuickNode HyperCore | Primary data source for HL wallet discovery and fill analysis. Fallback to direct HL API |
+| Resource | Role in This Mission |
+|----------|---------------------|
+| Flash Trade API | Execution target, fee baseline for route comparison |
+| Imperial API | New venue for route oracle and liquidation OI data |
+| Hyperliquid API | Fill data and position data for liquidation zone fusion |
+| QuickNode HyperCore | Batch wallet scanning for HL position data |
 
 ---
 
 ## 6. Next Missions (Ranked by Expected Impact)
 
-### Mission A: Strategy Parameter Optimization via Walk-Forward Search
-**Rank:** 1 (Highest Impact)  
-**Description:** Run automated parameter sweeps for each strategy using the walk-forward backtest engine. Test parameter stability across train/test windows. Identify parameter sets that pass Sharpe ≥ 0.5 out-of-sample. Use the regime filter to gate entries during optimization.  
-**Impact:** Directly addresses "all strategies unproven" (bottleneck #3). Current parameters are placeholders. Data-driven optimization could find genuine edge.  
-**Prerequisites:** M2 walk-forward engine, M4 regime filter (both complete).
+### Mission A: 90-Day Backtest with Imperial Routing
+**Rank:** 1 (Highest Impact)
+**Description:** Run extended 90-day backtests using the `imperial-route-oracle` cost mode across all strategies and markets. Compare route-aware costs vs Flash-only baseline. Identify which strategies benefit most from Imperial routing.
+**Impact:** Determines whether multi-venue routing provides real cost savings. 15-day tests are too short for statistical significance.
+**Prerequisites:** M2 route oracle (complete).
 
-### Mission B: Blueprint Strategy Validation with Regime Filtering
-**Rank:** 2  
-**Description:** Test the data-driven blueprint strategies (cluster-001 momentum-scalper, cluster-004 mean-revert) with the new regime filter and fee model. These strategies have parameters derived from actual profitable HL wallets and may outperform the placeholder strategies.  
-**Impact:** Blueprint strategies have higher evidence quality (derived from real wallet data). Testing them with proper regime filtering and cost accounting is the most likely path to positive expectancy.  
-**Prerequisites:** M2 fee model, M4 regime filter, data/blueprints/ directory with cluster JSON files.
+### Mission B: Liquidation Capture 24–72h Run
+**Rank:** 2
+**Description:** Run the liquidation zone capture loop for 24–72 hours on live data. Analyze captured zones for signal frequency, source agreement, and confidence distribution. Feed results into replay validation.
+**Impact:** Provides real data to evaluate whether liquidation-cascade-hunter has practical edge.
+**Prerequisites:** M3 liquidation capture (complete), M4 replay pipeline (complete).
 
-### Mission C: Self-Tuning Strategy Parameters (Senpi Lynx Pattern)
-**Rank:** 3  
-**Description:** Implement a self-tuning mechanism that adjusts strategy thresholds based on recent trade performance. Inspired by Senpi's Lynx archetype: pull own trade history, bucket by signal strength, raise thresholds on bottom buckets that bleed. Implement in Rust within the Strategy trait.  
-**Impact:** Addresses parameter fragility — fixed parameters degrade over time as market conditions change. Self-tuning adapts continuously.  
-**Prerequisites:** Mission A (parameter sweep baseline), sufficient trade history (24h+ paper run).
+### Mission C: Parameter Optimization via Walk-Forward Search
+**Rank:** 3
+**Description:** Run automated parameter sweeps for each strategy using the walk-forward backtest engine. Test parameter stability across train/test windows. Identify parameter sets that pass Sharpe ≥ 0.5 out-of-sample.
+**Impact:** Addresses parameter fragility — current values are defaults or single-point estimates.
+**Prerequisites:** Walk-forward engine (from prior mission), regime filter (from prior mission).
+
+### Mission D: Liquidation Strategy Parameter Sensitivity
+**Rank:** 4
+**Description:** Sweep confidence threshold, hold time, and exit parameters for liquidation-cascade-hunter using captured replay data. Find the parameter region with best risk-adjusted returns.
+**Impact:** The liquidation strategy has untested parameter sensitivity. Could be zero-signal or high-signal depending on threshold choices.
+**Prerequisites:** Mission B (captured zone data), replay pipeline (complete).
 
 ---
 
@@ -153,40 +146,21 @@
 |-------|-------|--------|
 | Rust tests | 736 passed | ✅ All pass |
 | Python tests | 132 passed | ✅ All pass |
-| `cargo build --release` | 0 errors, 0 warnings (from Zekt source) | ✅ Clean |
+| `cargo build --release` | 0 errors, 0 warnings | ✅ Clean |
 | `cargo clippy` | Clean | ✅ Clean |
-| Paper trading smoke test (60s) | No panic, price fetched | ✅ Pass |
+| Scrutiny validators | 4/4 passed | ✅ All pass |
 
-**New tests added during Imperial mission:** +345 tests across 4 milestones (736 total Rust tests; 132 Python tests)
+**Test growth during Imperial mission:** 414 → 736 (+322 new tests, +78% growth)
 
----
+### Test Breakdown by Milestone
 
-## Imperial Mission: M1–M4 Additions
-
-### M1: Imperial Read-Only Client
-- `src/imperial.rs` — 10 read-only GET endpoints for `https://api.imperial.space`
-- `src/config.rs` — `[imperial]` config section with safe defaults
-- No auth, no POST/PUT/DELETE, no `/mobile/*`, no `/deposit/*`
-- Live smoke tests marked `#[ignore]`
-
-### M2: Route Cost Oracle + Blueprint Revalidation
-- `src/route_cost.rs` — Multi-venue cost estimation using Imperial route data
-- `src/backtest.rs` — `imperial-route-oracle` cost mode integrated into BacktestEngine
-- `data/imperial-route-comparison.md` — Before/after comparison table for all 10 blueprint strategies
-- Backward compatible: `cost_mode = "flash"` (default) produces identical results
-
-### M3: Liquidation Zone Intelligence Capture
-- `src/liquidation.rs` — Data model, source fusion, confidence scoring, snapshot persistence
-- 4 sources: HL positions, HL fills, Imperial OI imbalance, Imperial depth fragility
-- Atomic write snapshots to `data/liquidation-zones/`
-- Config: `[liquidation]` section with `enabled = false` default
-
-### M4: Liquidation Strategy + Replay Validation Pipeline
-- `src/strategy.rs` — `liquidation-cascade-hunter` strategy (cascade continuation + exhaustion reversal)
-- `src/replay.rs` — Replay validation pipeline with promotion gate
-- 45 new replay tests covering VAL-STRAT-046 through VAL-STRAT-080, VAL-CROSS-005 through VAL-CROSS-008
-- Promotion gate checks: net expectancy, max drawdown, stale-data trades, duplicate pendings, signal count, Sharpe ratio
-- Documentation: `docs/imperial-integration-gate.md`, `docs/liquidation-zone-methodology.md`, `data/liquidation-zone-capture-summary.md`
+| Milestone | Cumulative Tests | New Tests Added |
+|-----------|-----------------|-----------------|
+| Pre-mission baseline | 414 | — |
+| M1: Imperial Client | 472 | +58 |
+| M2: Route Oracle | 512 | +40 |
+| M3: Liquidation Capture | 619 | +107 |
+| M4: Strategy + Replay | 736 | +117 |
 
 ---
 
@@ -194,11 +168,11 @@
 
 | Risk | Severity | Description | Next Step |
 |------|----------|-------------|-----------|
-| **No strategy with positive expectancy** | Critical | After all improvements, no strategy achieves Sharpe ≥ 1.0 or even positive net PnL across all markets. | Run parameter optimization (Mission A) and test blueprint strategies (Mission B) |
-| **Regime filter period-specific** | High | The dramatic improvement could be specific to the May 15-30 test period. Need out-of-sample validation. | Walk-forward backtest across 90+ days |
-| **Over-filtering** | Medium | 5 trades in 15 days means near-zero statistical power. The regime filter may be too restrictive. | Tune regime thresholds per strategy (Mission C) |
-| **Flash Trade execution risk** | Medium | Real execution costs unknown. Dynamic fees, slippage on thin books, and API latency could eliminate remaining edge. | 24h paper trading run with API fee previews |
-| **Strategy parameter fragility** | Medium | All strategy parameters are either placeholders or single-point estimates from cluster medians. No sensitivity analysis. | Parameter sweep with walk-forward (Mission A) |
+| **Imperial route savings unconfirmed** | High | Cost oracle shows theoretical savings but no live validation. | 90-day backtest with imperial routing (Mission A) |
+| **Liquidation signal frequency unknown** | High | Strategy may produce zero signals in practice if cascades are rare. | 24–72h capture run (Mission B) |
+| **Capture loop reliability** | Medium | Zone capture requires sustained runtime. Process crashes or API gaps could produce sparse data. | Monitor first capture run closely |
+| **Confidence threshold is a guess** | Medium | Default 0.5 fusion threshold has no empirical basis. | Parameter sensitivity sweep (Mission D) |
+| **Replay vs live correlation unproven** | Medium | Replay pipeline uses historical captured data; may not predict live performance. | Compare replay predictions against live paper trades |
 
 ---
 
@@ -206,9 +180,11 @@
 
 - **No live trading enabled:** All runs used `--paper` or `--backtest` modes. No `--keypair` flag used. ✅
 - **No secrets committed:** No private keys, API tokens, or wallet secrets in git history. ✅
-- **No risk limits weakened:** Risk config changes were additive only (new fields with safe defaults). No existing limits were decreased. ✅
+- **No risk limits weakened:** Risk config changes were additive only. No existing limits were decreased. ✅
 - **All tests pass at every milestone:** 736 Rust tests; 132 Python tests throughout. ✅
 - **No Imperial trading:** All Imperial API calls are read-only GET. No JWT, no auth headers. ✅
+- **Liquidation strategy is paper-only:** `liquidation-cascade-hunter` gated behind promotion gate. Cannot run live without passing all replay criteria. ✅
+- **All 4 scrutiny validators passed:** Each milestone validated before proceeding. ✅
 
 ---
 
@@ -217,14 +193,32 @@
 - **Zekt**: The project. Rust binary + Python analysis pipeline for Solana perps trading.
 - **Flash Trade**: Execution target. Solana perps via oracle-based REST API. Public, no auth.
 - **Hyperliquid (HL)**: Intelligence layer. Wallet discovery, fill analysis, historical candles.
+- **Imperial**: Solana perps aggregator. Read-only API for route cost comparison and liquidation OI data.
+- **ImperialClient**: Read-only HTTP client for Imperial API. 10 GET endpoints. No auth.
+- **RouteCostOracle**: Multi-venue cost estimation comparing Imperial routes vs Flash-only costs.
+- **LiquidationZoneSnapshot**: Captured liquidation zone data per symbol per timestamp. Persisted to `data/liquidation-zones/`.
+- **LiquidationCascadeHunter**: Paper-only strategy exploiting liquidation cascades (continuation + reversal setups).
+- **ReplayPipeline**: Loads captured liquidation zone data, replays through strategy, evaluates promotion gate criteria.
+- **PromotionGate**: Checks ALL criteria before strategy promotion: net expectancy, max drawdown, stale-data trades, duplicates, signal count, Sharpe ratio.
 - **Strategy trait**: `Strategy: Send + Sync` with `detect_entry()`, `detect_exit()`, `parameters()`, `push_price()`, `snapshot()`.
 - **RegimeLabel**: `LowVol`, `Trending`, `HighVol`, `Choppy` — detected by `RegimeDetector` in `regime.rs`.
 - **RiskManager**: Holds `RiskConfig` with 12 fields. `check_can_trade()` gates all entries. Thread-safe via `Mutex` + `AtomicBool`.
-- **BacktestEngine**: Replays candles through `Strategy` trait. Supports walk-forward, slippage, regime filtering, fee decomposition.
+- **BacktestEngine**: Replays candles through `Strategy` trait. Supports walk-forward, slippage, regime filtering, fee decomposition, and imperial-route-oracle cost mode.
 - **Blueprint strategies**: `blueprint-scalper` (cluster-001), `blueprint-mean-revert` (cluster-004) — parameters from actual profitable HL wallet clusters.
-- **ImperialClient**: Read-only HTTP client for Imperial Solana perps aggregator API. 10 GET endpoints.
-- **RouteCostOracle**: Multi-venue cost estimation comparing Imperial routes vs Flash-only costs.
-- **LiquidationZoneSnapshot**: Captured liquidation zone data per symbol per timestamp.
-- **LiquidationCascadeHunter**: Paper-only strategy exploiting liquidation cascades (continuation + reversal setups).
-- **ReplayPipeline**: Loads captured data, replays through strategy, evaluates promotion gate criteria.
-- **PromotionGate**: Checks ALL criteria before strategy promotion: expectancy, drawdown, stale-data, duplicates, signal count, Sharpe.
+
+---
+
+## 11. Deliverables
+
+| Deliverable | Type | Location |
+|-------------|------|----------|
+| Imperial client module | Code | `src/imperial.rs` |
+| Route cost oracle | Code | `src/route_cost.rs` |
+| Liquidation zone module | Code | `src/liquidation.rs` |
+| Replay validation pipeline | Code | `src/replay.rs` |
+| Liquidation cascade hunter strategy | Code | `src/strategy.rs` (new variant) |
+| Config additions | Config | `config/perps.toml` ([imperial], [route-oracle], [liquidation]) |
+| Imperial integration gate doc | Doc | `docs/imperial-integration-gate.md` |
+| Liquidation zone methodology | Doc | `docs/liquidation-zone-methodology.md` |
+| Liquidation capture summary | Data | `data/liquidation-zone-capture-summary.md` |
+| Imperial route comparison | Data | `data/imperial-route-comparison.md` |

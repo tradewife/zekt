@@ -73,7 +73,7 @@ scale_in_clips = 1
 # Flash-Native LP Consumption strategy
 # For Flash Trade-only markets (JitoSOL, BONK, SPY) with thin books and high utilization.
 # These markets don't exist on Hyperliquid → less competition → LP consumption edge.
-# Source: mission SPEC-NEXT-MISSION.md M3
+# Flash-native mode for lp-consumption on Flash-only thin-book markets.
 [strategy.flash-native]
 # Enable flash-native mode: relaxed thresholds for Flash-only thin-book markets
 flash_native_mode = true
@@ -251,7 +251,7 @@ max_position_notional_usd = 5000.0
 max_daily_loss_usd = 500.0
 max_drawdown_pct = 15.0
 # Maximum total notional exposure across ALL open positions (cross-cell limit).
-# With 4 strategies × 2 markets, each at ~$3000, total could reach $24,000+.
+# With multiple strategies × markets, total exposure can accumulate quickly.
 # Set a cap to prevent excessive exposure from accumulating.
 max_total_notional_usd = 100000.0
 # Maximum weekly loss in USD. Halts trading when cumulative weekly losses exceed this.

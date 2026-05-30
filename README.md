@@ -1,333 +1,142 @@
 # Zekt — Autonomous Strategy Poaching System
 
-Semi-autonomous trading system that **discovers profitable strategies from Hyperliquid wallets, reverse-engineers them from fill-level data, and replicates them on Flash Trade** (Solana perps). Research on Hyperliquid (rich data) → Execute on Flash Trade (Solana perps). Poach, analyze, and paper trade automatically; require human approval before live execution.
+Semi-autonomous trading system that discovers profitable strategies from Hyperliquid wallets, reverse-engineers them from fill-level data, and replicates them on Solana perps. Multi-venue route comparison across Flash Trade, Phoenix, GMTrade, and Jupiter via the Imperial aggregator. Liquidation zone intelligence with 4-source fusion. Research on Hyperliquid (rich data) → Execute on Flash Trade (Solana perps).
 
-## Pipeline: Discovery → Analysis → Implementation → Validation
-
-```
-┌──────────────────────────────────────────────────────────────────┐
-│  1. DISCOVERY (Intelligence Layer — Hyperliquid)                 │
-│  QuickNode HyperCore API → HL leaderboards → 100+ wallet addrs  │
-│  → userFills/userFillsByTime → fill-level trade records          │
-├──────────────────────────────────────────────────────────────────┤
-│  2. ANALYSIS (Bulk.Trade Methodology — Python)                   │
-│  Position clustering → wallet metrics → strategy classification  │
-│  → entry trigger reconstruction → cluster analysis → blueprints  │
-├──────────────────────────────────────────────────────────────────┤
-│  3. IMPLEMENTATION (Execution Layer — Flash Trade)               │
-│  Data-driven strategies from blueprints → Flash Trade market     │
-│  intelligence → implement in Rust via Strategy trait              │
-├──────────────────────────────────────────────────────────────────┤
-│  4. VALIDATION (Truth Teller)                                    │
-│  Backtest on HL candles (Sharpe ≥ 1.0) → Paper trade 24h+       │
-│  (positive net PnL after fees) → Human approval → Live           │
-└──────────────────────────────────────────────────────────────────┘
-```
-
-## Intelligence Layer ↔ Execution Layer
-
-| Layer | Platform | Purpose |
-|-------|----------|---------|
-| **Intelligence** | Hyperliquid | Wallet discovery, fill-level analysis, strategy extraction, backtesting |
-| **Execution** | Flash Trade | Market scanning, strategy implementation, paper trading, live execution |
-
-**Why this split?** Hyperliquid has rich per-wallet fill data (`userFills` returns coin, side, px, sz, fee, closedPnl, time, dir) that Flash Trade lacks. We research where the data is richest, execute where the opportunity is.
-
-## Current Strategies
-
-Zekt implements 5 strategies as pluggable Rust modules via the `Strategy` trait. Originally reverse-engineered from profitable wallets scraped from perp DEX leaderboards, these are being replaced with data-driven implementations as blueprints are generated from the analysis pipeline.
-
-| Strategy | Edge | Entry Signal | Typical Hold |
-|----------|------|-------------|-------------|
-| **momentum-scalper** | Price velocity in thin markets | Momentum exceeds threshold over lookback window | Minutes |
-| **lp-consumption** | Dominant LP being consumed in one direction | Utilization velocity + directional concentration | Minutes-hours |
-| **mean-reversion** | Fading momentum spikes after deviation from SMA | Price deviates from SMA then reverses | Minutes |
-| **trend-follower** | Confirmed momentum breakouts with wider stops | Velocity above breakout threshold for N consecutive ticks | Hours |
-| **funding-capture** | Delta-neutral yield from positive funding rates | Annualized funding rate exceeds threshold on HL perps | Hours-days |
-
-**Core loop per strategy:**
-```
-Push price → Detect entry signal → Open position → Monitor exit conditions → Close → Record trade
-```
-
-**Exit conditions:** take profit, stop loss, trailing stop, time stop, momentum loss, reversal detection.
-
-## Recommended Pipeline
+## Pipeline
 
 ```
 1. Discover   → Scrape Hyperliquid leaderboards via QuickNode for profitable wallets
 2. Analyze    → Extract fill-level data, classify strategies, generate blueprints (Python)
 3. Implement  → Build data-driven strategies in Rust from blueprint parameters
-4. Backtest   → Validate strategy parameters against months of Hyperliquid historical data
-5. Paper Trade → Confirm against live Flash Trade prices with real fee estimates
+4. Backtest   → Validate against Hyperliquid historical candles (Sharpe ≥ 1.0)
+5. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
 6. Live       → Execute with real capital (requires human approval)
 ```
 
 ## Quick Start
 
 ```bash
-# Build
-cargo build --release
+cargo build --release                    # Build
+cargo test                               # Run 736 Rust unit tests
+python -m pytest analysis/tests/ -v      # Run 132 Python analysis tests
 
-# Run tests (711 Rust unit tests)
-cargo test
+# Backtest against Hyperliquid historical data
+./target/release/zekt --backtest --strategies momentum-scalper --markets BTC,SOL \
+  --backtest-start 2026-05-01 --backtest-interval 5m --paper-balance 1000
 
-# 1. BACKTEST -- replay Hyperliquid candles through strategies (no wallet needed)
-./target/release/zekt --backtest \
-  --strategies momentum-scalper,mean-reversion \
-  --markets BTC,SOL,ETH \
-  --backtest-start 2026-05-01 --backtest-end 2026-05-15 \
-  --backtest-interval 5m --paper-balance 1000
-
-# 2. PAPER TRADING -- multi-strategy multi-market against live prices
-./target/release/zekt --paper \
-  --strategies momentum-scalper,lp-consumption \
+# Multi-strategy paper trading
+./target/release/zekt --paper --strategies momentum-scalper,lp-consumption \
   --markets SOL,BTC,ETH --paper-balance 1000
 
 # Dry run (single API preview, then exit)
 ./target/release/zekt --dry-run
 
-# 3. LIVE (requires funded Solana wallet with USDC)
+# Live (requires funded Solana wallet with USDC)
 ./target/release/zekt --keypair ~/.config/solana/id.json --market SOL
 
-# Wallet discovery (requires QuickNode endpoint)
+# Wallet discovery
 QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
   cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --output data/wallets-hl.json
 
 # Wallet analysis
 cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
 
-# Python analysis pipeline
-python -m pytest analysis/tests/ -v
+# Pipeline orchestration
+cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
 ```
-
-## Backtesting
-
-Replay Hyperliquid historical OHLCV candles through any strategy. No Solana wallet or RPC needed -- only the public Hyperliquid API.
-
-**Data source:** Hyperliquid `candleSnapshot` API (`api.hyperliquid.xyz/info`)
-- Intervals: 1m, 5m, 15m, 1h, 4h, 1d, 1w
-- Up to 5000 candles per request, auto-paginated
-- Markets: BTC, SOL, ETH, and all Hyperliquid perps
-
-**Backtest engine features:**
-- Walk-forward validation (train/test split for out-of-sample testing)
-- Configurable slippage model (basis points applied to entries and exits)
-- Regime-aware entry filtering (strategy-specific rules based on market conditions)
-- Fee decomposition (entry + exit + borrow + slippage tracked separately)
-- Market regime segmentation (LowVol/Trending/HighVol/Choppy)
-
-**Output:** `data/backtest-results/summary.json` (per-strategy × market stats) and `data/backtest-trades.json` (every simulated trade with entry/exit fees, PnL, hold time, exit reason).
-
-**Metrics tracked:** net PnL, gross PnL, total fees (entry + exit + borrow), fee ratio, win rate, Sharpe ratio, max drawdown, avg hold time, best/worst trade.
-
-## Python Analysis Pipeline
-
-The analysis pipeline implements the Bulk.Trade fill-level methodology in Python:
-
-| Module | Purpose |
-|--------|---------|
-| `analysis/position_clustering.py` | Cluster individual fills into open→close position cycles |
-| `analysis/wallet_metrics.py` | Per-wallet metrics: clip consistency, hold time, win rate, PnL distribution |
-| `analysis/strategy_classifier.py` | Classify wallets into strategy types with evidence |
-| `analysis/entry_reconstruction.py` | Reconstruct entry triggers from HL candle data |
-| `analysis/cluster_analysis.py` | Find groups of wallets running identical strategies |
-| `analysis/blueprint_generator.py` | Generate strategy blueprints with data-derived parameters |
-
-```bash
-# Run analysis tests
-python -m pytest analysis/tests/ -v
-```
-
-## Config
-
-Edit `config/perps.toml`:
-
-```toml
-[agent]
-poll_interval_secs = 300
-log_level = "info"
-
-[flash]
-market = "SOL"
-leverage = 3.0
-input_token = "USDC"
-pool = "Crypto.1"
-slippage_pct = "0.5"
-
-[strategy]
-active = "momentum-scalper"
-clip_size_usd = 1000.0
-# ... (see config/perps.toml for full schema)
-
-# Per-strategy overrides
-[strategy.lp-consumption]
-consumption_velocity_threshold = 0.5
-lp_concentration_min = 0.7
-
-[strategy.mean-reversion]
-mean_lookback = 120
-deviation_threshold_pct = 1.5
-
-[strategy.trend-follower]
-breakout_threshold_pct = 0.25
-confirmation_ticks = 4
-
-[strategy.funding-capture]
-min_annualized_rate_pct = 20.0
-exit_annualized_rate_pct = 5.0
-max_position_hours = 72
-leverage = 1.0
-clip_size_usd = 200.0
-
-[risk]
-max_position_notional_usd = 5000.0
-max_total_notional_usd = 100000.0
-max_daily_loss_usd = 500.0
-max_drawdown_pct = 15.0
-max_weekly_loss_usd = 100000.0
-max_correlated_exposure_pct = 100.0
-consecutive_loss_circuit_breaker = 0
-volatility_sizing_enabled = false
-api_degradation_threshold = 0
-
-[backtest]
-walk_forward_enabled = false
-slippage_bps = 0.0
-regime_filter = true
-```
-
-### QuickNode Configuration
-
-Set the QuickNode HyperCore endpoint URL for Hyperliquid wallet discovery:
-
-```bash
-# Environment variable (recommended)
-export QUICKNODE_HL_URL="https://your-endpoint.quiknode.pro/your-token/"
-
-# Or CLI flag
-cargo run --bin scrape-leaderboards -- --quicknode-url "https://your-endpoint.quiknode.pro/..."
-```
-
-## Supported Markets
-
-Flash Trade Crypto.1 pool: SOL, BTC, ETH, ZEC, BNB, XAU, XAG, EUR, JPY, JUP, BONK, WIF, PENGU, FARTCOIN, and more.
-
-Backtesting supports any Hyperliquid perps market (BTC, SOL, ETH, etc.).
 
 ## Architecture
 
 ```
 src/
-  main.rs              CLI entrypoint (clap) + graceful shutdown (ctrlc)
-  config.rs            TOML config parser (agent, flash, strategy, risk, backtest sections)
-  strategy.rs          Strategy trait + 5 implementations + factory (6000+ lines)
-  funding_capture.rs   Funding rate capture strategy (delta-neutral short perp for yield)
-  pnl_tracker.rs       Combined PnL tracking across all strategies
-  signal.rs            MomentumDetector, MomentumSnapshot, Signal/ExitReason types
-  backtest.rs          Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter)
-  flash_api.rs         Flash Trade REST client (prices, positions, tx builder)
-  hl_info.rs           REST client for Hyperliquid Info API (positions, funding rates, fills)
-  regime.rs            Market regime detector (LowVol/Trending/HighVol/Choppy) with strategy-specific rules
+  main.rs              CLI (clap) + graceful shutdown
+  config.rs            TOML config parser
+  strategy.rs          Strategy trait + 16 implementations + factory
+  signal.rs            MomentumDetector, Signal/ExitReason types
+  backtest.rs          BacktestEngine (walk-forward, slippage, regime filter)
+  flash_api.rs         Flash Trade REST client
+  hl_info.rs           Hyperliquid Info API client
+  imperial.rs          Imperial Solana perps aggregator client (read-only)
+  route_cost.rs        Multi-venue route cost oracle (Flash vs Imperial)
+  liquidation.rs       Liquidation zone data model, 4-source fusion, persistence
+  replay.rs            Replay validation pipeline with promotion gate
+  regime.rs            Market regime detector (LowVol/Trending/HighVol/Choppy)
+  funding_capture.rs   Funding rate capture strategy
+  pnl_tracker.rs       Combined PnL tracking
   executor.rs          Solana keypair loading + tx sign/submit
-  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, weekly loss, correlated exposure, ATR sizing)
-  engine.rs            Live trading loop (poll -> detect -> preview -> build tx -> sign -> monitor)
-  paper.rs             Paper trading engine (single + MultiPaperEngine with position matrix)
-  src/bin/
-    pipeline.rs               Orchestrate all alpha engine components as child processes
-    alpha-scanner.rs          Discover profitable wallets via Dextrabot + Hypurrscan (daemon)
-    copy-trader.rs            Mirror profitable wallet positions in paper mode
-    whale-watcher.rs          Real-time WebSocket alerts for large position changes
-    scrape-leaderboards.rs    Discover profitable wallets via QuickNode HyperCore API + leaderboards
-    analyze-wallet.rs         Classify wallet strategies, generate strategy blueprints
-    scan-markets.rs           Rank Flash Trade markets by LP concentration, leverage, volume
-    scrape-dextrabot.rs       Dextrabot API integration
-analysis/
-  position_clustering.py     Cluster fills into open→close position cycles
-  wallet_metrics.py          Per-wallet metrics (clip consistency, hold time, win rate, PnL)
-  strategy_classifier.py     Classify wallets into strategy types with evidence
-  entry_reconstruction.py    Reconstruct entry triggers from candle data
-  cluster_analysis.py        Find groups of wallets running identical strategies
-  blueprint_generator.py     Generate strategy blueprints from cluster statistics
-  tests/                     Python unit tests (pytest)
+  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, ATR sizing)
+  engine.rs            Live trading loop
+  paper.rs             Paper trading engine
+  src/bin/             CLI binaries (pipeline, alpha-scanner, copy-trader, whale-watcher, etc.)
+analysis/              Python analysis pipeline (clustering, metrics, classification, blueprints)
 ```
 
-## CLI Binaries
+## Strategies (16 total)
 
-```bash
-# Pipeline orchestrator: run all alpha engine components together
-cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
-cargo run --bin pipeline -- --once  # single scan + report
+### Original (5)
+| Strategy | Edge |
+|----------|------|
+| **momentum-scalper** | Price velocity in thin markets |
+| **lp-consumption** | Dominant LP being consumed in one direction |
+| **mean-reversion** | Fading momentum spikes after deviation from SMA |
+| **trend-follower** | Confirmed momentum breakouts with wider stops |
+| **funding-capture** | Delta-neutral yield from positive funding rates |
 
-# Alpha scanner: discover profitable wallets via Dextrabot + Hypurrscan (one-shot or daemon)
-cargo run --bin alpha-scanner -- --once --min-sharpe 2.0 --output data/watchlist.json
+### Data-Driven Blueprint (10)
+| Strategy | Source |
+|----------|--------|
+| **blueprint-scalper** | Cluster-001 (scalping wallets) |
+| **blueprint-mean-revert** | Cluster-004 (mean-reversion wallets) |
+| **blueprint-cluster-002** | Cluster-002 parameters |
+| **blueprint-cluster-003** | Cluster-003 parameters |
+| **blueprint-cluster-005** | Cluster-005 parameters |
+| **blueprint-cluster-006** | Cluster-006 parameters |
+| **blueprint-cluster-007** | Cluster-007 parameters |
+| **blueprint-cluster-008** | Cluster-008 parameters |
+| **blueprint-cluster-009** | Cluster-009 parameters |
+| **blueprint-hft-market-maker** | HFT market-making cluster |
 
-# Copy trader: mirror profitable wallet positions in paper mode
-cargo run --bin copy-trader -- --paper --watchlist data/watchlist.json
+### Liquidation Intelligence (1)
+| Strategy | Edge |
+|----------|------|
+| **liquidation-cascade-hunter** | Liquidation cascade continuation + exhaustion reversal (paper-only, gated) |
 
-# Whale watcher: real-time WebSocket alerts for large position changes
-cargo run --bin whale-watcher -- --watchlist data/watchlist.json --min-notional 10000
+All strategies implement the `Strategy` trait (`detect_entry`, `detect_exit`, `parameters`, `push_price`, `snapshot`). Exit conditions: take profit, stop loss, trailing stop, time stop, momentum loss, reversal detection.
 
-# Discover wallets from Hyperliquid via QuickNode
-cargo run --bin scrape-leaderboards -- --quicknode-url $QUICKNODE_HL_URL --output data/wallets-hl.json
-
-# Analyze wallets and generate strategy blueprints (Rust)
-cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/reports/
-
-# Scan Flash Trade markets for LP concentration
-cargo run --bin scan-markets -- --output data/market-rankings.json
-
-# Run Python analysis pipeline
-python -m pytest analysis/tests/ -v
-```
-
-## Running Modes
-
-| Mode | Flag | What it does | Risk | Data Source |
-|------|------|-------------|------|-------------|
-| Backtest | `--backtest` | Replay historical candles through strategies. Simulated PnL with configurable fees. | Zero | Hyperliquid API |
-| Paper | `--paper` | Full open/monitor/close loop against live prices. Simulated PnL with live fee estimates. | Zero | Flash Trade API |
-| Dry run | `--dry-run` | Single API preview, then exits. Shows price, fee estimate, pool data. | Zero | Flash Trade API |
-| Live | (default) | Real trading with real funds. Signs and submits transactions to mainnet. | Full | Flash Trade API |
-
-**Start with `--backtest`** to validate strategy parameters, then `--paper` to confirm with live prices, then go live.
-
-## Risk Controls
-
-- Daily loss limit with automatic day-boundary reset
-- Weekly loss limit with automatic week-boundary reset
-- Max drawdown circuit breaker
-- Consecutive loss circuit breaker (halts after N consecutive losses, resets on win)
-- API degradation circuit breaker (halts after N consecutive API failures)
-- Correlated exposure limit (caps exposure to correlated market groups)
-- Volatility-based position sizing (ATR-normalized clip sizes in high-vol regimes)
-- Cross-cell position limit (`max_total_notional_usd`) caps total exposure across all strategy×market cells
-- Cooldown after losses, position sizing caps, leverage limits
-- Take profit, stop loss, trailing stop, time stop (per strategy)
-- Native on-chain TP/SL via Flash Trade trigger orders
-- Paper/live divergence detection framework
-- Real USDC balance checks (SPL token account) before every trade
-- Graceful shutdown on SIGINT/SIGTERM
-
-## Testing
-
-**Rust:** 711 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, pipeline orchestration, risk management, regime detection, and combined PnL tracking. Run with `cargo test`.
-
-**Python:** Analysis pipeline unit tests (132 tests). Run with `python -m pytest analysis/tests/ -v`.
-
-## External APIs
+## Key APIs
 
 | API | Purpose | Auth |
 |-----|---------|------|
-| QuickNode HyperCore | HL wallet data, fills, positions (batch methods) | Endpoint URL + Token |
-| Hyperliquid Info | userFills, userFillsByTime, candleSnapshot, clearinghouseState | None (1200 weight/min) |
-| Flash Trade | Prices, positions, tx builder | None |
-| Dune MCP | Market-level analytics | API Key |
-| Solana RPC | Transaction submission | None (public) |
+| **Flash Trade** | Execution target: prices, positions, tx builder | None (public) |
+| **Hyperliquid Info** | Intelligence layer: fills, candles, wallet state, funding rates | None (1200 weight/min) |
+| **Imperial** | Solana perps aggregator: route cost comparison, liquidation OI, orderbook depth | None (public, read-only) |
+| **QuickNode HyperCore** | Batch wallet scanning, fills, portfolio snapshots | Endpoint URL + Token |
+| **Solana RPC** | Transaction submission | None (public) |
 
-## Origin
+86 tradeable symbols across 4 Solana perps venues (Flash Trade, Phoenix, GMTrade, Jupiter).
 
-See `docs/bulktrade-analysis.md` for the original Bulk.Trade devnet analysis. See `docs/MISSION-ALPHA-HUNTER.md` for the Alpha Hunter mission that evolved Zekt from a single-strategy scalper into a multi-strategy platform with backtesting.
+## Testing
+
+**Rust:** 736 unit tests. `cargo test`
+**Python:** 132 analysis tests. `python -m pytest analysis/tests/ -v`
+
+## Configuration
+
+Config is in `config/perps.toml`. Key sections:
+
+```toml
+[agent]          # Poll interval, log level
+[flash]          # Market, leverage, slippage
+[strategy]       # Active strategy, clip size, per-strategy overrides
+[risk]           # Loss limits, circuit breaker, correlated exposure, ATR sizing
+[backtest]       # Walk-forward, slippage model, regime filter
+[imperial]       # Imperial API base URL, timeout, enabled flag
+[route-oracle]   # Cost mode (flash/imperial), slippage BPS
+[liquidation]    # Enabled, snapshot dir, retention, confidence threshold
+[alpha-scanner]  # Wallet discovery settings
+[copy-trader]    # Position mirroring settings
+[whale-watcher]  # WebSocket alert settings
+```
 
 ## License
 
