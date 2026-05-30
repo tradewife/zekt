@@ -11,6 +11,8 @@ pub struct Config {
     pub risk: RiskConfig,
     #[serde(default)]
     pub imperial: ImperialConfig,
+    #[serde(default, rename = "route-oracle")]
+    pub route_oracle: RouteCostConfig,
     #[serde(default, rename = "alpha-scanner")]
     pub alpha_scanner: AlphaScannerConfig,
     #[serde(default, rename = "copy-trader")]
@@ -301,6 +303,84 @@ impl Default for ImperialConfig {
             base_url: default_imperial_base_url(),
             timeout_secs: default_imperial_timeout_secs(),
             cache_ttl_secs: default_imperial_cache_ttl_secs(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Route Cost Oracle config
+// ---------------------------------------------------------------------------
+
+/// Configuration for the Route Cost Oracle.
+///
+/// Controls how `RouteCostOracle` compares trade costs across Solana perps venues
+/// using the Imperial API. The oracle is **disabled by default** — when `enabled = false`,
+/// no Imperial API calls are made and the existing Flash Trade cost model is used.
+///
+/// ```toml
+/// [route-oracle]
+/// enabled = false
+/// improvement_threshold_bps = 5.0
+/// edge_budget_pct = 100.0
+/// staleness_threshold_secs = 60
+/// cache_ttl_secs = 60
+/// cache_bucket_usd = 100.0
+/// excluded_venues = []
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RouteCostConfig {
+    /// Whether the route cost oracle is enabled.
+    /// When false, no Imperial API calls are made and flash-only costs are used everywhere.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Minimum improvement in basis points for the oracle to mark a route as `route_improved`.
+    /// If Imperial route cost is cheaper than Flash cost by >= this many bps, route_improved = true.
+    #[serde(default = "default_improvement_threshold_bps")]
+    pub improvement_threshold_bps: f64,
+
+    /// Maximum route cost as a percentage of the trade's expected edge (profit).
+    /// If route cost exceeds this percentage, the trade is vetoed.
+    /// 100% means never veto (allow all trades). 50% means cost must be < 50% of expected edge.
+    #[serde(default = "default_edge_budget_pct")]
+    pub edge_budget_pct: f64,
+
+    /// How old (in seconds) route data can be before it's considered stale.
+    /// Stale data triggers fallback to Flash-only costs with a degradation log.
+    #[serde(default = "default_staleness_threshold_secs")]
+    pub staleness_threshold_secs: u64,
+
+    /// Cache TTL in seconds. Identical (market, side, size_bucket) queries within
+    /// this window return cached results without new API calls.
+    #[serde(default = "default_route_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+
+    /// Size bucket width in USD for cache grouping. Queries with sizes in the same
+    /// bucket share cache entries (e.g., $100 means $1050 and $1099 share a cache entry).
+    #[serde(default = "default_cache_bucket_usd")]
+    pub cache_bucket_usd: f64,
+
+    /// Venue names to exclude from routing decisions (e.g., ["jupiter"]).
+    #[serde(default)]
+    pub excluded_venues: Vec<String>,
+}
+
+fn default_improvement_threshold_bps() -> f64 { 5.0 }
+fn default_edge_budget_pct() -> f64 { 100.0 }
+fn default_staleness_threshold_secs() -> u64 { 60 }
+fn default_route_cache_ttl_secs() -> u64 { 60 }
+fn default_cache_bucket_usd() -> f64 { 100.0 }
+
+impl Default for RouteCostConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            improvement_threshold_bps: default_improvement_threshold_bps(),
+            edge_budget_pct: default_edge_budget_pct(),
+            staleness_threshold_secs: default_staleness_threshold_secs(),
+            cache_ttl_secs: default_route_cache_ttl_secs(),
+            cache_bucket_usd: default_cache_bucket_usd(),
+            excluded_venues: Vec::new(),
         }
     }
 }
@@ -1049,5 +1129,141 @@ timeout_secs = 10
         assert_eq!(config.imperial.base_url, "https://api.imperial.space");
         assert_eq!(config.imperial.timeout_secs, 30);
         assert_eq!(config.imperial.cache_ttl_secs, 60);
+    }
+
+    // ── Route Cost Oracle config tests ─────────────────────────────────────
+
+    #[test]
+    fn test_route_oracle_config_defaults_when_absent() {
+        let minimal = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+"#;
+        let f = write_temp_toml(minimal);
+        let config = Config::load(f.path()).expect("config without [route-oracle] should parse");
+
+        assert!(!config.route_oracle.enabled, "route oracle should be disabled by default");
+        assert!((config.route_oracle.improvement_threshold_bps - 5.0).abs() < 0.001);
+        assert!((config.route_oracle.edge_budget_pct - 100.0).abs() < 0.001);
+        assert_eq!(config.route_oracle.staleness_threshold_secs, 60);
+        assert_eq!(config.route_oracle.cache_ttl_secs, 60);
+        assert!((config.route_oracle.cache_bucket_usd - 100.0).abs() < 0.001);
+        assert!(config.route_oracle.excluded_venues.is_empty());
+    }
+
+    #[test]
+    fn test_route_oracle_config_custom_values() {
+        let custom = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[route-oracle]
+enabled = true
+improvement_threshold_bps = 10.0
+edge_budget_pct = 50.0
+staleness_threshold_secs = 120
+cache_ttl_secs = 30
+cache_bucket_usd = 200.0
+excluded_venues = ["jupiter", "gmtrade"]
+"#;
+        let f = write_temp_toml(custom);
+        let config = Config::load(f.path()).expect("config with [route-oracle] should parse");
+
+        assert!(config.route_oracle.enabled);
+        assert!((config.route_oracle.improvement_threshold_bps - 10.0).abs() < 0.001);
+        assert!((config.route_oracle.edge_budget_pct - 50.0).abs() < 0.001);
+        assert_eq!(config.route_oracle.staleness_threshold_secs, 120);
+        assert_eq!(config.route_oracle.cache_ttl_secs, 30);
+        assert!((config.route_oracle.cache_bucket_usd - 200.0).abs() < 0.001);
+        assert_eq!(config.route_oracle.excluded_venues, vec!["jupiter", "gmtrade"]);
+    }
+
+    #[test]
+    fn test_route_oracle_config_default_impl() {
+        let default_config = RouteCostConfig::default();
+        assert!(!default_config.enabled);
+        assert!((default_config.improvement_threshold_bps - 5.0).abs() < 0.001);
+        assert!((default_config.edge_budget_pct - 100.0).abs() < 0.001);
+        assert_eq!(default_config.staleness_threshold_secs, 60);
+        assert_eq!(default_config.cache_ttl_secs, 60);
+        assert!((default_config.cache_bucket_usd - 100.0).abs() < 0.001);
+        assert!(default_config.excluded_venues.is_empty());
+    }
+
+    #[test]
+    fn test_route_oracle_config_partial_override() {
+        let partial = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[route-oracle]
+improvement_threshold_bps = 2.0
+"#;
+        let f = write_temp_toml(partial);
+        let config = Config::load(f.path()).expect("partial route-oracle config should parse");
+
+        // Overridden
+        assert!((config.route_oracle.improvement_threshold_bps - 2.0).abs() < 0.001);
+        // Defaults for the rest
+        assert!(!config.route_oracle.enabled);
+        assert!((config.route_oracle.edge_budget_pct - 100.0).abs() < 0.001);
+        assert_eq!(config.route_oracle.staleness_threshold_secs, 60);
     }
 }

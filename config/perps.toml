@@ -381,6 +381,32 @@ timeout_secs = 30
 cache_ttl_secs = 60
 
 # =============================================================================
+# ROUTE COST ORACLE — Multi-venue trade cost comparison
+# =============================================================================
+
+[route-oracle]
+# Enable the route cost oracle. When disabled, no Imperial API calls are made
+# and the existing Flash Trade flat-fee model is used everywhere.
+enabled = false
+# Minimum improvement in basis points for the oracle to flag a route as "improved".
+# If Imperial route cost is cheaper than Flash cost by >= this many bps, route_improved = true.
+improvement_threshold_bps = 5.0
+# Maximum route cost as a percentage of the trade's expected edge (profit).
+# If route cost exceeds this percentage, the trade is vetoed.
+# 100% = never veto; 50% = cost must be < 50% of expected edge.
+edge_budget_pct = 100.0
+# How old (seconds) route data can be before considered stale.
+# Stale data triggers fallback to Flash-only costs with degradation log.
+staleness_threshold_secs = 60
+# Cache TTL in seconds. Identical queries within this window use cached results.
+cache_ttl_secs = 60
+# Size bucket width in USD for cache grouping.
+# Queries with sizes in the same bucket share cache entries.
+cache_bucket_usd = 100.0
+# Venue names to exclude from routing decisions (e.g., ["jupiter"]).
+excluded_venues = []
+
+# =============================================================================
 # FUNDING RATE CAPTURE STRATEGY
 # =============================================================================
 

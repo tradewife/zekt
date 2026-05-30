@@ -16,8 +16,12 @@ mod monitor;
 mod paper;
 #[allow(dead_code)]
 mod pnl_tracker;
+#[allow(dead_code)]
 mod regime;
+#[allow(dead_code)]
 mod risk;
+#[allow(dead_code)]
+mod route_cost;
 mod signal;
 mod strategy;
 
