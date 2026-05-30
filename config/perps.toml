@@ -254,6 +254,35 @@ max_drawdown_pct = 15.0
 # With 4 strategies × 2 markets, each at ~$3000, total could reach $24,000+.
 # Set a cap to prevent excessive exposure from accumulating.
 max_total_notional_usd = 100000.0
+# Maximum weekly loss in USD. Halts trading when cumulative weekly losses exceed this.
+# Default: 100000 (effectively disabled). Set to a meaningful value for small accounts (e.g., 1000).
+max_weekly_loss_usd = 100000.0
+# Maximum correlated exposure as a percentage (0-100) of account balance.
+# Rejects positions in correlated markets when combined exposure exceeds this.
+# Default: 100 (no limit). Set to 50 for small accounts.
+max_correlated_exposure_pct = 100.0
+# Number of consecutive losses before circuit breaker triggers. 0 = disabled.
+# For small accounts, 5 is a reasonable value to prevent tilt spirals.
+consecutive_loss_circuit_breaker = 0
+# Enable ATR-based volatility position sizing. Reduces clip size in high-vol regimes.
+volatility_sizing_enabled = false
+# ATR percentile threshold (0-100) above which clip sizes are reduced.
+volatility_sizing_atr_threshold_pct = 75.0
+# Minimum fraction of clip_size to use even in extreme volatility (0.0-1.0).
+volatility_sizing_min_fraction = 0.25
+# Number of consecutive API failures before trading halts. 0 = disabled.
+api_degradation_threshold = 0
+
+# Correlated market groups for exposure management.
+# Each group lists symbols whose positions count toward a shared exposure limit.
+# Uncomment and adjust for your trading universe.
+# [[risk.correlated_groups]]
+# name = "Solana ecosystem"
+# symbols = ["SOL", "JTO", "JUP"]
+#
+# [[risk.correlated_groups]]
+# name = "L1 majors"
+# symbols = ["ETH", "BTC"]
 
 # =============================================================================
 # BACKTEST ENGINE CONFIGURATION

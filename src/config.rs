@@ -381,11 +381,50 @@ pub struct RiskConfig {
     /// New positions are rejected if total open notional + new position notional > this value.
     #[serde(default = "default_max_total_notional_usd")]
     pub max_total_notional_usd: f64,
+    /// Maximum weekly loss in USD. Trading halts when cumulative weekly losses exceed this.
+    #[serde(default = "default_max_weekly_loss_usd")]
+    pub max_weekly_loss_usd: f64,
+    /// Maximum correlated exposure as a percentage (0-100) of total account balance.
+    /// Rejects new positions in correlated markets when combined exposure exceeds this.
+    #[serde(default = "default_max_correlated_exposure_pct")]
+    pub max_correlated_exposure_pct: f64,
+    /// Number of consecutive losses before circuit breaker triggers. Set to 0 to disable.
+    #[serde(default = "default_consecutive_loss_circuit_breaker")]
+    pub consecutive_loss_circuit_breaker: u32,
+    /// Enable ATR-based volatility position sizing. Reduces clip size in high-vol regimes.
+    #[serde(default)]
+    pub volatility_sizing_enabled: bool,
+    /// ATR percentile threshold (0-100) above which clip sizes are reduced.
+    /// At 100th percentile, clip is reduced to volatility_sizing_min_fraction.
+    #[serde(default = "default_volatility_sizing_atr_threshold_pct")]
+    pub volatility_sizing_atr_threshold_pct: f64,
+    /// Minimum fraction of clip_size to use even in extreme volatility (0.0-1.0).
+    #[serde(default = "default_volatility_sizing_min_fraction")]
+    pub volatility_sizing_min_fraction: f64,
+    /// Number of consecutive API failures before trading halts. Set to 0 to disable.
+    #[serde(default = "default_api_degradation_threshold")]
+    pub api_degradation_threshold: u32,
+    /// Correlated market groups. Each group is a list of symbols that count toward
+    /// correlated exposure. If empty, all markets are treated as independent.
+    #[serde(default)]
+    pub correlated_groups: Vec<CorrelatedGroup>,
 }
 
-fn default_max_total_notional_usd() -> f64 {
-    100_000.0
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CorrelatedGroup {
+    /// Human-readable name for the group (e.g., "L1 majors", "Solana ecosystem").
+    pub name: String,
+    /// Symbols in this group (e.g., ["SOL", "JTO", "JUP"]).
+    pub symbols: Vec<String>,
 }
+
+fn default_max_total_notional_usd() -> f64 { 100_000.0 }
+fn default_max_weekly_loss_usd() -> f64 { 100_000.0 }
+fn default_max_correlated_exposure_pct() -> f64 { 100.0 }
+fn default_consecutive_loss_circuit_breaker() -> u32 { 0 }
+fn default_volatility_sizing_atr_threshold_pct() -> f64 { 75.0 }
+fn default_volatility_sizing_min_fraction() -> f64 { 0.25 }
+fn default_api_degradation_threshold() -> u32 { 0 }
 
 impl Config {
     pub fn load(path: &Path) -> anyhow::Result<Self> {

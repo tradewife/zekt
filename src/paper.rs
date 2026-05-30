@@ -2104,6 +2104,14 @@ mod multi_tests {
             max_daily_loss_usd: 10.0, // Very low limit for testing
             max_drawdown_pct: 50.0,
             max_total_notional_usd: 100000.0,
+            max_weekly_loss_usd: 100000.0,
+            max_correlated_exposure_pct: 100.0,
+            consecutive_loss_circuit_breaker: 0,
+            volatility_sizing_enabled: false,
+            volatility_sizing_atr_threshold_pct: 75.0,
+            volatility_sizing_min_fraction: 0.25,
+            api_degradation_threshold: 0,
+            correlated_groups: vec![],
         };
         let risk = Arc::new(RiskManager::new(risk_config, 1000.0));
 
@@ -2130,6 +2138,14 @@ mod multi_tests {
             max_daily_loss_usd: 1000.0,
             max_drawdown_pct: 5.0, // Very tight drawdown limit
             max_total_notional_usd: 100000.0,
+            max_weekly_loss_usd: 100000.0,
+            max_correlated_exposure_pct: 100.0,
+            consecutive_loss_circuit_breaker: 0,
+            volatility_sizing_enabled: false,
+            volatility_sizing_atr_threshold_pct: 75.0,
+            volatility_sizing_min_fraction: 0.25,
+            api_degradation_threshold: 0,
+            correlated_groups: vec![],
         };
         let risk = Arc::new(RiskManager::new(risk_config, 1000.0));
 
