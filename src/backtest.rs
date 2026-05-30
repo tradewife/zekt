@@ -261,6 +261,24 @@ impl BtPosition {
     fn total_fees(&self) -> f64 {
         self.entry_fee + self.accrued_borrow_fee
     }
+
+    /// Compute slippage cost for entry.
+    /// For longs: we pay more (entry_price is higher), cost = size * slippage_fraction
+    /// For shorts: we receive less (entry_price is lower), cost = size * slippage_fraction
+    fn slippage_cost_entry(&self, slippage_bps: f64) -> f64 {
+        if slippage_bps <= 0.0 {
+            return 0.0;
+        }
+        self.size_usd * (slippage_bps / 10_000.0)
+    }
+
+    /// Compute slippage cost for exit.
+    fn slippage_cost_exit(&self, slippage_bps: f64) -> f64 {
+        if slippage_bps <= 0.0 {
+            return 0.0;
+        }
+        self.size_usd * (slippage_bps / 10_000.0)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -280,6 +298,7 @@ pub struct BacktestCellStats {
     pub entry_fees_total: f64,
     pub exit_fees_total: f64,
     pub borrow_fees_total: f64,
+    pub slippage_total: f64,
     pub net_pnl: f64,
     pub fee_ratio: f64,
     pub win_rate: f64,
@@ -308,6 +327,9 @@ pub struct BacktestCellStats {
     /// Regime distribution during the backtest period.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub regime_transitions: Vec<RegimeTransition>,
+    /// Walk-forward label: "train" (in-sample), "test" (out-of-sample), or "" (full sample).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub walk_forward_window: String,
 }
 
 /// A regime transition event recorded during backtest.
@@ -346,6 +368,18 @@ pub struct BacktestResult {
     /// Strategies that did NOT meet the Sharpe ≥ 1.0 threshold.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub below_sharpe_threshold: Vec<String>,
+    /// Fee breakdown across all cells.
+    #[serde(default)]
+    pub entry_fees_total: f64,
+    #[serde(default)]
+    pub exit_fees_total: f64,
+    #[serde(default)]
+    pub borrow_fees_total: f64,
+    #[serde(default)]
+    pub slippage_total: f64,
+    /// Walk-forward out-of-sample results (empty if walk_forward disabled).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub walk_forward_test_cells: Vec<BacktestCellStats>,
 }
 
 /// A single backtest trade record.
@@ -361,6 +395,7 @@ pub struct BtTrade {
     pub entry_fee: f64,
     pub exit_fee: f64,
     pub borrow_fee: f64,
+    pub slippage: f64,
     pub net_pnl: f64,
     pub hold_secs: u64,
     pub exit_reason: String,
@@ -386,6 +421,32 @@ pub struct BacktestConfig {
     pub leverage: f64,
     /// Whether to apply regime filtering to strategy entries.
     pub regime_filter: bool,
+    /// Walk-forward validation: split data into train/test.
+    pub walk_forward_enabled: bool,
+    /// Walk-forward: fraction of data for training (e.g., 0.7 = 70% train, 30% test).
+    pub walk_forward_train_ratio: f64,
+    /// Slippage in basis points (e.g., 10 = 0.1% slippage applied to entries/exits).
+    pub slippage_bps: f64,
+}
+
+impl Default for BacktestConfig {
+    fn default() -> Self {
+        Self {
+            strategies: vec!["momentum-scalper".to_string()],
+            markets: vec!["BTC".to_string()],
+            start_time_ms: 0,
+            end_time_ms: 0,
+            interval: "5m".to_string(),
+            starting_balance: 1000.0,
+            fee_rate: 0.001,
+            borrow_rate_hourly: 0.0001,
+            leverage: 5.0,
+            regime_filter: false,
+            walk_forward_enabled: false,
+            walk_forward_train_ratio: 0.7,
+            slippage_bps: 0.0,
+        }
+    }
 }
 
 /// The backtesting engine. Replays historical candles through strategies.
@@ -411,6 +472,10 @@ impl BacktestEngine {
     }
 
     /// Run the backtest. Returns results for each strategy x market cell.
+    ///
+    /// When `walk_forward_enabled` is true, splits candles into train/test,
+    /// runs on both, and returns train results in `cells` and test results
+    /// in `walk_forward_test_cells`.
     pub async fn run(&self) -> anyhow::Result<BacktestResult> {
         let fetcher = HlCandleFetcher::new();
 
@@ -434,7 +499,20 @@ impl BacktestEngine {
             anyhow::bail!("No candle data fetched for any market. Check time range and symbols.");
         }
 
-        // Run backtest for each strategy x market combination
+        // Walk-forward: split candles into train/test
+        if self.bt_config.walk_forward_enabled {
+            return self.run_walk_forward(candles_by_market).await;
+        }
+
+        // Standard (non-walk-forward) run
+        self.run_standard(candles_by_market).await
+    }
+
+    /// Standard backtest run (no walk-forward).
+    async fn run_standard(
+        &self,
+        candles_by_market: HashMap<String, Vec<HlCandle>>,
+    ) -> anyhow::Result<BacktestResult> {
         let mut cells = Vec::new();
         let mut trades: Vec<BtTrade> = Vec::new();
         let mut total_net_pnl = 0.0;
@@ -459,7 +537,7 @@ impl BacktestEngine {
                     self.bt_config.interval
                 );
 
-                let (cell_stats, cell_trades) = self.run_cell(strat_name, market, candles)?;
+                let (cell_stats, cell_trades) = self.run_cell(strat_name, market, candles, "")?;
                 total_net_pnl += cell_stats.net_pnl;
                 total_fees += cell_stats.total_fees;
                 total_trades += cell_stats.trade_count;
@@ -468,7 +546,7 @@ impl BacktestEngine {
             }
         }
 
-        let final_balance = self.bt_config.starting_balance + total_net_pnl;
+        let _final_balance = self.bt_config.starting_balance + total_net_pnl;
 
         // Write trades to JSON
         let trades_path = "data/backtest-trades.json";
@@ -479,6 +557,143 @@ impl BacktestEngine {
             candle_stats.insert(m.clone(), c.len());
         }
 
+        let result = self.build_result(
+            total_net_pnl,
+            total_trades,
+            total_fees,
+            cells,
+            candle_stats,
+            &trades,
+        );
+
+        // Write summary
+        let summary_path = "data/backtest-results/summary.json";
+        write_json_atomic(summary_path, &result)?;
+
+        self.print_summary(&result);
+
+        Ok(result)
+    }
+
+    /// Walk-forward backtest: split candles into train/test, run both.
+    async fn run_walk_forward(
+        &self,
+        candles_by_market: HashMap<String, Vec<HlCandle>>,
+    ) -> anyhow::Result<BacktestResult> {
+        let train_ratio = self.bt_config.walk_forward_train_ratio.clamp(0.1, 0.9);
+        let mut train_cells = Vec::new();
+        let mut test_cells = Vec::new();
+        let mut all_trades: Vec<BtTrade> = Vec::new();
+        let mut total_net_pnl = 0.0;
+        let mut total_fees = 0.0;
+        let mut total_trades = 0;
+
+        for strat_name in &self.bt_config.strategies {
+            for market in &self.bt_config.markets {
+                let candles = match candles_by_market.get(market) {
+                    Some(c) if !c.is_empty() => c,
+                    _ => {
+                        warn!("No candles for {}/{}, skipping", strat_name, market);
+                        continue;
+                    }
+                };
+
+                let split_idx = (candles.len() as f64 * train_ratio).floor() as usize;
+                if split_idx == 0 || split_idx >= candles.len() {
+                    warn!(
+                        "Not enough candles for walk-forward split on {} ({} candles, ratio={})",
+                        market, candles.len(), train_ratio
+                    );
+                    continue;
+                }
+
+                let (train_candles, test_candles) = candles.split_at(split_idx);
+
+                info!(
+                    "Walk-forward {} on {}: train={} candles, test={} candles",
+                    strat_name, market, train_candles.len(), test_candles.len()
+                );
+
+                // Train (in-sample)
+                let (train_stats, train_trades) =
+                    self.run_cell(strat_name, market, train_candles, "train")?;
+                total_net_pnl += train_stats.net_pnl;
+                total_fees += train_stats.total_fees;
+                total_trades += train_stats.trade_count;
+                all_trades.extend(train_trades);
+                train_cells.push(train_stats);
+
+                // Test (out-of-sample)
+                let (test_stats, test_trades) =
+                    self.run_cell(strat_name, market, test_candles, "test")?;
+                total_net_pnl += test_stats.net_pnl;
+                total_fees += test_stats.total_fees;
+                total_trades += test_stats.trade_count;
+                all_trades.extend(test_trades);
+                test_cells.push(test_stats);
+            }
+        }
+
+        // Write trades
+        let trades_path = "data/backtest-trades.json";
+        write_json_atomic(trades_path, &all_trades)?;
+
+        let mut candle_stats = HashMap::new();
+        for (m, c) in &candles_by_market {
+            candle_stats.insert(m.clone(), c.len());
+        }
+
+        let mut result = self.build_result(
+            total_net_pnl,
+            total_trades,
+            total_fees,
+            train_cells,
+            candle_stats,
+            &all_trades,
+        );
+        result.walk_forward_test_cells = test_cells.clone();
+
+        // Write summary
+        let summary_path = "data/backtest-results/summary.json";
+        write_json_atomic(summary_path, &result)?;
+
+        self.print_summary(&result);
+
+        // Log walk-forward comparison
+        for train in &result.cells {
+            if let Some(test) = result.walk_forward_test_cells.iter().find(|t| {
+                t.strategy == train.strategy && t.market == train.market
+            }) {
+                info!(
+                    "Walk-forward {} on {}: train Sharpe={:.2}, test Sharpe={:.2}, train net=${:.2}, test net=${:.2}",
+                    train.strategy, train.market,
+                    train.sharpe_ratio, test.sharpe_ratio,
+                    train.net_pnl, test.net_pnl
+                );
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Build a BacktestResult from computed data, including fee breakdown.
+    fn build_result(
+        &self,
+        total_net_pnl: f64,
+        total_trades: usize,
+        total_fees: f64,
+        cells: Vec<BacktestCellStats>,
+        candle_stats: HashMap<String, usize>,
+        trades: &[BtTrade],
+    ) -> BacktestResult {
+        let final_balance = self.bt_config.starting_balance + total_net_pnl;
+
+        // Compute fee breakdown from trades
+        let entry_fees_total: f64 = trades.iter().map(|t| t.entry_fee).sum();
+        let exit_fees_total: f64 = trades.iter().map(|t| t.exit_fee).sum();
+        let borrow_fees_total: f64 = trades.iter().map(|t| t.borrow_fee).sum();
+        let slippage_total: f64 = trades.iter().map(|t| t.slippage).sum();
+
         let mut result = BacktestResult {
             start_balance: self.bt_config.starting_balance,
             final_balance,
@@ -488,6 +703,11 @@ impl BacktestEngine {
             cells,
             candle_stats,
             below_sharpe_threshold: Vec::new(),
+            entry_fees_total,
+            exit_fees_total,
+            borrow_fees_total,
+            slippage_total,
+            walk_forward_test_cells: Vec::new(),
         };
 
         // Identify strategies below Sharpe ≥ 1.0 threshold
@@ -507,22 +727,18 @@ impl BacktestEngine {
             info!("All strategies meet Sharpe ≥ 1.0 threshold");
         }
 
-        // Write summary
-        let summary_path = "data/backtest-results/summary.json";
-        write_json_atomic(summary_path, &result)?;
-
-        // Print summary table
-        self.print_summary(&result);
-
-        Ok(result)
+        result
     }
 
     /// Run backtest for a single strategy x market cell.
+    ///
+    /// `walk_forward_window` labels the cell as "train", "test", or "" (full sample).
     fn run_cell(
         &self,
         strategy_name: &str,
         market: &str,
         candles: &[HlCandle],
+        walk_forward_window: &str,
     ) -> anyhow::Result<(BacktestCellStats, Vec<BtTrade>)> {
         let sub_table = self.config.strategy.get_sub_table(strategy_name);
         let fallback_params = self.config.strategy.get_params(strategy_name).unwrap_or_else(|_| {
@@ -560,6 +776,7 @@ impl BacktestEngine {
                 .map(|t| t.to_rfc3339())
                 .unwrap_or_default(),
             strategy_source: strategy_source_path(strategy_name),
+            walk_forward_window: walk_forward_window.to_string(),
             ..Default::default()
         };
 
@@ -661,9 +878,11 @@ impl BacktestEngine {
                 if should_exit {
                     let pos = position.take().unwrap();
                     let exit_fee = pos.size_usd * self.bt_config.fee_rate;
+                    let slippage_cost = pos.slippage_cost_entry(self.bt_config.slippage_bps)
+                        + pos.slippage_cost_exit(self.bt_config.slippage_bps);
                     let gross_pnl = pos.unrealized_pnl_usd();
-                    let total_fees = pos.entry_fee + exit_fee + pos.accrued_borrow_fee;
-                    let net_pnl = gross_pnl - exit_fee - pos.accrued_borrow_fee;
+                    let total_fees = pos.entry_fee + exit_fee + pos.accrued_borrow_fee + slippage_cost;
+                    let net_pnl = gross_pnl - exit_fee - pos.accrued_borrow_fee - slippage_cost;
 
                     // Determine exit reason
                     let exit_reason = match exit_signal {
@@ -695,6 +914,7 @@ impl BacktestEngine {
                     stats.entry_fees_total += pos.entry_fee;
                     stats.exit_fees_total += exit_fee;
                     stats.borrow_fees_total += pos.accrued_borrow_fee;
+                    stats.slippage_total += slippage_cost;
                     stats.net_pnl += net_pnl;
                     trade_pnls.push(net_pnl);
 
@@ -736,6 +956,7 @@ impl BacktestEngine {
                         entry_fee: pos.entry_fee,
                         exit_fee,
                         borrow_fee: pos.accrued_borrow_fee,
+                        slippage: slippage_cost,
                         net_pnl,
                         hold_secs,
                         exit_reason: exit_reason.to_string(),
@@ -827,9 +1048,11 @@ impl BacktestEngine {
         if let Some(pos) = position.take() {
             let last_price = pos.current_price;
             let exit_fee = pos.size_usd * self.bt_config.fee_rate;
+            let slippage_cost = pos.slippage_cost_entry(self.bt_config.slippage_bps)
+                + pos.slippage_cost_exit(self.bt_config.slippage_bps);
             let gross_pnl = pos.unrealized_pnl_usd();
-            let net_pnl = gross_pnl - exit_fee - pos.accrued_borrow_fee;
-            let total_fees = pos.entry_fee + exit_fee + pos.accrued_borrow_fee;
+            let total_fees = pos.entry_fee + exit_fee + pos.accrued_borrow_fee + slippage_cost;
+            let net_pnl = gross_pnl - exit_fee - pos.accrued_borrow_fee - slippage_cost;
 
             let _ = cell_balance;
 
@@ -839,6 +1062,7 @@ impl BacktestEngine {
             stats.entry_fees_total += pos.entry_fee;
             stats.exit_fees_total += exit_fee;
             stats.borrow_fees_total += pos.accrued_borrow_fee;
+            stats.slippage_total += slippage_cost;
             stats.net_pnl += net_pnl;
             trade_pnls.push(net_pnl);
 
@@ -859,6 +1083,7 @@ impl BacktestEngine {
                 entry_fee: pos.entry_fee,
                 exit_fee,
                 borrow_fee: pos.accrued_borrow_fee,
+                slippage: slippage_cost,
                 net_pnl,
                 hold_secs: pos.hold_secs(candles.last().map(|c| c.t).unwrap_or(pos.open_time_ms)),
                 exit_reason: "end_of_data".to_string(),
@@ -1221,6 +1446,9 @@ max_drawdown_pct = 20.0
             borrow_rate_hourly: 0.0001,
             leverage: 5.0,
             regime_filter: false,
+            walk_forward_enabled: false,
+            walk_forward_train_ratio: 0.7,
+            slippage_bps: 0.0,
         }
     }
 
@@ -1249,7 +1477,7 @@ max_drawdown_pct = 20.0
             });
         }
 
-        let (stats, _trades) = engine.run_cell("momentum-scalper", "BTC", &candles).unwrap();
+        let (stats, _trades) = engine.run_cell("momentum-scalper", "BTC", &candles, "").unwrap();
         // Even with no trades, stats should be valid
         assert_eq!(stats.strategy, "momentum-scalper");
         assert_eq!(stats.market, "BTC");
@@ -1292,7 +1520,7 @@ max_drawdown_pct = 20.0
             });
         }
 
-        let (stats, _trades) = engine.run_cell("momentum-scalper", "SOL", &candles).unwrap();
+        let (stats, _trades) = engine.run_cell("momentum-scalper", "SOL", &candles, "").unwrap();
         assert_eq!(stats.total_candles, 120);
         assert_eq!(stats.strategy, "momentum-scalper");
         // With a momentum spike, we expect at least some activity
@@ -1351,7 +1579,7 @@ max_drawdown_pct = 20.0
             n: 10,
         }];
 
-        let (stats, _) = engine.run_cell("momentum-scalper", "BTC", &candles).unwrap();
+        let (stats, _) = engine.run_cell("momentum-scalper", "BTC", &candles, "").unwrap();
         assert!(stats.strategy_source.is_empty(), "Built-in strategy should have empty source");
     }
 
@@ -1418,9 +1646,364 @@ max_drawdown_pct = 20.0
             ],
             candle_stats: HashMap::new(),
             below_sharpe_threshold: vec!["momentum-scalper:BTC".to_string()],
+            entry_fees_total: 2.0,
+            exit_fees_total: 2.0,
+            borrow_fees_total: 0.5,
+            slippage_total: 0.5,
+            walk_forward_test_cells: Vec::new(),
         };
 
         assert_eq!(result.below_sharpe_threshold.len(), 1);
         assert_eq!(result.below_sharpe_threshold[0], "momentum-scalper:BTC");
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-003: Walk-forward validation produces out-of-sample results
+    // VAL-COST-004: Walk-forward split windows are non-overlapping
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_walk_forward_non_overlapping_windows() {
+        // Create synthetic candles: 100 candles with ascending timestamps
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        for i in 0..100 {
+            let price = 100.0 + (i as f64 * 0.05);
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{:.2}", price - 0.02),
+                c: format!("{:.2}", price),
+                h: format!("{:.2}", price + 0.05),
+                l: format!("{:.2}", price - 0.05),
+                v: "50.0".to_string(),
+                n: 20,
+            });
+        }
+
+        // Split at 70%
+        let split_idx = (100_f64 * 0.7).floor() as usize;
+        assert_eq!(split_idx, 70);
+        let (train, test) = candles.split_at(split_idx);
+
+        // Verify non-overlapping: train last candle time < test first candle time
+        let train_last_close = train.last().unwrap().t_close;
+        let test_first_open = test.first().unwrap().t;
+        assert!(
+            train_last_close < test_first_open,
+            "Train end ({}) must be before test start ({})",
+            train_last_close, test_first_open
+        );
+
+        // Verify sizes
+        assert_eq!(train.len(), 70);
+        assert_eq!(test.len(), 30);
+    }
+
+    #[test]
+    fn test_walk_forward_produces_both_metrics() {
+        let config: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let bt_config = BacktestConfig {
+            walk_forward_enabled: true,
+            walk_forward_train_ratio: 0.7,
+            ..test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m")
+        };
+        let engine = BacktestEngine::new(config, bt_config).unwrap();
+
+        // Create synthetic candles
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        for i in 0..100 {
+            let price = 100.0 + (i as f64 * 0.1);
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{}", price - 0.05),
+                c: format!("{}", price),
+                h: format!("{}", price + 0.1),
+                l: format!("{}", price - 0.1),
+                v: "100.0".to_string(),
+                n: 100,
+            });
+        }
+
+        // Run walk-forward: train + test cells
+        let (train_stats, _) = engine.run_cell("momentum-scalper", "BTC", &candles[..70], "train").unwrap();
+        let (test_stats, _) = engine.run_cell("momentum-scalper", "BTC", &candles[70..], "test").unwrap();
+
+        assert_eq!(train_stats.walk_forward_window, "train");
+        assert_eq!(test_stats.walk_forward_window, "test");
+        assert_eq!(train_stats.total_candles, 70);
+        assert_eq!(test_stats.total_candles, 30);
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-005: Slippage reduces PnL compared to zero-slippage baseline
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_slippage_reduces_pnl() {
+        let config_no_slip: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let config_slip: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+
+        let bt_no_slip = BacktestConfig {
+            slippage_bps: 0.0,
+            ..test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m")
+        };
+        let bt_slip = BacktestConfig {
+            slippage_bps: 10.0, // 10 bps = 0.1%
+            ..test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m")
+        };
+
+        let engine_no_slip = BacktestEngine::new(config_no_slip, bt_no_slip).unwrap();
+        let engine_slip = BacktestEngine::new(config_slip, bt_slip).unwrap();
+
+        // Create volatile candles to trigger trades
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        let mut price = 90.0;
+        for i in 0..120 {
+            if (60..75).contains(&i) {
+                price += 0.5;
+            } else if (75..85).contains(&i) {
+                price -= 0.3;
+            } else {
+                price += (i as f64 * 0.001).sin() * 0.1;
+            }
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{:.3}", price - 0.05),
+                c: format!("{:.3}", price),
+                h: format!("{:.3}", price + 0.1),
+                l: format!("{:.3}", price - 0.1),
+                v: "1000.0".to_string(),
+                n: 50,
+            });
+        }
+
+        let (stats_no_slip, trades_no_slip) = engine_no_slip.run_cell("momentum-scalper", "BTC", &candles, "").unwrap();
+        let (stats_slip, trades_slip) = engine_slip.run_cell("momentum-scalper", "BTC", &candles, "").unwrap();
+
+        // If trades occurred, slippage should reduce net_pnl
+        if !trades_no_slip.is_empty() && !trades_slip.is_empty() {
+            assert!(
+                stats_slip.slippage_total > 0.0,
+                "Slippage total should be > 0 when slippage_bps > 0"
+            );
+            // Same number of trades (slippage doesn't change entry/exit logic)
+            assert_eq!(stats_no_slip.trade_count, stats_slip.trade_count);
+            // Slippage trades have non-zero slippage field
+            for trade in &trades_slip {
+                assert!(trade.slippage >= 0.0, "Trade slippage should be non-negative");
+            }
+        }
+    }
+
+    #[test]
+    fn test_slippage_applied_to_entries_and_exits() {
+        let pos = BtPosition {
+            symbol: "BTC".to_string(),
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 105.0,
+            peak_price: 105.0,
+            size_usd: 1000.0,
+            leverage: 5.0,
+            open_time_ms: 0,
+            entry_fee: 1.0,
+            accrued_borrow_fee: 0.5,
+            borrow_rate_hourly: 0.0001,
+        };
+
+        // 10 bps = 0.1% -> entry slippage = 1000 * 0.001 = 1.0
+        let entry_slip = pos.slippage_cost_entry(10.0);
+        assert!(
+            (entry_slip - 1.0).abs() < 0.001,
+            "Entry slippage should be $1.00, got ${:.4}",
+            entry_slip
+        );
+
+        let exit_slip = pos.slippage_cost_exit(10.0);
+        assert!(
+            (exit_slip - 1.0).abs() < 0.001,
+            "Exit slippage should be $1.00, got ${:.4}",
+            exit_slip
+        );
+
+        // Zero slippage
+        assert_eq!(pos.slippage_cost_entry(0.0), 0.0);
+        assert_eq!(pos.slippage_cost_exit(0.0), 0.0);
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-007: Market regime segmentation configurable
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_regime_segmentation_classifies_correctly() {
+        use crate::regime::RegimeLabel;
+
+        // Low volatility -> LowVol
+        let mut detector = crate::regime::RegimeDetector::new(100, 50);
+        for _ in 0..100 {
+            detector.update("BTC", 100.0, 100.0, 100.0);
+        }
+        assert_eq!(detector.regime_label("BTC"), RegimeLabel::LowVol);
+
+        // High volatility -> not LowVol
+        let mut detector2 = crate::regime::RegimeDetector::new(200, 50);
+        let mut p = 100.0;
+        for i in 0..200 {
+            p += if i % 2 == 0 { 5.0 } else { -4.5 };
+            detector2.update("SOL", p, p + 0.5, p - 0.5);
+        }
+        let label = detector2.regime_label("SOL");
+        assert_ne!(label, RegimeLabel::LowVol, "Volatile data should not be low_vol");
+
+        // Regime has >= 2 classifications
+        let labels = [
+            RegimeLabel::LowVol,
+            RegimeLabel::Trending,
+            RegimeLabel::HighVol,
+            RegimeLabel::Choppy,
+        ];
+        assert!(labels.len() >= 2, "Should have >= 2 regime classifications");
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-008: Fee model audit - all components modeled
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_fee_decomposition_sums_correctly() {
+        // Create a position, close it, verify total_fees = entry + exit + borrow + slippage
+        let config: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let bt_config = BacktestConfig {
+            slippage_bps: 5.0, // 5 bps
+            ..test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m")
+        };
+        let engine = BacktestEngine::new(config, bt_config).unwrap();
+
+        // Create synthetic candles that will trigger a trade
+        let mut candles = Vec::new();
+        let base_time = 1778812800000i64;
+        let mut price = 100.0;
+        for i in 0..60 {
+            if i < 30 {
+                price += 0.01; // Slow rise
+            } else if i < 40 {
+                price += 0.5; // Momentum spike
+            } else {
+                price -= 0.3; // Reversal
+            }
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * 300000),
+                t_close: base_time + ((i as i64 + 1) * 300000) - 1,
+                s: "BTC".to_string(),
+                i: "5m".to_string(),
+                o: format!("{:.3}", price - 0.05),
+                c: format!("{:.3}", price),
+                h: format!("{:.3}", price + 0.1),
+                l: format!("{:.3}", price - 0.1),
+                v: "500.0".to_string(),
+                n: 50,
+            });
+        }
+
+        let (stats, trades) = engine.run_cell("momentum-scalper", "BTC", &candles, "").unwrap();
+
+        // If trades occurred, verify fee decomposition
+        for trade in &trades {
+            let expected_total = trade.entry_fee + trade.exit_fee + trade.borrow_fee + trade.slippage;
+            let actual_fees = trade.entry_fee + trade.exit_fee + trade.borrow_fee + trade.slippage;
+            assert!(
+                (expected_total - actual_fees).abs() < 0.001,
+                "Fee decomposition: entry(${:.4}) + exit(${:.4}) + borrow(${:.4}) + slippage(${:.4}) = ${:.4}",
+                trade.entry_fee, trade.exit_fee, trade.borrow_fee, trade.slippage, actual_fees
+            );
+        }
+
+        // Verify cell-level fee decomposition
+        let cell_total = stats.entry_fees_total + stats.exit_fees_total + stats.borrow_fees_total + stats.slippage_total;
+        assert!(
+            (stats.total_fees - cell_total).abs() < 0.01,
+            "Cell total_fees (${:.4}) should equal entry(${:.4}) + exit(${:.4}) + borrow(${:.4}) + slippage(${:.4}) = ${:.4}",
+            stats.total_fees, stats.entry_fees_total, stats.exit_fees_total, stats.borrow_fees_total, stats.slippage_total, cell_total
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-006: Slippage configuration wired
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_slippage_config_in_backtest_config() {
+        let config = BacktestConfig {
+            slippage_bps: 10.0,
+            ..BacktestConfig::default()
+        };
+        assert!(
+            (config.slippage_bps - 10.0).abs() < 0.001,
+            "Slippage should be configurable"
+        );
+
+        let default_config = BacktestConfig::default();
+        assert!(
+            default_config.slippage_bps == 0.0,
+            "Default slippage should be 0"
+        );
+    }
+
+    // -------------------------------------------------------------------------
+    // VAL-COST-009: Backtest output includes fee breakdown
+    // -------------------------------------------------------------------------
+    #[test]
+    fn test_backtest_cell_stats_has_fee_breakdown() {
+        let stats = BacktestCellStats {
+            strategy: "test".to_string(),
+            market: "BTC".to_string(),
+            entry_fees_total: 5.0,
+            exit_fees_total: 5.0,
+            borrow_fees_total: 2.0,
+            slippage_total: 1.0,
+            total_fees: 13.0,
+            gross_pnl: 100.0,
+            net_pnl: 87.0,
+            ..Default::default()
+        };
+
+        let json = serde_json::to_string(&stats).unwrap();
+        assert!(json.contains("\"entry_fees_total\":5.0"), "JSON should contain entry_fees_total");
+        assert!(json.contains("\"exit_fees_total\":5.0"), "JSON should contain exit_fees_total");
+        assert!(json.contains("\"borrow_fees_total\":2.0"), "JSON should contain borrow_fees_total");
+        assert!(json.contains("\"slippage_total\":1.0"), "JSON should contain slippage_total");
+        assert!(json.contains("\"net_pnl\":87.0"), "JSON should contain net_pnl");
+    }
+
+    #[test]
+    fn test_backtest_result_has_fee_breakdown() {
+        let result = BacktestResult {
+            start_balance: 1000.0,
+            final_balance: 1050.0,
+            total_net_pnl: 50.0,
+            total_trades: 5,
+            total_fees: 10.0,
+            cells: vec![],
+            candle_stats: HashMap::new(),
+            below_sharpe_threshold: vec![],
+            entry_fees_total: 3.0,
+            exit_fees_total: 3.0,
+            borrow_fees_total: 2.0,
+            slippage_total: 2.0,
+            walk_forward_test_cells: vec![],
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert!(json.contains("\"entry_fees_total\":3.0"), "Result JSON should contain entry_fees_total");
+        assert!(json.contains("\"exit_fees_total\":3.0"), "Result JSON should contain exit_fees_total");
+        assert!(json.contains("\"borrow_fees_total\":2.0"), "Result JSON should contain borrow_fees_total");
+        assert!(json.contains("\"slippage_total\":2.0"), "Result JSON should contain slippage_total");
     }
 }

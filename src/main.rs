@@ -498,6 +498,9 @@ async fn run_backtest(
         borrow_rate_hourly: 0.0001, // 0.01%/hr default
         leverage,
         regime_filter: true, // Always enable regime filtering
+        walk_forward_enabled: false,
+        walk_forward_train_ratio: 0.7,
+        slippage_bps: 0.0, // Default: no slippage; set via config to enable
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;

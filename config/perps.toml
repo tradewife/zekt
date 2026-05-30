@@ -256,6 +256,22 @@ max_drawdown_pct = 15.0
 max_total_notional_usd = 100000.0
 
 # =============================================================================
+# BACKTEST ENGINE CONFIGURATION
+# =============================================================================
+
+[backtest]
+# Walk-forward validation: split candle data into train/test for out-of-sample testing.
+# When enabled, backtest results include both in-sample (train) and out-of-sample (test) metrics.
+walk_forward_enabled = false
+# Fraction of data for training (0.7 = 70% train, 30% test).
+walk_forward_train_ratio = 0.7
+# Slippage in basis points applied to every entry and exit (e.g., 10 = 0.1%).
+# Set to 0 for no slippage. Typical crypto perps slippage: 2-10 bps.
+slippage_bps = 0.0
+# Whether to apply regime filtering during backtests.
+regime_filter = true
+
+# =============================================================================
 # ALPHA SCANNER — Wallet discovery configuration
 # =============================================================================
 

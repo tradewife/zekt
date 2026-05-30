@@ -305,3 +305,25 @@ timeout 30 ./target/release/zekt --paper --strategies momentum-scalper --markets
 | Small account survival | High | $1000 account can be destroyed quickly without weekly limits, consecutive loss breakers. | M3: comprehensive risk engine upgrade |
 | Slippage unknowns | Medium | Backtest assumes zero slippage. Real execution may eliminate marginal edge. | M2: add slippage model |
 | Single venue risk | Low | Only Flash Trade. No fallback if venue degrades. | Future: evaluate Jupiter Perps as alternative |
+
+---
+
+## 10. Strategy Confidence Table (M2 — VAL-COST-010)
+
+Each strategy ranked by evidence quality. Confidence levels: HIGH (data-driven + validated), MEDIUM (data-driven but unvalidated), LOW (placeholder parameters, no live evidence).
+
+| Strategy | Confidence | Evidence Quality | Fee Sensitivity | Drawdown Profile | Failure Regimes | Key Risk |
+|----------|-----------|-----------------|----------------|------------------|----------------|---------|
+| momentum-scalper | LOW | Placeholder params, no live PnL data | High — thin margins eroded by fees | Unknown — no backtest validation yet | Choppy/range markets; false breakouts | Overfit to noise in 5m candles |
+| lp-consumption | LOW | Placeholder params, theoretical edge only | Medium — depends on LP depth | Shallow (tight TP/SL) | Low-liquidity markets, thin books | Edge may not exist on Flash Trade |
+| mean-reversion | LOW | Placeholder params, no data lineage | High — mean reversion margins thin | Moderate — fat tails can hit SL hard | Strong trending markets; regime change | Assumes stationarity that crypto lacks |
+| trend-follower | LOW | Placeholder params, theoretical edge | Low — wide TP/SL, fewer trades | Deep (holds through drawdowns) | Choppy/range markets; whipsaws | Low win rate requires strong winners |
+| funding-capture | MEDIUM | Live HL funding data, delta-neutral theory | Low — funding yields offset fees | Shallow (capped by SL) | Low funding rate periods; adverse price moves | No spot hedge → directional exposure |
+| blueprint-scalper | MEDIUM | Cluster-001 data: 12 wallets, 4711 trades, conf=0.73 | High — 0.14% SL is very tight | Unknown — need walk-forward validation | Regime shift from cluster conditions | Overfit to historical HL data |
+| blueprint-mean-revert | MEDIUM | Cluster-004 data: 5 wallets, 518 trades, conf=0.83 | High — 0.29% SL is very tight | Unknown — need walk-forward validation | Regime shift from cluster conditions | Small sample (5 wallets) |
+
+### Assessment Summary
+- **No strategy has HIGH confidence** — all are either placeholder-based or data-driven but unvalidated with walk-forward testing
+- **Fee sensitivity is the primary concern** — most strategies have tight TP/SL where fees dominate
+- **M2 deliverables (walk-forward, slippage model, fee audit) are essential** before any strategy can be promoted
+- **Recommended M4 focus**: Walk-forward parameter stability for blueprint strategies (highest ROI)
