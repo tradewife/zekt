@@ -367,6 +367,20 @@ base_url = "https://api.hypurrscan.io"
 refresh_url = "https://hypurrscan.io/api/auth/refresh"
 
 # =============================================================================
+# IMPERIAL — Solana perps aggregator API (read-only route/cost oracle)
+# =============================================================================
+
+[imperial]
+# Enable Imperial API integration. When disabled, no API calls are made.
+enabled = false
+# Base URL for the Imperial API (public, no auth required).
+base_url = "https://api.imperial.space"
+# HTTP request timeout in seconds.
+timeout_secs = 30
+# Cache TTL for route responses in seconds.
+cache_ttl_secs = 60
+
+# =============================================================================
 # FUNDING RATE CAPTURE STRATEGY
 # =============================================================================
 

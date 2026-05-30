@@ -9,6 +9,8 @@ mod hl_info;
 #[allow(dead_code)]
 mod hl_paper;
 #[allow(dead_code)]
+mod imperial;
+#[allow(dead_code)]
 mod market_data;
 mod monitor;
 mod paper;

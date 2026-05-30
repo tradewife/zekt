@@ -9,6 +9,8 @@ pub struct Config {
     pub flash: FlashConfig,
     pub strategy: StrategySection,
     pub risk: RiskConfig,
+    #[serde(default)]
+    pub imperial: ImperialConfig,
     #[serde(default, rename = "alpha-scanner")]
     pub alpha_scanner: AlphaScannerConfig,
     #[serde(default, rename = "copy-trader")]
@@ -255,6 +257,50 @@ impl Default for HypurrscanConfig {
             refresh_token_env_var: default_refresh_token_env_var(),
             base_url: default_hypurrscan_base_url(),
             refresh_url: default_hypurrscan_refresh_url(),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Imperial config
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ImperialConfig {
+    /// Whether the Imperial integration is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Base URL for the Imperial API.
+    #[serde(default = "default_imperial_base_url")]
+    pub base_url: String,
+
+    /// HTTP request timeout in seconds.
+    #[serde(default = "default_imperial_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Cache TTL for route responses in seconds.
+    #[serde(default = "default_imperial_cache_ttl_secs")]
+    pub cache_ttl_secs: u64,
+}
+
+fn default_imperial_base_url() -> String {
+    crate::imperial::IMPERIAL_BASE_URL.to_string()
+}
+fn default_imperial_timeout_secs() -> u64 {
+    crate::imperial::IMPERIAL_DEFAULT_TIMEOUT_SECS
+}
+fn default_imperial_cache_ttl_secs() -> u64 {
+    60
+}
+
+impl Default for ImperialConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            base_url: default_imperial_base_url(),
+            timeout_secs: default_imperial_timeout_secs(),
+            cache_ttl_secs: default_imperial_cache_ttl_secs(),
         }
     }
 }
@@ -862,5 +908,146 @@ max_positions = 5
         let mr = sub_tables.get("mean-reversion").unwrap().as_table().unwrap();
         assert!(mr.contains_key("mean_lookback"));
         assert!(mr.contains_key("deviation_threshold_pct"));
+    }
+
+    // ── Imperial config tests ──────────────────────────────────────────────
+
+    #[test]
+    fn test_imperial_config_defaults_when_absent() {
+        let minimal = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+"#;
+        let f = write_temp_toml(minimal);
+        let config = Config::load(f.path()).expect("config without [imperial] should parse");
+
+        // Imperial section gets defaults
+        assert!(!config.imperial.enabled, "imperial should be disabled by default");
+        assert_eq!(config.imperial.base_url, "https://api.imperial.space");
+        assert_eq!(config.imperial.timeout_secs, 30);
+        assert_eq!(config.imperial.cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_imperial_config_custom_values() {
+        let custom = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[imperial]
+enabled = true
+base_url = "http://test.example.com"
+timeout_secs = 15
+cache_ttl_secs = 120
+"#;
+        let f = write_temp_toml(custom);
+        let config = Config::load(f.path()).expect("config with [imperial] should parse");
+
+        assert!(config.imperial.enabled);
+        assert_eq!(config.imperial.base_url, "http://test.example.com");
+        assert_eq!(config.imperial.timeout_secs, 15);
+        assert_eq!(config.imperial.cache_ttl_secs, 120);
+    }
+
+    #[test]
+    fn test_imperial_config_partial_override() {
+        let partial = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[imperial]
+timeout_secs = 10
+"#;
+        let f = write_temp_toml(partial);
+        let config = Config::load(f.path()).expect("partial imperial config should parse");
+
+        // Overridden
+        assert_eq!(config.imperial.timeout_secs, 10);
+        // Defaults for the rest
+        assert!(!config.imperial.enabled);
+        assert_eq!(config.imperial.base_url, "https://api.imperial.space");
+        assert_eq!(config.imperial.cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_imperial_config_default_impl() {
+        let default_config = ImperialConfig::default();
+        assert!(!default_config.enabled);
+        assert_eq!(default_config.base_url, "https://api.imperial.space");
+        assert_eq!(default_config.timeout_secs, 30);
+        assert_eq!(default_config.cache_ttl_secs, 60);
+    }
+
+    #[test]
+    fn test_real_perps_toml_imperial_section() {
+        let config_path = Path::new("config/perps.toml");
+        if !config_path.exists() {
+            eprintln!("Skipping: config/perps.toml not found");
+            return;
+        }
+        let config = Config::load(config_path).expect("real perps.toml should load");
+
+        // Imperial section from perps.toml
+        assert!(!config.imperial.enabled, "imperial should be disabled by default in perps.toml");
+        assert_eq!(config.imperial.base_url, "https://api.imperial.space");
+        assert_eq!(config.imperial.timeout_secs, 30);
+        assert_eq!(config.imperial.cache_ttl_secs, 60);
     }
 }
