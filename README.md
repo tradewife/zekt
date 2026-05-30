@@ -69,7 +69,7 @@ Push price → Detect entry signal → Open position → Monitor exit conditions
 # Build
 cargo build --release
 
-# Run tests (560 unit tests)
+# Run tests (711 Rust unit tests)
 cargo test
 
 # 1. BACKTEST -- replay Hyperliquid candles through strategies (no wallet needed)
@@ -109,6 +109,13 @@ Replay Hyperliquid historical OHLCV candles through any strategy. No Solana wall
 - Intervals: 1m, 5m, 15m, 1h, 4h, 1d, 1w
 - Up to 5000 candles per request, auto-paginated
 - Markets: BTC, SOL, ETH, and all Hyperliquid perps
+
+**Backtest engine features:**
+- Walk-forward validation (train/test split for out-of-sample testing)
+- Configurable slippage model (basis points applied to entries and exits)
+- Regime-aware entry filtering (strategy-specific rules based on market conditions)
+- Fee decomposition (entry + exit + borrow + slippage tracked separately)
+- Market regime segmentation (LowVol/Trending/HighVol/Choppy)
 
 **Output:** `data/backtest-results/summary.json` (per-strategy × market stats) and `data/backtest-trades.json` (every simulated trade with entry/exit fees, PnL, hold time, exit reason).
 
@@ -178,6 +185,16 @@ max_position_notional_usd = 5000.0
 max_total_notional_usd = 100000.0
 max_daily_loss_usd = 500.0
 max_drawdown_pct = 15.0
+max_weekly_loss_usd = 100000.0
+max_correlated_exposure_pct = 100.0
+consecutive_loss_circuit_breaker = 0
+volatility_sizing_enabled = false
+api_degradation_threshold = 0
+
+[backtest]
+walk_forward_enabled = false
+slippage_bps = 0.0
+regime_filter = true
 ```
 
 ### QuickNode Configuration
@@ -203,15 +220,17 @@ Backtesting supports any Hyperliquid perps market (BTC, SOL, ETH, etc.).
 ```
 src/
   main.rs              CLI entrypoint (clap) + graceful shutdown (ctrlc)
-  config.rs            TOML config parser (agent, flash, strategy, risk)
+  config.rs            TOML config parser (agent, flash, strategy, risk, backtest sections)
   strategy.rs          Strategy trait + 5 implementations + factory (6000+ lines)
   funding_capture.rs   Funding rate capture strategy (delta-neutral short perp for yield)
   pnl_tracker.rs       Combined PnL tracking across all strategies
   signal.rs            MomentumDetector, MomentumSnapshot, Signal/ExitReason types
-  backtest.rs          Hyperliquid candle fetcher + BacktestEngine (1170 lines)
+  backtest.rs          Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter)
   flash_api.rs         Flash Trade REST client (prices, positions, tx builder)
+  hl_info.rs           REST client for Hyperliquid Info API (positions, funding rates, fills)
+  regime.rs            Market regime detector (LowVol/Trending/HighVol/Choppy) with strategy-specific rules
   executor.rs          Solana keypair loading + tx sign/submit
-  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, daily reset, trade journal)
+  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, weekly loss, correlated exposure, ATR sizing)
   engine.rs            Live trading loop (poll -> detect -> preview -> build tx -> sign -> monitor)
   paper.rs             Paper trading engine (single + MultiPaperEngine with position matrix)
   src/bin/
@@ -276,19 +295,25 @@ python -m pytest analysis/tests/ -v
 ## Risk Controls
 
 - Daily loss limit with automatic day-boundary reset
+- Weekly loss limit with automatic week-boundary reset
 - Max drawdown circuit breaker
+- Consecutive loss circuit breaker (halts after N consecutive losses, resets on win)
+- API degradation circuit breaker (halts after N consecutive API failures)
+- Correlated exposure limit (caps exposure to correlated market groups)
+- Volatility-based position sizing (ATR-normalized clip sizes in high-vol regimes)
 - Cross-cell position limit (`max_total_notional_usd`) caps total exposure across all strategy×market cells
 - Cooldown after losses, position sizing caps, leverage limits
 - Take profit, stop loss, trailing stop, time stop (per strategy)
 - Native on-chain TP/SL via Flash Trade trigger orders
+- Paper/live divergence detection framework
 - Real USDC balance checks (SPL token account) before every trade
 - Graceful shutdown on SIGINT/SIGTERM
 
 ## Testing
 
-**Rust:** 560 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, pipeline orchestration, and combined PnL tracking. Run with `cargo test`.
+**Rust:** 711 unit tests covering all strategies, backtesting, paper trading, wallet analysis, alpha scanning, copy trading, whale watching, pipeline orchestration, risk management, regime detection, and combined PnL tracking. Run with `cargo test`.
 
-**Python:** Analysis pipeline unit tests. Run with `python -m pytest analysis/tests/ -v`.
+**Python:** Analysis pipeline unit tests (132 tests). Run with `python -m pytest analysis/tests/ -v`.
 
 ## External APIs
 

@@ -196,6 +196,19 @@ cargo run --bin pipeline -- --once  # single scan + report
 - `risk.max_total_notional_usd` = 100000
 - `risk.max_daily_loss_usd` = 500
 - `risk.max_drawdown_pct` = 15%
+- `risk.max_weekly_loss_usd` = 100000 (effectively disabled)
+- `risk.max_correlated_exposure_pct` = 100 (no limit)
+- `risk.consecutive_loss_circuit_breaker` = 0 (disabled)
+- `risk.volatility_sizing_enabled` = false
+- `risk.volatility_sizing_atr_threshold_pct` = 75
+- `risk.volatility_sizing_min_fraction` = 0.25
+- `risk.api_degradation_threshold` = 0 (disabled)
+
+### Backtest Engine
+- `backtest.walk_forward_enabled` = false
+- `backtest.walk_forward_train_ratio` = 0.7
+- `backtest.slippage_bps` = 0.0
+- `backtest.regime_filter` = true
 
 ### Pipeline (orchestrator)
 - `pipeline.paper_balance` = 1000
@@ -285,11 +298,12 @@ kill -9 <pid>   # Emergency
 - `src/funding_capture.rs` — Funding rate capture strategy (40 tests)
 - `src/pnl_tracker.rs` — Combined PnL tracking across all strategies (10 tests)
 - `src/hl_info.rs` — Hyperliquid Info API client (positions, funding rates, fills)
-- `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (1170 lines, 15 tests)
+- `src/backtest.rs` — Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter)
+- `src/regime.rs` — Market regime detector (LowVol/Trending/HighVol/Choppy) + strategy-specific compatibility rules
 - `src/paper.rs` — Paper trading: single engine + MultiPaperEngine (1684 lines, 14 tests)
 - `src/engine.rs` — Live trading engine
 - `src/signal.rs` — MomentumDetector, MomentumSnapshot, Signal/ExitReason types
-- `src/risk.rs` — Risk manager (daily reset, fee tracking, position size validation)
+- `src/risk.rs` — Risk manager (daily/weekly reset, circuit breaker, consecutive loss, correlated exposure, ATR sizing, API degradation, divergence tracking)
 - `src/flash_api.rs` — Flash Trade REST client
 - `src/executor.rs` — Solana tx signing
 - `src/config.rs` — TOML config parser
@@ -318,48 +332,62 @@ kill -9 <pid>   # Emergency
 
 **M5 (Completed): Integration + Validation** — Pipeline orchestrator (`pipeline.rs`), combined PnL tracker (`pnl_tracker.rs`), wired alpha-scanner → watchlist → copy-trader + whale-watcher. 560 tests pass. `[pipeline]` config section.
 
-**M6: Real HL Wallet Discovery via QuickNode** — Replace fake seed addresses with QuickNode HyperCore API. Batch scan 100+ wallets.
+**M6 (Completed): QuickNode + Python Pipeline** — QuickNode HyperCore API integration for batch wallet scanning. Python Bulk.Trade analysis pipeline (position clustering, wallet metrics, strategy classification, entry reconstruction, cluster analysis, blueprint generation). 132 Python tests.
 
-**M7: Fill-Level Deep Analysis (Python)** — Implement Bulk.Trade methodology: position clustering, wallet metrics, strategy classification, entry reconstruction, cluster analysis, blueprint generation.
+**M7 (Completed): Flash Trade Market Intelligence + Data-Driven Strategies** — Market scanner, data-driven strategies from blueprints (blueprint-scalper from cluster-001, blueprint-mean-revert from cluster-004). Every parameter traceable to wallet cluster.
 
-**M8: Flash Trade Market Intelligence + Strategy Implementation** — Market scanner, data-driven strategies from blueprints, every parameter traceable to wallet cluster.
-
-**M9: Validation + Monitoring Foundation** — Backtest (Sharpe ≥ 1.0), paper trade 24h+ (positive net PnL), monitoring loop skeleton.
+**M8 (Completed): Bootstrap Alpha Compounding System** — 7-milestone mission covering:
+- Cost model + backtest integrity (walk-forward validation, slippage model, regime segmentation, fee audit)
+- Risk + kill-switch upgrade (weekly loss, correlated exposure, consecutive loss breaker, ATR sizing, API degradation, divergence framework)
+- Regime-aware entry filter for all strategies (90.6% net loss reduction, 93% fee drag reduction)
+- Tooling integration review (fintool REJECT, senpi-skills DEFER, atlas-gic REJECT)
+- Paper-trading promotion gate (runbook, thresholds, monitoring checklist, human approval)
+- Final mission report with before/after metrics, next missions ranked by impact
 
 ## Testing
-**Rust:** 560 unit tests total. Run with `cargo test`.
+**Rust:** 711 unit tests total (414 main binary + 297 binary tests). Run with `cargo test`.
 - strategy.rs: 63 tests
 - funding_capture.rs: 40 tests
 - pnl_tracker.rs: 10 tests
 - paper.rs: 14 tests
-- backtest.rs: 15 tests
+- backtest.rs: 17 tests (walk-forward, slippage, regime filter, fee decomposition)
+- regime.rs: 21 tests (regime labels, fingerprints, strategy compatibility)
+- risk.rs: 30 tests (daily/weekly reset, consecutive loss, correlated exposure, volatility sizing, API degradation, divergence)
 - pipeline.rs: 14 tests
 - analyze-wallet.rs: 24 tests
 - scrape-leaderboards.rs: 22 tests
 - alpha-scanner.rs: 64 tests
-- copy-trader.rs: 85 tests
+- copy-trader.rs: 106 tests
 - whale-watcher.rs: 41 tests
 - scan-markets.rs: 18 tests
 - scrape-dextrabot.rs: 8 tests
-- config + hl_info + other: ~42 tests
+- config + hl_info + other: ~33 tests
 
-**Python:** Run with `python -m pytest analysis/tests/ -v`.
+**Python:** 132 tests. Run with `python -m pytest analysis/tests/ -v`.
 
 ## TODO / Next Steps
-- [ ] **QuickNode wallet scanner** — Batch scan HL wallets via HyperCore API
-- [ ] **Python analysis pipeline** — Fill-level Bulk.Trade methodology
-- [ ] **Data-driven strategies** — Parameters from blueprints, not invented defaults
+- [ ] **Strategy parameter optimization** — Walk-forward parameter sweep to find profitable configs (Mission A)
+- [ ] **Blueprint strategy validation** — Test data-driven strategies with regime filter and fee model (Mission B)
+- [ ] **Self-tuning parameters** — Adaptive thresholds based on recent trade performance (Mission C, inspired by Senpi Lynx)
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Monitoring loop with periodic re-scanning for new strategies
-- [x] ~~**Integration validation** — Pipeline orchestrator + combined PnL tracker + 560 tests pass~~ (done: M5)
+- [x] ~~**QuickNode wallet scanner** — Batch scan HL wallets via HyperCore API~~ (done: M6)
+- [x] ~~**Python analysis pipeline** — Fill-level Bulk.Trade methodology~~ (done: M6)
+- [x] ~~**Data-driven strategies** — Parameters from blueprints, not invented defaults~~ (done: M7)
+- [x] ~~**Integration validation** — Pipeline orchestrator + combined PnL tracker~~ (done: M5)
 - [x] ~~Backtesting engine against historical prices~~ (done: Hyperliquid candleSnapshot)
 - [x] ~~LP detection~~ (done: lp-consumption strategy)
 - [x] ~~LP consumption rate signal~~ (done: lp-consumption strategy, pool data populated)
-- [x] ~~Unit tests~~ (done: 560 tests)
+- [x] ~~Unit tests~~ (done: 711 tests)
 - [x] ~~Fee-awareness~~ (done: per-trade fee tracking in paper + backtest engines)
 - [x] ~~P0 bug fixes~~ (done: borrow accrual, cross-cell limits, pool data)
 - [x] ~~Alpha scanner binary~~ (done: Dextrabot + Hypurrscan + HL enrichment, 64 tests)
-- [x] ~~Copy trader binary~~ (done: position mirroring + paper trading, 85 tests)
+- [x] ~~Copy trader binary~~ (done: position mirroring + paper trading, 106 tests)
 - [x] ~~Whale watcher binary~~ (done: WebSocket alerts + accuracy tracking, 41 tests)
 - [x] ~~Funding rate capture strategy~~ (done: delta-neutral yield strategy, 40 tests)
 - [x] ~~HL Info client~~ (done: positions, funding rates, fills, market contexts)
+- [x] ~~Risk engine upgrade~~ (done: weekly loss, correlated exposure, consecutive loss, ATR sizing, API degradation)
+- [x] ~~Regime-aware entry filtering~~ (done: strategy-specific rules, 90.6% loss reduction)
+- [x] ~~Walk-forward validation~~ (done: train/test split with separate metrics)
+- [x] ~~Slippage model~~ (done: configurable basis points in backtest)
+- [x] ~~Paper-trading promotion gate~~ (done: runbook, thresholds, human approval checklist)

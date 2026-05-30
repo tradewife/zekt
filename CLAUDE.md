@@ -21,10 +21,10 @@ An **autonomous strategy poaching system** that discovers profitable Hyperliquid
 ## Build & Run
 ```bash
 cargo build --release                          # Build Rust binary
-cargo test                                     # Run 560+ Rust unit tests
+cargo test                                     # Run 711 Rust unit tests
 
 # Python analysis tests
-python -m pytest analysis/tests/ -v            # Run Python analysis module tests
+python -m pytest analysis/tests/ -v            # Run 132 Python analysis module tests
 
 # Full pipeline orchestration (alpha-scanner + copy-trader + whale-watcher + paper)
 cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
@@ -59,16 +59,17 @@ cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/r
 ### Rust (Trading Infrastructure)
 ```
 main.rs         CLI (clap) + graceful shutdown (ctrlc) -- routes to backtest, paper, dry-run, or live mode
-config.rs       TOML config (agent, flash, strategy, risk sections + strategy sub-tables)
+config.rs       TOML config (agent, flash, strategy, risk, backtest sections + strategy sub-tables)
 strategy.rs     Strategy trait + 5 implementations + factory function (6000+ lines, 63 tests)
 signal.rs       MomentumDetector, MomentumSnapshot, PoolSnapshot, Signal/ExitReason types
-backtest.rs     Hyperliquid candle fetcher + BacktestEngine (replay through Strategy trait, 15 tests)
+backtest.rs     Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter, 15+ tests)
 flash_api.rs    REST client for Flash Trade API (prices, positions, tx builder)
 hl_info.rs      REST client for Hyperliquid Info API (positions, funding rates, fills, market contexts)
+regime.rs       Market regime detector (LowVol/Trending/HighVol/Choppy) + strategy-specific compatibility rules (21+ tests)
 funding_capture.rs  Funding rate capture strategy (delta-neutral short perp for yield)
 pnl_tracker.rs  Combined PnL tracking across all strategies (copy-trader + whale-watcher + paper)
 executor.rs     Solana keypair loading + tx sign/submit via Arc<RpcClient> + spawn_blocking
-risk.rs         Risk manager -- SL/TP/trailing, circuit breaker, daily reset, fee tracking, trade journal
+risk.rs         Risk manager -- SL/TP/trailing, circuit breaker, daily/weekly reset, correlated exposure, ATR sizing, API degradation, divergence tracking (30+ tests)
 engine.rs       Live trading loop -- poll price -> detect -> preview -> build tx -> sign -> monitor
 paper.rs        Paper trading -- single + MultiPaperEngine (strategy x market matrix, 14 tests)
 src/bin/
@@ -204,8 +205,9 @@ Base URL: `https://api.hyperliquid.xyz/info`
 - Backtest mode requires no Solana RPC, no keypair -- only Hyperliquid public API
 
 ## Risk Management
-- Circuit breaker halts trading on: daily loss limit or max drawdown
+- Circuit breaker halts trading on: daily loss limit, weekly loss limit, max drawdown, consecutive losses, API degradation
 - Daily PnL resets automatically at midnight UTC (tracked via `trade_date`)
+- Weekly PnL resets automatically at Monday 00:00 UTC
 - Peak balance initialized from real USDC balance, updated after each trade close
 - Cooldown after any loss (configurable seconds)
 - Native TP/SL via Flash Trade trigger orders (on-chain enforcement)
@@ -214,10 +216,15 @@ Base URL: `https://api.hyperliquid.xyz/info`
 - Time stop closes positions that exceed max hold duration
 - Position size validated against `max_position_notional_usd` config
 - Cross-cell position limit enforced via `max_total_notional_usd` config (sums all CellPosition.size_usd)
+- Correlated exposure limit caps exposure to correlated market groups (configurable in `correlated_groups`)
+- ATR-based volatility position sizing reduces clip size in high-vol regimes
+- API degradation circuit breaker halts after N consecutive API failures
+- Consecutive loss circuit breaker halts after N consecutive losses, resets on win
+- Paper/live divergence detection framework tracks fill-level comparison
 
 ## Config Format
 TOML with 4 main sections: `[agent]`, `[flash]`, `[strategy]`, `[risk]`
-Additional sections: `[alpha-scanner]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`, `[pipeline]`
+Additional sections: `[alpha-scanner]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`, `[pipeline]`, `[backtest]`
 Strategy sub-tables: `[strategy.lp-consumption]`, `[strategy.mean-reversion]`, `[strategy.trend-follower]`, `[strategy.funding-capture]`
 QuickNode configuration: `QUICKNODE_HL_URL` env var or `--quicknode-url` CLI flag (not in TOML, gitignored)
 See `config/perps.toml` for the full schema with defaults.
@@ -225,21 +232,23 @@ See `config/perps.toml` for the full schema with defaults.
 ## Testing
 
 ### Rust Tests
-560 unit tests across all modules. Run with `cargo test`.
+711 unit tests across all modules. Run with `cargo test`.
 - `strategy.rs`: 63 tests (entry/exit for each strategy, parameter validation, factory)
 - `funding_capture.rs`: 40 tests (entry/exit, parameter validation, funding tracking, pipeline)
 - `pnl_tracker.rs`: 10 tests (combined PnL reporting, copy-trades/paper-trades/whale-alerts parsing, serde roundtrips)
 - `paper.rs`: 14 tests (MultiPaperEngine, position matrix, fee accounting)
-- `backtest.rs`: 15 tests (candle parsing, position PnL, fee accrual, synthetic replay)
+- `backtest.rs`: 17 tests (candle parsing, position PnL, fee accrual, synthetic replay, walk-forward, slippage, regime)
+- `regime.rs`: 21 tests (regime labels, fingerprints, strategy compatibility, snapshots)
+- `risk.rs`: 30 tests (daily/weekly reset, circuit breaker, consecutive loss, volatility sizing, API degradation, correlated exposure, divergence tracking)
 - `src/bin/pipeline.rs`: 14 tests (CLI args, report generation, managed child process)
 - `src/bin/analyze-wallet.rs`: 24 tests (wallet classification, blueprint generation)
 - `src/bin/scrape-leaderboards.rs`: 22 tests (API parsing, deduplication)
 - `src/bin/alpha-scanner.rs`: 64 tests (wallet discovery, scoring, decay detection)
-- `src/bin/copy-trader.rs`: 85 tests (position mirroring, risk management, trade log)
+- `src/bin/copy-trader.rs`: 106 tests (position mirroring, risk management, trade log)
 - `src/bin/whale-watcher.rs`: 41 tests (WebSocket parsing, alerts, accuracy tracking)
 - `src/bin/scan-markets.rs`: 18 tests (market ranking, pool data)
 - `src/bin/scrape-dextrabot.rs`: 8 tests (Dextrabot API integration)
-- Other modules: ~42 tests (config, hl_info, etc.)
+- Other modules: ~33 tests (config, hl_info, etc.)
 
 ### Python Tests
 Run with `python -m pytest analysis/tests/ -v`.
