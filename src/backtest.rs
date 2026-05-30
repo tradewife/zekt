@@ -241,6 +241,7 @@ struct BtPosition {
 impl BtPosition {
     /// Create a BtPosition with flash-only mode defaults.
     #[allow(dead_code)]
+    #[allow(clippy::too_many_arguments)]
     fn new_flash(
         symbol: String,
         is_long: bool,
