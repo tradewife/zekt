@@ -7,6 +7,8 @@ mod funding_capture;
 #[allow(dead_code)]
 mod hl_info;
 #[allow(dead_code)]
+mod liquidation;
+#[allow(dead_code)]
 mod hl_paper;
 #[allow(dead_code)]
 mod imperial;

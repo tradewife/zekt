@@ -21,6 +21,8 @@ pub struct Config {
     pub whale_watcher: WhaleWatcherConfig,
     #[serde(default)]
     pub hypurrscan: HypurrscanConfig,
+    #[serde(default, rename = "liquidation")]
+    pub liquidation: LiquidationConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -382,6 +384,206 @@ impl Default for RouteCostConfig {
             cache_bucket_usd: default_cache_bucket_usd(),
             excluded_venues: Vec::new(),
         }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Liquidation Zone config
+// ---------------------------------------------------------------------------
+
+/// Configuration for the Liquidation Zone capture module.
+///
+/// Controls how liquidation zone data is captured from Hyperliquid and Imperial
+/// sources. Disabled by default — when `enabled = false`, no capture occurs.
+///
+/// ```toml
+/// [liquidation]
+/// enabled = false
+/// sources = ["hyperliquid_positions", "hyperliquid_fills", "oi_imbalance", "depth_fragility"]
+/// cluster_threshold_bps = 50.0
+/// merge_threshold_bps = 100.0
+/// min_confidence = 0.0
+/// imbalance_threshold_pct = 20.0
+/// depth_min_threshold_usd = 100_000.0
+/// depth_range_bps = 50.0
+/// fills_burst_count = 10
+/// fills_burst_window_secs = 60
+/// fills_lookback_secs = 300
+/// staleness_threshold_secs = 60
+/// base_confidence = 0.4
+/// multi_source_bonus = [0.15, 0.10, 0.10]
+/// staleness_penalty = 0.10
+/// wallet_count_bonus_factor = 0.02
+/// notional_bonus_factor = 0.01
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct LiquidationConfig {
+    /// Whether the liquidation zone capture is enabled.
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// List of active data sources.
+    /// Valid values: "hyperliquid_positions", "hyperliquid_fills", "oi_imbalance", "depth_fragility".
+    #[serde(default = "default_liquidation_sources")]
+    pub sources: Vec<String>,
+
+    /// Cluster threshold in bps for grouping HL positions with similar liquidation prices.
+    #[serde(default = "default_cluster_threshold_bps")]
+    pub cluster_threshold_bps: f64,
+
+    /// Merge threshold in bps for merging zones from different sources at similar prices.
+    #[serde(default = "default_merge_threshold_bps")]
+    pub merge_threshold_bps: f64,
+
+    /// Minimum confidence for a zone to be included in persisted snapshots.
+    #[serde(default)]
+    pub min_confidence: f64,
+
+    /// OI imbalance threshold percentage. Imbalances below this produce no zone.
+    #[serde(default = "default_imbalance_threshold_pct")]
+    pub imbalance_threshold_pct: f64,
+
+    /// Minimum depth in USD within the depth_range_bps window for fragility detection.
+    #[serde(default = "default_depth_min_threshold_usd")]
+    pub depth_min_threshold_usd: f64,
+
+    /// Range in bps from mark price to scan for depth fragility.
+    #[serde(default = "default_depth_range_bps")]
+    pub depth_range_bps: f64,
+
+    /// Minimum number of fills within burst_window_secs to qualify as a forced-liquidation burst.
+    #[serde(default = "default_fills_burst_count")]
+    pub fills_burst_count: usize,
+
+    /// Time window in seconds for detecting forced-liquidation bursts.
+    #[serde(default = "default_fills_burst_window_secs")]
+    pub fills_burst_window_secs: u64,
+
+    /// Lookback duration in seconds for fill scanning.
+    #[serde(default = "default_fills_lookback_secs")]
+    pub fills_lookback_secs: u64,
+
+    /// Staleness threshold in seconds. Data older than this is considered stale.
+    #[serde(default = "default_liquidation_staleness_threshold_secs")]
+    pub staleness_threshold_secs: u64,
+
+    /// Base confidence for a single-source zone.
+    #[serde(default = "default_base_confidence")]
+    pub base_confidence: f64,
+
+    /// Confidence bonus for 2nd, 3rd, 4th corroborating source.
+    #[serde(default = "default_multi_source_bonus")]
+    pub multi_source_bonus: Vec<f64>,
+
+    /// Confidence penalty per stale source.
+    #[serde(default = "default_staleness_penalty")]
+    pub staleness_penalty: f64,
+
+    /// Wallet count logarithmic bonus factor: +factor*log10(wallet_count).
+    #[serde(default = "default_wallet_count_bonus_factor")]
+    pub wallet_count_bonus_factor: f64,
+
+    /// Notional logarithmic bonus factor: +factor*log10(notional/1_000_000).
+    #[serde(default = "default_notional_bonus_factor")]
+    pub notional_bonus_factor: f64,
+}
+
+fn default_liquidation_sources() -> Vec<String> {
+    vec![
+        "hyperliquid_positions".to_string(),
+        "hyperliquid_fills".to_string(),
+        "oi_imbalance".to_string(),
+        "depth_fragility".to_string(),
+    ]
+}
+fn default_cluster_threshold_bps() -> f64 { 50.0 }
+fn default_merge_threshold_bps() -> f64 { 100.0 }
+fn default_imbalance_threshold_pct() -> f64 { 20.0 }
+fn default_depth_min_threshold_usd() -> f64 { 100_000.0 }
+fn default_depth_range_bps() -> f64 { 50.0 }
+fn default_fills_burst_count() -> usize { 10 }
+fn default_fills_burst_window_secs() -> u64 { 60 }
+fn default_fills_lookback_secs() -> u64 { 300 }
+fn default_liquidation_staleness_threshold_secs() -> u64 { 60 }
+fn default_base_confidence() -> f64 { 0.4 }
+fn default_multi_source_bonus() -> Vec<f64> { vec![0.15, 0.10, 0.10] }
+fn default_staleness_penalty() -> f64 { 0.10 }
+fn default_wallet_count_bonus_factor() -> f64 { 0.02 }
+fn default_notional_bonus_factor() -> f64 { 0.01 }
+
+impl Default for LiquidationConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            sources: default_liquidation_sources(),
+            cluster_threshold_bps: default_cluster_threshold_bps(),
+            merge_threshold_bps: default_merge_threshold_bps(),
+            min_confidence: 0.0,
+            imbalance_threshold_pct: default_imbalance_threshold_pct(),
+            depth_min_threshold_usd: default_depth_min_threshold_usd(),
+            depth_range_bps: default_depth_range_bps(),
+            fills_burst_count: default_fills_burst_count(),
+            fills_burst_window_secs: default_fills_burst_window_secs(),
+            fills_lookback_secs: default_fills_lookback_secs(),
+            staleness_threshold_secs: default_liquidation_staleness_threshold_secs(),
+            base_confidence: default_base_confidence(),
+            multi_source_bonus: default_multi_source_bonus(),
+            staleness_penalty: default_staleness_penalty(),
+            wallet_count_bonus_factor: default_wallet_count_bonus_factor(),
+            notional_bonus_factor: default_notional_bonus_factor(),
+        }
+    }
+}
+
+impl LiquidationConfig {
+    /// Validate config values, returning descriptive errors for invalid fields.
+    #[allow(dead_code)]
+    pub fn validate(&self) -> anyhow::Result<()> {
+        let valid_sources = [
+            "hyperliquid_positions",
+            "hyperliquid_fills",
+            "oi_imbalance",
+            "depth_fragility",
+        ];
+        for source in &self.sources {
+            if !valid_sources.contains(&source.as_str()) {
+                anyhow::bail!("unknown source: {}. Valid sources: {:?}", source, valid_sources);
+            }
+        }
+        if self.cluster_threshold_bps < 0.0 {
+            anyhow::bail!("cluster_threshold_bps must be non-negative, got {}", self.cluster_threshold_bps);
+        }
+        if self.merge_threshold_bps < 0.0 {
+            anyhow::bail!("merge_threshold_bps must be non-negative, got {}", self.merge_threshold_bps);
+        }
+        if self.min_confidence < 0.0 || self.min_confidence > 1.0 {
+            anyhow::bail!("min_confidence must be in [0.0, 1.0], got {}", self.min_confidence);
+        }
+        if self.imbalance_threshold_pct < 0.0 || self.imbalance_threshold_pct > 100.0 {
+            anyhow::bail!("imbalance_threshold_pct must be in [0.0, 100.0], got {}", self.imbalance_threshold_pct);
+        }
+        if self.depth_min_threshold_usd < 0.0 {
+            anyhow::bail!("depth_min_threshold_usd must be non-negative, got {}", self.depth_min_threshold_usd);
+        }
+        if self.depth_range_bps < 0.0 {
+            anyhow::bail!("depth_range_bps must be non-negative, got {}", self.depth_range_bps);
+        }
+        if self.fills_burst_count == 0 {
+            anyhow::bail!("fills_burst_count must be > 0");
+        }
+        if self.fills_burst_window_secs == 0 {
+            anyhow::bail!("fills_burst_window_secs must be > 0");
+        }
+        if self.fills_lookback_secs == 0 {
+            anyhow::bail!("fills_lookback_secs must be > 0");
+        }
+        if self.staleness_threshold_secs == 0 {
+            anyhow::bail!("staleness_threshold_secs must be > 0");
+        }
+        if self.base_confidence < 0.0 || self.base_confidence > 1.0 {
+            anyhow::bail!("base_confidence must be in [0.0, 1.0], got {}", self.base_confidence);
+        }
+        Ok(())
     }
 }
 
@@ -1265,5 +1467,126 @@ improvement_threshold_bps = 2.0
         assert!(!config.route_oracle.enabled);
         assert!((config.route_oracle.edge_budget_pct - 100.0).abs() < 0.001);
         assert_eq!(config.route_oracle.staleness_threshold_secs, 60);
+    }
+
+    // ── Liquidation config tests ───────────────────────────────────────────
+
+    #[test]
+    fn test_liquidation_config_defaults_when_absent() {
+        let minimal = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+"#;
+        let f = write_temp_toml(minimal);
+        let config = Config::load(f.path()).expect("config without [liquidation] should parse");
+
+        assert!(!config.liquidation.enabled);
+        assert_eq!(config.liquidation.sources.len(), 4);
+        assert!((config.liquidation.cluster_threshold_bps - 50.0).abs() < 0.001);
+        assert!((config.liquidation.merge_threshold_bps - 100.0).abs() < 0.001);
+        assert!((config.liquidation.min_confidence - 0.0).abs() < 0.001);
+        assert!((config.liquidation.imbalance_threshold_pct - 20.0).abs() < 0.001);
+        assert!((config.liquidation.base_confidence - 0.4).abs() < 0.001);
+        assert_eq!(config.liquidation.staleness_threshold_secs, 60);
+    }
+
+    #[test]
+    fn test_liquidation_config_custom_values() {
+        let custom = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[liquidation]
+enabled = true
+sources = ["hyperliquid_positions", "oi_imbalance"]
+cluster_threshold_bps = 100.0
+merge_threshold_bps = 200.0
+min_confidence = 0.3
+base_confidence = 0.5
+"#;
+        let f = write_temp_toml(custom);
+        let config = Config::load(f.path()).expect("config with [liquidation] should parse");
+
+        assert!(config.liquidation.enabled);
+        assert_eq!(config.liquidation.sources, vec!["hyperliquid_positions", "oi_imbalance"]);
+        assert!((config.liquidation.cluster_threshold_bps - 100.0).abs() < 0.001);
+        assert!((config.liquidation.merge_threshold_bps - 200.0).abs() < 0.001);
+        assert!((config.liquidation.min_confidence - 0.3).abs() < 0.001);
+        assert!((config.liquidation.base_confidence - 0.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_unknown_source() {
+        let cfg = LiquidationConfig {
+            sources: vec!["hyperliquid_positions".to_string(), "magic_8_ball".to_string()],
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("unknown source"), "got: {}", err);
+        assert!(err.contains("magic_8_ball"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_negative_cluster_threshold() {
+        let cfg = LiquidationConfig {
+            cluster_threshold_bps: -10.0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("cluster_threshold_bps"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_invalid_min_confidence() {
+        let cfg = LiquidationConfig {
+            min_confidence: 1.5,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("min_confidence"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_ok_defaults() {
+        let cfg = LiquidationConfig::default();
+        assert!(cfg.validate().is_ok());
     }
 }
