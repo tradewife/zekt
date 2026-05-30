@@ -507,6 +507,7 @@ async fn run_backtest(
         walk_forward_enabled: false,
         walk_forward_train_ratio: 0.7,
         slippage_bps: 0.0, // Default: no slippage; set via config to enable
+        cost_mode: "flash-only".to_string(),
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;
