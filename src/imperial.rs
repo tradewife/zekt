@@ -29,6 +29,14 @@ pub const IMPERIAL_SLOW_THRESHOLD_SECS: f64 = 5.0;
 // Response type structs
 // ---------------------------------------------------------------------------
 
+/// Helper: deserialize `f64` that may be `null` → defaults to 0.0.
+fn deserialize_f64_or_default<'de, D>(deserializer: D) -> std::result::Result<f64, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<f64>::deserialize(deserializer).map(|v| v.unwrap_or(0.0))
+}
+
 /// Route recommendation with full cost breakdown and all candidate venues.
 /// Returned by `GET /api/v1/route`.
 #[derive(Debug, Clone, Deserialize)]
@@ -45,27 +53,40 @@ pub struct ImperialRouteResponse {
 }
 
 /// Detailed cost breakdown for a single route.
-#[derive(Debug, Clone, Deserialize)]
+///
+/// Note: For filtered venue candidates, some fields may be `null` (deserialized as 0.0).
+#[derive(Debug, Clone, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ImperialCostBreakdown {
     pub open_fee: f64,
     pub close_fee: f64,
+    #[serde(deserialize_with = "deserialize_f64_or_default")]
     pub open_slip: f64,
+    #[serde(deserialize_with = "deserialize_f64_or_default")]
     pub close_slip: f64,
     pub borrow: f64,
     pub expected_liq_cost: f64,
     pub p_liq: f64,
+    #[serde(deserialize_with = "deserialize_f64_or_default")]
     pub total: f64,
 }
 
 /// A single venue candidate in a route response.
+///
+/// Note: Filtered candidates may have `expected_cost_usd = 0.0` (null from API) and `filtered_reason` set.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImperialRouteCandidate {
     pub venue: String,
+    #[serde(deserialize_with = "deserialize_f64_or_default")]
     pub expected_cost_usd: f64,
+    #[serde(default)]
     pub cost_breakdown: ImperialCostBreakdown,
+    #[serde(default)]
     pub max_leverage: f64,
+    /// Present when the venue is filtered out (e.g., insufficient liquidity).
+    #[serde(default)]
+    pub filtered_reason: Option<String>,
 }
 
 /// Per-symbol, per-venue funding and borrow rates.
@@ -470,6 +491,111 @@ impl ImperialClient {
         }
 
         Ok(parsed)
+    }
+
+    // -----------------------------------------------------------------------
+    // Public endpoint methods (all HTTP GET, no auth)
+    // -----------------------------------------------------------------------
+
+    /// Route recommendation with full cost breakdown and all candidate venues.
+    ///
+    /// `GET /api/v1/route?asset=...&side=...&notional=...&desiredLeverage=...`
+    pub async fn get_route(
+        &self,
+        asset: &str,
+        side: &str,
+        notional: f64,
+        leverage: f64,
+    ) -> Result<ImperialRouteResponse> {
+        let path = format!(
+            "/api/v1/route?asset={}&side={}&notional={}&desiredLeverage={}",
+            asset, side, notional, leverage
+        );
+        self.get_json(&path)
+            .await
+            .with_context(|| format!("get_route({},{},{},{})", asset, side, notional, leverage))
+    }
+
+    /// Per-symbol, per-venue funding and borrow rates.
+    ///
+    /// `GET /api/v1/funding-rates`
+    pub async fn get_funding_rates(&self) -> Result<ImperialFundingRatesResponse> {
+        self.get_json("/api/v1/funding-rates")
+            .await
+            .with_context(|| "get_funding_rates()")
+    }
+
+    /// Per-symbol, per-venue mark prices with timestamps.
+    ///
+    /// `GET /api/v1/mark-prices`
+    pub async fn get_mark_prices(&self) -> Result<ImperialMarkPricesResponse> {
+        self.get_json("/api/v1/mark-prices")
+            .await
+            .with_context(|| "get_mark_prices()")
+    }
+
+    /// Phoenix order book depth for a given symbol (e.g., "SOL-PERP").
+    ///
+    /// `GET /api/v1/phoenix/depth?symbol=...`
+    pub async fn get_phoenix_depth(&self, symbol: &str) -> Result<ImperialPhoenixDepthResponse> {
+        let path = format!("/api/v1/phoenix/depth?symbol={}", symbol);
+        self.get_json(&path)
+            .await
+            .with_context(|| format!("get_phoenix_depth({})", symbol))
+    }
+
+    /// Phoenix market configurations.
+    ///
+    /// `GET /api/v1/phoenix/markets`
+    pub async fn get_phoenix_markets(&self) -> Result<Vec<ImperialPhoenixMarket>> {
+        self.get_json("/api/v1/phoenix/markets")
+            .await
+            .with_context(|| "get_phoenix_markets()")
+    }
+
+    /// Flash Trade market configurations.
+    ///
+    /// `GET /api/v1/flash/markets`
+    pub async fn get_flash_markets(&self) -> Result<Vec<ImperialFlashMarket>> {
+        self.get_json("/api/v1/flash/markets")
+            .await
+            .with_context(|| "get_flash_markets()")
+    }
+
+    /// GMTrade market configurations.
+    ///
+    /// `GET /api/v1/gmtrade/markets`
+    pub async fn get_gmtrade_markets(&self) -> Result<Vec<ImperialGmtradeMarket>> {
+        self.get_json("/api/v1/gmtrade/markets")
+            .await
+            .with_context(|| "get_gmtrade_markets()")
+    }
+
+    /// GMTrade available liquidity per symbol.
+    ///
+    /// `GET /api/v1/gmtrade/liquidity`
+    pub async fn get_gmtrade_liquidity(&self) -> Result<Vec<ImperialGmtradeLiquidity>> {
+        self.get_json("/api/v1/gmtrade/liquidity")
+            .await
+            .with_context(|| "get_gmtrade_liquidity()")
+    }
+
+    /// Solana priority fee recommendation.
+    ///
+    /// `GET /api/v1/priority-fee`
+    pub async fn get_priority_fee(&self) -> Result<ImperialPriorityFee> {
+        self.get_json("/api/v1/priority-fee")
+            .await
+            .with_context(|| "get_priority_fee()")
+    }
+
+    /// Market statistics (volume, OI, trader count) per venue.
+    ///
+    /// `GET /api/v1/stats/markets?period=24h`
+    pub async fn get_stats_markets(&self) -> Result<ImperialStatsMarketsResponse> {
+        self.get_json("/api/v1/stats/markets?period=24h")
+            .await
+            .with_context(|| "get_stats_markets()")
     }
 }
 
@@ -964,6 +1090,71 @@ mod tests {
     }
 
     #[test]
+    fn test_route_response_with_null_candidate_fields() {
+        // Live API returns null for some fields in filtered candidates
+        let json = r#"{
+            "venue": "phoenix",
+            "reason": "Lowest total cost",
+            "maxLeverage": 19.86,
+            "expectedCostUsd": 60.92,
+            "costBreakdown": {
+                "openFee": 17.5, "closeFee": 17.5,
+                "openSlip": 13.05, "closeSlip": 12.87,
+                "borrow": 0.0, "expectedLiqCost": 0.0,
+                "pLiq": 0.0, "total": 60.92
+            },
+            "clamped": false,
+            "candidates": [
+                {
+                    "venue": "phoenix",
+                    "expectedCostUsd": 60.92,
+                    "costBreakdown": {
+                        "openFee": 17.5, "closeFee": 17.5,
+                        "openSlip": 13.05, "closeSlip": 12.87,
+                        "borrow": 0.0, "expectedLiqCost": 0.0,
+                        "pLiq": 0.0, "total": 60.92
+                    },
+                    "maxLeverage": 19.86
+                },
+                {
+                    "venue": "gmtrade",
+                    "expectedCostUsd": null,
+                    "costBreakdown": {
+                        "openFee": 2.5, "closeFee": 2.5,
+                        "openSlip": null, "closeSlip": 5.73,
+                        "borrow": 0.0, "expectedLiqCost": 0.0,
+                        "pLiq": 0.0, "total": null
+                    },
+                    "maxLeverage": 500.0,
+                    "filteredReason": "Insufficient liquidity at $50000"
+                }
+            ],
+            "marketsVersion": 42
+        }"#;
+
+        let resp: ImperialRouteResponse = serde_json::from_str(json).expect("parse route with nulls");
+
+        // Top-level response is always valid
+        assert_eq!(resp.venue, "phoenix");
+        assert!(resp.expected_cost_usd > 0.0);
+
+        // First candidate is valid
+        assert!(resp.candidates[0].expected_cost_usd > 0.0);
+
+        // Second candidate has null → default 0.0 for expected_cost_usd and total
+        assert_eq!(resp.candidates[1].venue, "gmtrade");
+        assert_eq!(resp.candidates[1].expected_cost_usd, 0.0); // null → default
+        assert_eq!(resp.candidates[1].cost_breakdown.total, 0.0); // null → default
+        assert_eq!(resp.candidates[1].cost_breakdown.open_slip, 0.0); // null → default
+        assert_eq!(resp.candidates[1].cost_breakdown.close_slip, 5.73); // not null
+        // filteredReason is present
+        assert_eq!(
+            resp.candidates[1].filtered_reason.as_deref(),
+            Some("Insufficient liquidity at $50000")
+        );
+    }
+
+    #[test]
     fn test_funding_rate_null_deserialization() {
         let json = r#"{
             "rows": [{
@@ -1374,5 +1565,902 @@ mod tests {
         let requests = server.received_requests().await.expect("get requests");
         assert_eq!(requests.len(), 1);
         assert_eq!(requests[0].method, wiremock::http::Method::GET);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Endpoint Method Unit Tests (wiremock)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    // ── get_route() ────────────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_route_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/route"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "venue": "flash_trade",
+                    "reason": "Lowest total cost",
+                    "maxLeverage": 113.0,
+                    "expectedCostUsd": 1.234,
+                    "costBreakdown": {
+                        "openFee": 0.1, "closeFee": 0.1,
+                        "openSlip": 0.05, "closeSlip": 0.05,
+                        "borrow": 0.5, "expectedLiqCost": 0.1,
+                        "pLiq": 0.334, "total": 1.234
+                    },
+                    "clamped": false,
+                    "candidates": [
+                        {
+                            "venue": "flash_trade",
+                            "expectedCostUsd": 1.234,
+                            "costBreakdown": {
+                                "openFee": 0.1, "closeFee": 0.1,
+                                "openSlip": 0.05, "closeSlip": 0.05,
+                                "borrow": 0.5, "expectedLiqCost": 0.1,
+                                "pLiq": 0.334, "total": 1.234
+                            },
+                            "maxLeverage": 113.0
+                        },
+                        {
+                            "venue": "phoenix",
+                            "expectedCostUsd": 2.5,
+                            "costBreakdown": {
+                                "openFee": 0.2, "closeFee": 0.2,
+                                "openSlip": 0.1, "closeSlip": 0.1,
+                                "borrow": 1.5, "expectedLiqCost": 0.2,
+                                "pLiq": 0.2, "total": 2.5
+                            },
+                            "maxLeverage": 15.0
+                        }
+                    ],
+                    "marketsVersion": 42
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_route("SOL", "long", 1000.0, 5.0)
+            .await
+            .expect("get_route should succeed");
+
+        assert_eq!(resp.venue, "flash_trade");
+        assert_eq!(resp.candidates.len(), 2);
+        assert!(resp.expected_cost_usd > 0.0);
+        // Candidates sorted by cost ascending
+        assert!(resp.candidates[0].expected_cost_usd <= resp.candidates[1].expected_cost_usd);
+        // First candidate matches top-level venue
+        assert_eq!(resp.candidates[0].venue, resp.venue);
+        // All cost breakdown components non-negative
+        let cb = &resp.cost_breakdown;
+        assert!(cb.open_fee >= 0.0);
+        assert!(cb.close_fee >= 0.0);
+        assert!(cb.total > 0.0);
+        // Max leverage per candidate > 0
+        assert!(resp.candidates.iter().all(|c| c.max_leverage > 0.0));
+    }
+
+    #[tokio::test]
+    async fn test_get_route_sends_query_params() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/route"))
+            .and(wiremock::matchers::query_param("asset", "BTC"))
+            .and(wiremock::matchers::query_param("side", "short"))
+            .and(wiremock::matchers::query_param("notional", "50000"))
+            .and(wiremock::matchers::query_param("desiredLeverage", "3"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "venue": "gmtrade",
+                    "reason": "test",
+                    "maxLeverage": 250.0,
+                    "expectedCostUsd": 5.0,
+                    "costBreakdown": {
+                        "openFee": 1.0, "closeFee": 1.0, "openSlip": 0.5,
+                        "closeSlip": 0.5, "borrow": 1.0, "expectedLiqCost": 0.5,
+                        "pLiq": 0.5, "total": 5.0
+                    },
+                    "clamped": false,
+                    "candidates": [],
+                    "marketsVersion": 1
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_route("BTC", "short", 50000.0, 3.0)
+            .await
+            .expect("should succeed");
+        assert_eq!(resp.venue, "gmtrade");
+    }
+
+    #[tokio::test]
+    async fn test_get_route_error_for_unsupported_asset() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/route"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(
+                    r#"{"error": "No venue supports INVALIDCOIN123"}"#
+                ),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        // The API returns 200 but the JSON won't match our struct → Err
+        let result = client.get_route("INVALIDCOIN123", "long", 1000.0, 5.0).await;
+        assert!(result.is_err(), "should return Err for unsupported asset");
+    }
+
+    // ── get_funding_rates() ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_funding_rates_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/funding-rates"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "rows": [{
+                        "symbol": "SOL",
+                        "flash": {
+                            "source": "flash_custody_oracle",
+                            "longFundingRatePerHourPercent": null,
+                            "shortFundingRatePerHourPercent": null
+                        },
+                        "gmtrade": {
+                            "source": "gmtrade_ws",
+                            "longFundingRatePerHourPercent": 0.01,
+                            "shortBorrowRatePerHourPercent": 0.005
+                        }
+                    }]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_funding_rates().await.expect("should succeed");
+        assert!(!resp.rows.is_empty());
+        assert_eq!(resp.rows[0].symbol, "SOL");
+        // Null rates → None
+        let flash = resp.rows[0].flash.as_ref().expect("flash present");
+        assert!(flash.long_funding_rate_per_hour_percent.is_none());
+        // Present rates → Some
+        let gmtrade = resp.rows[0].gmtrade.as_ref().expect("gmtrade present");
+        assert!(gmtrade.long_funding_rate_per_hour_percent.is_some());
+    }
+
+    // ── get_mark_prices() ──────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_mark_prices_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/mark-prices"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_string(r#"{
+                    "rows": [{
+                        "symbol": "SOL",
+                        "flash": {
+                            "source": "flash_custody_oracle",
+                            "price": 150.25,
+                            "fetchedAtUnixMs": 1780099198000
+                        }
+                    }, {
+                        "symbol": "BTC",
+                        "flash": {
+                            "source": "flash_custody_oracle",
+                            "price": 73650.0,
+                            "fetchedAtUnixMs": 1780099197000
+                        }
+                    }]
+                }"#),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_mark_prices().await.expect("should succeed");
+        assert!(resp.rows.len() >= 2);
+        let sol = resp.rows.iter().find(|r| r.symbol == "SOL").expect("SOL row");
+        let flash = sol.flash.as_ref().expect("flash price");
+        assert!(flash.price > 0.0);
+        assert!(flash.fetched_at_unix_ms > 0);
+    }
+
+    // ── get_phoenix_depth() ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_phoenix_depth_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/phoenix/depth"))
+            .and(wiremock::matchers::query_param("symbol", "SOL-PERP"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "snapshots": {
+                        "SOL": {
+                            "symbol": "SOL",
+                            "mid": 150.25,
+                            "bids": [
+                                {"price": 150.20, "sizeBase": 5.0},
+                                {"price": 150.10, "sizeBase": 10.0}
+                            ],
+                            "asks": [
+                                {"price": 150.30, "sizeBase": 3.2},
+                                {"price": 150.40, "sizeBase": 7.5}
+                            ]
+                        }
+                    }
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_phoenix_depth("SOL-PERP").await.expect("should succeed");
+        let sol = resp.snapshots.get("SOL").expect("SOL snapshot");
+        assert!(!sol.bids.is_empty());
+        assert!(!sol.asks.is_empty());
+        // Bids < mid
+        assert!(sol.bids.iter().all(|b| b.price < sol.mid));
+        // Asks > mid
+        assert!(sol.asks.iter().all(|a| a.price > sol.mid));
+        // Sizes > 0
+        assert!(sol.bids.iter().all(|b| b.size_base > 0.0));
+    }
+
+    // ── get_phoenix_markets() ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_phoenix_markets_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/phoenix/markets"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {
+                        "symbol": "SOL",
+                        "underwriter": "phoenix",
+                        "orderbook": "test-ob-1",
+                        "perpAssetMap": "SOL-PERP",
+                        "assetId": 1, "subaccountIndex": 0,
+                        "baseLotsDecimals": 4, "tickSizeInQuoteLotsPerBaseLot": 100,
+                        "makerFeeMicro": 100, "takerFeeMicro": 200,
+                        "maxLeverage": 15.0, "maxSizeBaseLots": 10000
+                    }
+                ])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let markets = client.get_phoenix_markets().await.expect("should succeed");
+        assert!(!markets.is_empty());
+        assert_eq!(markets[0].underwriter, "phoenix");
+        assert!(markets[0].max_leverage > 0.0);
+        assert!(markets[0].taker_fee_micro >= markets[0].maker_fee_micro);
+    }
+
+    // ── get_flash_markets() ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_flash_markets_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/flash/markets"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {
+                        "symbol": "SOL", "side": "long", "underwriter": "flash_trade",
+                        "marketAddress": "a1", "poolAddress": "a2", "poolName": "Crypto.1",
+                        "targetCustody": "a3", "targetMint": "a4", "targetOracle": "a5",
+                        "collateralCustody": "a6", "collateralMint": "a7", "collateralOracle": "a8",
+                        "priceExponent": -8, "tokenDecimals": 9,
+                        "allowOpenPosition": true, "allowClosePosition": true,
+                        "maxLeverage": 120.0, "openPositionFeeRate": 0.001,
+                        "volatilityFeeRate": 0.0, "maxConfBps": 200
+                    },
+                    {
+                        "symbol": "SOL", "side": "short", "underwriter": "flash_trade",
+                        "marketAddress": "b1", "poolAddress": "b2", "poolName": "Crypto.1",
+                        "targetCustody": "b3", "targetMint": "b4", "targetOracle": "b5",
+                        "collateralCustody": "b6", "collateralMint": "b7", "collateralOracle": "b8",
+                        "priceExponent": -8, "tokenDecimals": 9,
+                        "allowOpenPosition": true, "allowClosePosition": true,
+                        "maxLeverage": 120.0, "openPositionFeeRate": 0.001,
+                        "volatilityFeeRate": 0.0, "maxConfBps": 200
+                    }
+                ])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let markets = client.get_flash_markets().await.expect("should succeed");
+        assert!(!markets.is_empty());
+        assert!(markets.iter().all(|m| m.underwriter == "flash_trade"));
+        let sol_long = markets.iter().find(|m| m.symbol == "SOL" && m.side == "long");
+        assert!(sol_long.is_some(), "SOL long market should exist");
+        assert!(sol_long.unwrap().max_leverage > 0.0);
+        assert!(markets.iter().all(|m| m.open_position_fee_rate >= 0.0));
+    }
+
+    // ── get_gmtrade_markets() ──────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_gmtrade_markets_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/gmtrade/markets"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {
+                        "symbol": "WIF", "underwriter": "gmtrade",
+                        "market": "addr1", "marketTokenMint": "addr2",
+                        "indexTokenMint": "addr3", "longTokenMint": "addr4",
+                        "shortTokenMint": "addr5", "longTokenVault": "addr6",
+                        "shortTokenVault": "addr7", "oracle": "addr8",
+                        "indexTokenDecimals": 6, "closed": false
+                    },
+                    {
+                        "symbol": "WIF", "underwriter": "gmtrade",
+                        "market": "addr-dup", "marketTokenMint": "addr2b",
+                        "indexTokenMint": "addr3b", "longTokenMint": "addr4b",
+                        "shortTokenMint": "addr5b", "longTokenVault": "addr6b",
+                        "shortTokenVault": "addr7b", "oracle": "addr8b",
+                        "indexTokenDecimals": 6, "closed": true
+                    }
+                ])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let markets = client.get_gmtrade_markets().await.expect("should succeed");
+        assert_eq!(markets.len(), 2);
+        assert!(markets.iter().all(|m| m.underwriter == "gmtrade"));
+        // Same symbol, different market addresses — preserved
+        assert_eq!(markets[0].symbol, "WIF");
+        assert_eq!(markets[1].symbol, "WIF");
+        assert_ne!(markets[0].market, markets[1].market);
+        // At least one closed == false
+        assert!(markets.iter().any(|m| !m.closed));
+    }
+
+    // ── get_gmtrade_liquidity() ────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_gmtrade_liquidity_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/gmtrade/liquidity"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!([
+                    {"symbol": "BTC", "longAvailableUsd": 50000.0, "shortAvailableUsd": 30000.0},
+                    {"symbol": "SOL", "longAvailableUsd": 10000.0, "shortAvailableUsd": 0.0}
+                ])),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let liq = client.get_gmtrade_liquidity().await.expect("should succeed");
+        assert!(!liq.is_empty());
+        // Non-negative values
+        assert!(liq.iter().all(|l| l.long_available_usd >= 0.0));
+        assert!(liq.iter().all(|l| l.short_available_usd >= 0.0));
+        // BTC has non-zero on at least one side
+        let btc = liq.iter().find(|l| l.symbol == "BTC").expect("BTC");
+        assert!(btc.long_available_usd + btc.short_available_usd > 0.0);
+    }
+
+    // ── get_priority_fee() ─────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_priority_fee_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/priority-fee"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "priority_fee": 500000
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let fee = client.get_priority_fee().await.expect("should succeed");
+        assert!(fee.priority_fee > 0);
+    }
+
+    // ── get_stats_markets() ────────────────────────────────────────────────
+
+    #[tokio::test]
+    async fn test_get_stats_markets_mock() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/markets"))
+            .respond_with(
+                ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                    "period": "24h",
+                    "rows": [{
+                        "symbol": "SOL",
+                        "volumeUsd": "100000.50",
+                        "openInterestUsd": "50000.25",
+                        "longOiUsd": "30000.15",
+                        "shortOiUsd": "20000.10",
+                        "traderCount": 42,
+                        "positionCount": 55,
+                        "byVenue": {
+                            "jupiterUsd": "10000.0",
+                            "flashUsd": "20000.5",
+                            "phoenixUsd": "50000.0",
+                            "gmtradeUsd": "20000.0"
+                        }
+                    }]
+                })),
+            )
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        let resp = client.get_stats_markets().await.expect("should succeed");
+        assert_eq!(resp.period, "24h");
+        assert!(!resp.rows.is_empty());
+        let sol = &resp.rows[0];
+        assert_eq!(sol.symbol, "SOL");
+        // String-quoted numbers preserved
+        assert_eq!(sol.volume_usd, "100000.50");
+        // OI consistency
+        let long_oi: f64 = sol.long_oi_usd.parse().unwrap();
+        let short_oi: f64 = sol.short_oi_usd.parse().unwrap();
+        let total_oi: f64 = sol.open_interest_usd.parse().unwrap();
+        assert!((long_oi + short_oi - total_oi).abs() < 1.0);
+        // Non-negative counts
+        assert!(sol.trader_count as i64 >= 0);
+        assert!(sol.position_count as i64 >= 0);
+    }
+
+    // ── Endpoint method constructs correct URL ─────────────────────────────
+
+    #[tokio::test]
+    async fn test_endpoint_methods_use_correct_paths() {
+        let server = MockServer::start().await;
+
+        // Mount mocks for all endpoints
+        let route_json = serde_json::json!({
+            "venue": "flash_trade", "reason": "test", "maxLeverage": 113.0,
+            "expectedCostUsd": 1.0,
+            "costBreakdown": {"openFee": 0.1, "closeFee": 0.1, "openSlip": 0.1, "closeSlip": 0.1, "borrow": 0.2, "expectedLiqCost": 0.2, "pLiq": 0.2, "total": 1.0},
+            "clamped": false, "candidates": [], "marketsVersion": 1
+        });
+        Mock::given(method("GET"))
+            .and(path("/api/v1/route"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(&route_json))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/funding-rates"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"rows": []})))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/mark-prices"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"rows": []})))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/phoenix/depth"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"snapshots": {}})))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/phoenix/markets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/flash/markets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/gmtrade/markets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/gmtrade/liquidity"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!([])))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/priority-fee"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"priority_fee": 500})))
+            .mount(&server)
+            .await;
+
+        Mock::given(method("GET"))
+            .and(path("/api/v1/stats/markets"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({"period": "24h", "rows": []})))
+            .mount(&server)
+            .await;
+
+        let client = ImperialClient::builder()
+            .base_url(server.uri())
+            .build()
+            .expect("build");
+
+        // Call all 10 endpoints
+        client.get_route("SOL", "long", 1000.0, 5.0).await.expect("route");
+        client.get_funding_rates().await.expect("funding rates");
+        client.get_mark_prices().await.expect("mark prices");
+        client.get_phoenix_depth("SOL-PERP").await.expect("phoenix depth");
+        client.get_phoenix_markets().await.expect("phoenix markets");
+        client.get_flash_markets().await.expect("flash markets");
+        client.get_gmtrade_markets().await.expect("gmtrade markets");
+        client.get_gmtrade_liquidity().await.expect("gmtrade liquidity");
+        client.get_priority_fee().await.expect("priority fee");
+        client.get_stats_markets().await.expect("stats markets");
+
+        // Verify all 10 requests were made
+        let requests = server.received_requests().await.expect("get requests");
+        assert_eq!(requests.len(), 10, "all 10 endpoint methods should make requests");
+
+        // Verify all used GET method
+        assert!(
+            requests.iter().all(|r| r.method == wiremock::http::Method::GET),
+            "all requests must use GET method"
+        );
+
+        // Verify no auth headers on any request
+        assert!(
+            requests.iter().all(|r| !r.headers.contains_key("authorization")),
+            "no request should have Authorization header"
+        );
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // Live Smoke Tests (marked #[ignore] for CI)
+    // ═══════════════════════════════════════════════════════════════════════
+
+    /// Helper: create a live ImperialClient for smoke tests.
+    fn live_client() -> ImperialClient {
+        ImperialClient::default_client()
+    }
+
+    /// Live: all 10 endpoints return Ok
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_all_10_endpoints_ok() {
+        let client = live_client();
+
+        // 1. get_route
+        let route = client.get_route("SOL", "long", 1000.0, 5.0).await
+            .expect("get_route should succeed");
+        assert!(!route.venue.is_empty());
+
+        // 2. get_funding_rates
+        let rates = client.get_funding_rates().await
+            .expect("get_funding_rates should succeed");
+        assert!(!rates.rows.is_empty());
+
+        // 3. get_mark_prices
+        let prices = client.get_mark_prices().await
+            .expect("get_mark_prices should succeed");
+        assert!(!prices.rows.is_empty());
+
+        // 4. get_phoenix_depth
+        let _depth = client.get_phoenix_depth("SOL-PERP").await
+            .expect("get_phoenix_depth should succeed");
+
+        // 5. get_phoenix_markets
+        let phoenix = client.get_phoenix_markets().await
+            .expect("get_phoenix_markets should succeed");
+        assert!(!phoenix.is_empty());
+
+        // 6. get_flash_markets
+        let flash = client.get_flash_markets().await
+            .expect("get_flash_markets should succeed");
+        assert!(!flash.is_empty());
+
+        // 7. get_gmtrade_markets
+        let gmtrade = client.get_gmtrade_markets().await
+            .expect("get_gmtrade_markets should succeed");
+        assert!(!gmtrade.is_empty());
+
+        // 8. get_gmtrade_liquidity
+        let liq = client.get_gmtrade_liquidity().await
+            .expect("get_gmtrade_liquidity should succeed");
+        assert!(!liq.is_empty());
+
+        // 9. get_priority_fee
+        let fee = client.get_priority_fee().await
+            .expect("get_priority_fee should succeed");
+        assert!(fee.priority_fee > 0);
+
+        // 10. get_stats_markets
+        let stats = client.get_stats_markets().await
+            .expect("get_stats_markets should succeed");
+        assert_eq!(stats.period, "24h");
+        assert!(!stats.rows.is_empty());
+
+        eprintln!("[LIVE SMOKE] All 10 Imperial endpoints returned Ok");
+    }
+
+    /// Live: route endpoint for SOL returns flash_trade as a candidate
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_includes_flash_trade() {
+        let client = live_client();
+        let route = client.get_route("SOL", "long", 1000.0, 5.0).await
+            .expect("get_route should succeed");
+        assert!(
+            route.candidates.iter().any(|c| c.venue == "flash_trade"),
+            "SOL route should include flash_trade as a candidate"
+        );
+        // Recommended venue is a known venue
+        let known = ["gmtrade", "phoenix", "flash_trade", "jupiter"];
+        assert!(known.contains(&route.venue.as_str()), "venue should be known: {}", route.venue);
+    }
+
+    /// Live: route for BTC long with large notional
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_btc_large_notional() {
+        let client = live_client();
+        let route = client.get_route("BTC", "long", 50000.0, 3.0).await
+            .expect("get_route BTC should succeed");
+        assert!(route.expected_cost_usd > 0.0);
+        assert!(route.candidates.iter().any(|c| c.venue == "flash_trade" || c.venue == "gmtrade"));
+    }
+
+    /// Live: route for ETH long
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_eth() {
+        let client = live_client();
+        let route = client.get_route("ETH", "long", 5000.0, 5.0).await
+            .expect("get_route ETH should succeed");
+        assert!(route.expected_cost_usd > 0.0);
+        assert!(!route.candidates.is_empty());
+    }
+
+    /// Live: route for SOL short
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_sol_short() {
+        let client = live_client();
+        let route = client.get_route("SOL", "short", 50000.0, 10.0).await
+            .expect("get_route SOL short should succeed");
+        assert!(route.expected_cost_usd > 0.0);
+        let known = ["gmtrade", "phoenix", "flash_trade", "jupiter"];
+        assert!(known.contains(&route.venue.as_str()));
+    }
+
+    /// Live: route returns clamped field and max_leverage per candidate
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_clamped_and_leverage() {
+        let client = live_client();
+        // Low leverage → clamped should typically be false
+        let route = client.get_route("SOL", "long", 1000.0, 1.0).await
+            .expect("should succeed");
+        assert!(!route.clamped, "1x leverage should not be clamped");
+        // All candidates have max_leverage > 0
+        assert!(route.candidates.iter().all(|c| c.max_leverage > 0.0));
+        // Top-level max_leverage matches first candidate
+        assert!((route.max_leverage - route.candidates[0].max_leverage).abs() < 0.001);
+    }
+
+    /// Live: route error for unsupported asset
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_unsupported_asset_error() {
+        let client = live_client();
+        let result = client.get_route("INVALIDCOIN123", "long", 1000.0, 5.0).await;
+        assert!(result.is_err(), "unsupported asset should return Err");
+    }
+
+    /// Live: route error for missing parameters
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_route_missing_params_error() {
+        let client = live_client();
+        // Empty asset string should fail
+        let result = client.get_route("", "long", 1000.0, 5.0).await;
+        assert!(result.is_err(), "empty asset should return Err");
+    }
+
+    /// Live: mark prices for SOL are within reasonable range
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_mark_prices_sol_range() {
+        let client = live_client();
+        let prices = client.get_mark_prices().await.expect("should succeed");
+        let sol = prices.rows.iter().find(|r| r.symbol == "SOL").expect("SOL row");
+        // Find any venue with a price
+        let price = sol.flash.as_ref()
+            .or(sol.gmtrade.as_ref())
+            .or(sol.phoenix.as_ref())
+            .or(sol.jupiter.as_ref())
+            .expect("at least one venue price for SOL");
+        assert!(price.price > 50.0, "SOL price should be > $50, got {}", price.price);
+        assert!(price.price < 500.0, "SOL price should be < $500, got {}", price.price);
+    }
+
+    /// Live: funding rates for SOL include at least one venue
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_funding_rates_sol() {
+        let client = live_client();
+        let rates = client.get_funding_rates().await.expect("should succeed");
+        let sol = rates.rows.iter().find(|r| r.symbol == "SOL").expect("SOL row");
+        let has_some = sol.flash.is_some() || sol.gmtrade.is_some()
+            || sol.phoenix.is_some() || sol.jupiter.is_some();
+        assert!(has_some, "SOL should have at least one venue funding rate");
+    }
+
+    /// Live: priority fee is positive
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_priority_fee_positive() {
+        let client = live_client();
+        let fee = client.get_priority_fee().await.expect("should succeed");
+        assert!(fee.priority_fee > 0, "priority fee should be > 0");
+        assert!(fee.priority_fee < 100_000_000, "priority fee sanity bound");
+    }
+
+    /// Live: stats markets includes multiple symbols
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_stats_multiple_symbols() {
+        let client = live_client();
+        let stats = client.get_stats_markets().await.expect("should succeed");
+        let symbols: std::collections::HashSet<_> = stats.rows.iter().map(|r| r.symbol.clone()).collect();
+        assert!(symbols.len() >= 3, "should have at least 3 distinct symbols, got {}", symbols.len());
+    }
+
+    /// Live: stats SOL and BTC rows have non-zero volume or OI
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_stats_sol_btc_volume() {
+        let client = live_client();
+        let stats = client.get_stats_markets().await.expect("should succeed");
+        for sym in &["SOL", "BTC"] {
+            let row = stats.rows.iter().find(|r| r.symbol == *sym)
+                .unwrap_or_else(|| panic!("{} row should exist", sym));
+            let vol: f64 = row.volume_usd.parse().unwrap_or(0.0);
+            let oi: f64 = row.open_interest_usd.parse().unwrap_or(0.0);
+            assert!(vol > 0.0 || oi > 0.0, "{} should have volume or OI > 0", sym);
+        }
+    }
+
+    /// Live: phoenix depth returns bids below mid
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_phoenix_depth_bids_below_mid() {
+        let client = live_client();
+        let depth = client.get_phoenix_depth("SOL-PERP").await.expect("should succeed");
+        let sol = depth.snapshots.get("SOL").expect("SOL snapshot should exist");
+        assert!(!sol.bids.is_empty(), "SOL should have bids");
+        assert!(!sol.asks.is_empty(), "SOL should have asks");
+        assert!(sol.bids.iter().all(|b| b.price < sol.mid),
+            "all bids should be below mid");
+        assert!(sol.asks.iter().all(|a| a.price > sol.mid),
+            "all asks should be above mid");
+    }
+
+    /// Live: phoenix depth for BTC returns data
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_phoenix_depth_btc() {
+        let client = live_client();
+        let depth = client.get_phoenix_depth("BTC-PERP").await.expect("should succeed");
+        let btc = depth.snapshots.get("BTC").expect("BTC snapshot should exist");
+        assert!(!btc.bids.is_empty());
+        assert!(!btc.asks.is_empty());
+    }
+
+    /// Live: phoenix markets include SOL
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_phoenix_markets_sol() {
+        let client = live_client();
+        let markets = client.get_phoenix_markets().await.expect("should succeed");
+        assert!(markets.iter().all(|m| m.underwriter == "phoenix"));
+        let sol = markets.iter().find(|m| m.symbol == "SOL").expect("SOL phoenix market");
+        assert!(sol.max_leverage > 10.0 && sol.max_leverage < 20.0,
+            "SOL phoenix max_leverage should be ~15, got {}", sol.max_leverage);
+    }
+
+    /// Live: flash markets include SOL long/short and BTC
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_flash_markets_sol_btc() {
+        let client = live_client();
+        let markets = client.get_flash_markets().await.expect("should succeed");
+        assert!(markets.iter().all(|m| m.underwriter == "flash_trade"));
+        assert!(markets.iter().any(|m| m.symbol == "SOL" && m.side == "long"),
+            "SOL long should exist");
+        assert!(markets.iter().any(|m| m.symbol == "SOL" && m.side == "short"),
+            "SOL short should exist");
+        assert!(markets.iter().any(|m| m.symbol == "BTC"),
+            "BTC should exist in flash markets");
+    }
+
+    /// Live: gmtrade liquidity for BTC non-zero, SOL present
+    #[tokio::test]
+    #[ignore]
+    async fn live_smoke_gmtrade_liquidity_btc_sol() {
+        let client = live_client();
+        let liq = client.get_gmtrade_liquidity().await.expect("should succeed");
+        let btc = liq.iter().find(|l| l.symbol == "BTC").expect("BTC liquidity");
+        assert!(btc.long_available_usd + btc.short_available_usd > 0.0,
+            "BTC should have liquidity on at least one side");
+        assert!(liq.iter().any(|l| l.symbol == "SOL"), "SOL should be present");
     }
 }
