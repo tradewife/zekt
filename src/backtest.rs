@@ -975,8 +975,20 @@ impl BacktestEngine {
 
             // Check entry (only if no position and not in cooldown)
             if position.is_none() && candle.t >= cooldown_until_ms {
-                // Regime gate: skip entry if current regime is incompatible with cluster
-                if apply_regime && !cluster_id.is_empty() && !regime.is_compatible(market, cluster_id) {
+                // Regime gate: skip entry if current regime is incompatible
+                let regime_blocked = if apply_regime {
+                    if !cluster_id.is_empty() {
+                        // Blueprint strategies use cluster fingerprint matching
+                        !regime.is_compatible(market, cluster_id)
+                    } else {
+                        // All other strategies use strategy-type-specific rules
+                        !regime.is_strategy_compatible(market, strategy_name)
+                    }
+                } else {
+                    false
+                };
+
+                if regime_blocked {
                     regime_blocked_count += 1;
                     // Regime incompatibility is logged separately from "no signal"
                     debug!(
