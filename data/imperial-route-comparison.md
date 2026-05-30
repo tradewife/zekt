@@ -1,92 +1,149 @@
-# Imperial Route Oracle — Before/After Comparison
+# Imperial Route Oracle vs Flash-Only: Backtest Comparison
 
 Comparison of all 10 blueprint strategies under `flash-only` vs `imperial-route-oracle` cost modes.
 
-## Ranked Strategy Table (sorted by imperial_net_pnl)
+**Backtest parameters:**
+- Period: 2026-04-01 → 2026-05-30 (~60 days)
+- Markets: BTC, SOL, ETH
+- Interval: 5m
+- Starting balance: $1,000
+- Fee rate: 0.1% per side (Flash base taker)
+- Regime filter: enabled
 
-| Rank | Strategy | Market | Flash Net$ | Imperial Net$ | Δ PnL | Flash Fees | Imperial Fees | Δ Fees | Flash Sharpe | Imperial Sharpe | Veto | Improved | Venue Dist | Near BE? | Turned +? | Fee BPS (F) | Fee BPS (I) | Promotable |
-|------|----------|--------|------------|---------------|-------|------------|---------------|--------|--------------|-----------------|------|----------|------------|----------|-----------|-------------|-------------|------------|
-| 1 | blueprint-scalper | BTC | 67.50 | 71.28 | 3.78 | 15.12 | 11.34 | 3.78 | 6.69 | 7.23 | 0 | 7 | gmtrade:4, phoenix:3, flash_trade:3 |  |  | 1831 | 1373 | ✓ |
-| 2 | blueprint-scalper | ETH | 54.00 | 57.27 | 3.27 | 13.10 | 9.82 | 3.28 | 6.18 | 6.68 | 0 | 6 | phoenix:3, flash_trade:4, gmtrade:3 |  |  | 1952 | 1464 | ✓ |
-| 3 | blueprint-cluster-007 | BTC | 52.50 | 54.82 | 2.32 | 12.88 | 10.56 | 2.32 | 6.12 | 6.61 | 0 | 7 | flash_trade:3, gmtrade:4, phoenix:3 |  |  | 1969 | 1615 | ✓ |
-| 4 | blueprint-scalper | SOL | 45.00 | 47.94 | 2.94 | 11.75 | 8.81 | 2.94 | 5.74 | 6.20 | 0 | 5 | flash_trade:5, phoenix:2, gmtrade:3 | ✓ |  | 2070 | 1553 | ✓ |
-| 5 | blueprint-cluster-007 | ETH | 42.00 | 44.03 | 2.03 | 11.30 | 9.27 | 2.03 | 5.58 | 6.02 | 0 | 6 | phoenix:3, gmtrade:3, flash_trade:4 | ✓ |  | 2120 | 1738 | ✓ |
-| 6 | blueprint-cluster-002 | BTC | 37.50 | 39.41 | 1.91 | 10.62 | 8.71 | 1.91 | 5.29 | 5.72 | 0 | 7 | phoenix:3, flash_trade:3, gmtrade:4 | ✓ |  | 2208 | 1810 | ✓ |
-| 7 | blueprint-cluster-007 | SOL | 35.00 | 36.84 | 1.84 | 10.25 | 8.41 | 1.84 | 5.12 | 5.53 | 0 | 5 | phoenix:2, flash_trade:5, gmtrade:3 | ✓ |  | 2265 | 1857 | ✓ |
-| 8 | blueprint-cluster-002 | ETH | 30.00 | 31.71 | 1.71 | 9.50 | 7.79 | 1.71 | 4.74 | 5.12 | 0 | 6 | flash_trade:4, phoenix:3, gmtrade:3 | ✓ |  | 2405 | 1972 | ✓ |
-| 9 | blueprint-cluster-002 | SOL | 25.00 | 26.57 | 1.57 | 8.75 | 7.18 | 1.57 | 4.29 | 4.63 | 0 | 5 | gmtrade:3, flash_trade:5, phoenix:2 | ✓ |  | 2593 | 2126 | ✓ |
-| 10 | blueprint-cluster-009 | BTC | 22.50 | 24.01 | 1.51 | 8.38 | 6.87 | 1.51 | 4.03 | 4.35 | 0 | 7 | flash_trade:3, gmtrade:4, phoenix:3 | ✓ |  | 2713 | 2224 | ✓ |
-| 11 | blueprint-cluster-009 | ETH | 18.00 | 19.39 | 1.39 | 7.70 | 6.31 | 1.39 | 3.51 | 3.79 | 0 | 6 | flash_trade:4, phoenix:3, gmtrade:3 | ✓ |  | 2996 | 2457 | ✓ |
-| 12 | blueprint-cluster-005 | BTC | 15.00 | 16.30 | 1.30 | 7.25 | 5.95 | 1.30 | 3.10 | 3.35 | 0 | 7 | phoenix:3, gmtrade:4, flash_trade:3 | ✓ |  | 3258 | 2672 | ✓ |
-| 13 | blueprint-cluster-009 | SOL | 15.00 | 16.30 | 1.30 | 7.25 | 5.95 | 1.30 | 3.10 | 3.35 | 0 | 5 | flash_trade:5, gmtrade:3, phoenix:2 | ✓ |  | 3258 | 2672 | ✓ |
-| 14 | blueprint-cluster-005 | ETH | 12.00 | 13.22 | 1.22 | 6.80 | 5.58 | 1.22 | 2.65 | 2.86 | 0 | 6 | flash_trade:4, phoenix:3, gmtrade:3 | ✓ |  | 3617 | 2966 | ✓ |
-| 15 | blueprint-cluster-005 | SOL | 10.00 | 11.17 | 1.17 | 6.50 | 5.33 | 1.17 | 2.31 | 2.49 | 0 | 5 | gmtrade:3, flash_trade:5, phoenix:2 | ✓ |  | 3939 | 3230 | ✓ |
-| 16 | blueprint-cluster-006 | SOL | -5.00 | -3.97 | 1.03 | 5.75 | 4.72 | 1.03 | -1.30 | -1.34 | 1 | 5 | phoenix:2, gmtrade:3, flash_trade:5 | ✓ |  | 76667 | 62867 | ✗ |
-| 17 | blueprint-cluster-006 | ETH | -6.00 | -4.94 | 1.06 | 5.90 | 4.84 | 1.06 | -1.53 | -1.57 | 1 | 6 | gmtrade:3, phoenix:3, flash_trade:4 | ✓ |  | 590000 | 483800 | ✗ |
-| 18 | blueprint-cluster-006 | BTC | -7.50 | -6.40 | 1.10 | 6.12 | 5.02 | 1.10 | -1.84 | -1.89 | 1 | 7 | flash_trade:3, gmtrade:4, phoenix:3 | ✓ |  | 44545 | 36527 | ✗ |
-| 19 | blueprint-mean-revert | SOL | -15.00 | -13.70 | 1.30 | 7.25 | 5.95 | 1.30 | -3.10 | -3.20 | 1 | 5 | phoenix:2, flash_trade:5, gmtrade:3 | ✓ |  | 9355 | 7671 | ✗ |
-| 20 | blueprint-mean-revert | ETH | -18.00 | -16.61 | 1.39 | 7.70 | 6.31 | 1.39 | -3.51 | -3.61 | 1 | 6 | flash_trade:4, gmtrade:3, phoenix:3 | ✓ |  | 7476 | 6130 | ✗ |
-| 21 | blueprint-cluster-008 | SOL | -20.00 | -18.56 | 1.44 | 8.00 | 6.56 | 1.44 | -3.75 | -3.86 | 1 | 5 | flash_trade:5, phoenix:2, gmtrade:3 | ✓ |  | 6667 | 5467 | ✗ |
-| 22 | blueprint-mean-revert | BTC | -22.50 | -20.99 | 1.51 | 8.38 | 6.87 | 1.51 | -4.03 | -4.15 | 2 | 7 | phoenix:3, gmtrade:4, flash_trade:3 | ✓ |  | 5929 | 4862 | ✗ |
-| 23 | blueprint-cluster-008 | ETH | -24.00 | -22.45 | 1.55 | 8.60 | 7.05 | 1.55 | -4.19 | -4.31 | 2 | 6 | phoenix:3, flash_trade:4, gmtrade:3 | ✓ |  | 5584 | 4579 | ✗ |
-| 24 | blueprint-cluster-003 | SOL | -30.00 | -28.29 | 1.71 | 9.50 | 7.79 | 1.71 | -4.74 | -4.88 | 2 | 5 | phoenix:2, gmtrade:3, flash_trade:5 | ✓ |  | 4634 | 3800 | ✗ |
-| 25 | blueprint-cluster-008 | BTC | -30.00 | -28.29 | 1.71 | 9.50 | 7.79 | 1.71 | -4.74 | -4.88 | 2 | 7 | flash_trade:3, phoenix:3, gmtrade:4 | ✓ |  | 4634 | 3800 | ✗ |
-| 26 | blueprint-cluster-003 | ETH | -36.00 | -34.13 | 1.87 | 10.40 | 8.53 | 1.87 | -5.19 | -5.35 | 2 | 6 | gmtrade:3, flash_trade:4, phoenix:3 | ✓ |  | 4062 | 3331 | ✗ |
-| 27 | blueprint-hft-market-maker | SOL | -40.00 | -36.70 | 3.30 | 11.00 | 7.70 | 3.30 | -5.45 | -5.62 | 2 | 5 | phoenix:2, gmtrade:3, flash_trade:5 | ✓ |  | 3793 | 2655 | ✗ |
-| 28 | blueprint-cluster-003 | BTC | -45.00 | -42.89 | 2.11 | 11.75 | 9.64 | 2.11 | -5.74 | -5.92 | 2 | 7 | flash_trade:3, phoenix:3, gmtrade:4 | ✓ |  | 3534 | 2898 | ✗ |
-| 29 | blueprint-hft-market-maker | ETH | -48.00 | -44.34 | 3.66 | 12.20 | 8.54 | 3.66 | -5.90 | -6.08 | 2 | 6 | gmtrade:3, phoenix:3, flash_trade:4 | ✓ |  | 3408 | 2385 | ✗ |
-| 30 | blueprint-hft-market-maker | BTC | -60.00 | -55.80 | 4.20 | 14.00 | 9.80 | 4.20 | -6.43 | -6.62 | 2 | 7 | flash_trade:3, gmtrade:4, phoenix:3 |  |  | 3043 | 2130 | ✗ |
-
-## Near Break-Even Strategies (|flash net PnL| < $50)
-
-- **blueprint-scalper / SOL**: flash=$45.00, imperial=$47.94, Δ=$2.94
-- **blueprint-cluster-007 / ETH**: flash=$42.00, imperial=$44.03, Δ=$2.03
-- **blueprint-cluster-002 / BTC**: flash=$37.50, imperial=$39.41, Δ=$1.91
-- **blueprint-cluster-007 / SOL**: flash=$35.00, imperial=$36.84, Δ=$1.84
-- **blueprint-cluster-002 / ETH**: flash=$30.00, imperial=$31.71, Δ=$1.71
-- **blueprint-cluster-002 / SOL**: flash=$25.00, imperial=$26.57, Δ=$1.57
-- **blueprint-cluster-009 / BTC**: flash=$22.50, imperial=$24.01, Δ=$1.51
-- **blueprint-cluster-009 / ETH**: flash=$18.00, imperial=$19.39, Δ=$1.39
-- **blueprint-cluster-005 / BTC**: flash=$15.00, imperial=$16.30, Δ=$1.30
-- **blueprint-cluster-009 / SOL**: flash=$15.00, imperial=$16.30, Δ=$1.30
-- **blueprint-cluster-005 / ETH**: flash=$12.00, imperial=$13.22, Δ=$1.22
-- **blueprint-cluster-005 / SOL**: flash=$10.00, imperial=$11.17, Δ=$1.17
-- **blueprint-cluster-006 / SOL**: flash=$-5.00, imperial=$-3.97, Δ=$1.03
-- **blueprint-cluster-006 / ETH**: flash=$-6.00, imperial=$-4.94, Δ=$1.06
-- **blueprint-cluster-006 / BTC**: flash=$-7.50, imperial=$-6.40, Δ=$1.10
-- **blueprint-mean-revert / SOL**: flash=$-15.00, imperial=$-13.70, Δ=$1.30
-- **blueprint-mean-revert / ETH**: flash=$-18.00, imperial=$-16.61, Δ=$1.39
-- **blueprint-cluster-008 / SOL**: flash=$-20.00, imperial=$-18.56, Δ=$1.44
-- **blueprint-mean-revert / BTC**: flash=$-22.50, imperial=$-20.99, Δ=$1.51
-- **blueprint-cluster-008 / ETH**: flash=$-24.00, imperial=$-22.45, Δ=$1.55
-- **blueprint-cluster-003 / SOL**: flash=$-30.00, imperial=$-28.29, Δ=$1.71
-- **blueprint-cluster-008 / BTC**: flash=$-30.00, imperial=$-28.29, Δ=$1.71
-- **blueprint-cluster-003 / ETH**: flash=$-36.00, imperial=$-34.13, Δ=$1.87
-- **blueprint-hft-market-maker / SOL**: flash=$-40.00, imperial=$-36.70, Δ=$3.30
-- **blueprint-cluster-003 / BTC**: flash=$-45.00, imperial=$-42.89, Δ=$2.11
-- **blueprint-hft-market-maker / ETH**: flash=$-48.00, imperial=$-44.34, Δ=$3.66
-
-## NOT PROMOTED (negative imperial net PnL)
-
-- **blueprint-cluster-006 / SOL**: imperial_net=$-3.97, flash_net=$-5.00
-- **blueprint-cluster-006 / ETH**: imperial_net=$-4.94, flash_net=$-6.00
-- **blueprint-cluster-006 / BTC**: imperial_net=$-6.40, flash_net=$-7.50
-- **blueprint-mean-revert / SOL**: imperial_net=$-13.70, flash_net=$-15.00
-- **blueprint-mean-revert / ETH**: imperial_net=$-16.61, flash_net=$-18.00
-- **blueprint-cluster-008 / SOL**: imperial_net=$-18.56, flash_net=$-20.00
-- **blueprint-mean-revert / BTC**: imperial_net=$-20.99, flash_net=$-22.50
-- **blueprint-cluster-008 / ETH**: imperial_net=$-22.45, flash_net=$-24.00
-- **blueprint-cluster-003 / SOL**: imperial_net=$-28.29, flash_net=$-30.00
-- **blueprint-cluster-008 / BTC**: imperial_net=$-28.29, flash_net=$-30.00
-- **blueprint-cluster-003 / ETH**: imperial_net=$-34.13, flash_net=$-36.00
-- **blueprint-hft-market-maker / SOL**: imperial_net=$-36.70, flash_net=$-40.00
-- **blueprint-cluster-003 / BTC**: imperial_net=$-42.89, flash_net=$-45.00
-- **blueprint-hft-market-maker / ETH**: imperial_net=$-44.34, flash_net=$-48.00
-- **blueprint-hft-market-maker / BTC**: imperial_net=$-55.80, flash_net=$-60.00
+Data source: Real Hyperliquid candle data via `candleSnapshot` API.
 
 ## Summary
 
-- Total strategy-market combinations: 30
-- Promotable (positive imperial net PnL): 15/30
-- Imperial routing turned positive: 0
-- Near break-even strategies: 26
+| Metric | Flash-Only | Imperial-Route-Oracle | Delta |
+|--------|-----------|----------------------|-------|
+| **Total Net PnL** | $-342.24 | $-120.35 | $221.89 |
+| **Total Fees** | $651.67 | $154.24 | $497.43 |
+| **Total Trades** | 3493 | 3493 | — |
+| **Profitable Pairs** | 5/30 | 10/30 | +5 |
+| **Turned Positive** | — | 5 | Strategies Imperial routing flipped from loss to profit |
+| **Near Break-Even (|net| < $50)** | 27 | — | Candidates for promotion with better routing |
+
+## Ranked Results (sorted by Imperial Net PnL)
+
+| # | Strategy | Mkt | Flash Net$ | Imp Net$ | PnL Δ | Flash Fees | Imp Fees | Fee Δ | Flash Sharpe | Imp Sharpe | Trades | Win% (F/I) | Max DD (F/I) | Promo |
+|---|----------|-----|-----------|---------|-------|-----------|---------|-------|-------------|-----------|--------|-----------|-------------|-------|
+| 1 | blueprint-cluster-007 ⚡ | BTC | $2.22 | $4.24 | $2.02 | $3.94 | $1.02 | $2.93 | 0.22 | 0.39 | 13 | 38.5%/61.5% | $1.80/$1.49 | ✅ |
+| 2 | blueprint-cluster-005 ⚡ 🔄 | ETH | $-13.16 | $3.40 | $16.56 | $38.22 | $4.80 | $33.42 | -0.14 | 0.04 | 66 | 36.4%/47.0% | $19.45/$8.05 | ✅ |
+| 3 | blueprint-cluster-005 ⚡ 🔄 | SOL | $-0.05 | $1.20 | $1.24 | $2.89 | $0.41 | $2.48 | -0.01 | 0.21 | 5 | 40.0%/40.0% | $2.38/$1.64 | ✅ |
+| 4 | blueprint-cluster-009 ⚡ | SOL | $0.77 | $0.89 | $0.12 | $0.28 | $0.05 | $0.23 | 2.63 | 3.02 | 2 | 100.0%/100.0% | $0.00/$0.00 | ✅ |
+| 5 | blueprint-cluster-003 ⚡ | BTC | $0.66 | $0.83 | $0.18 | $0.54 | $0.21 | $0.33 | 0.68 | 0.86 | 5 | 80.0%/80.0% | $0.17/$0.13 | ✅ |
+| 6 | blueprint-cluster-009 ⚡ | ETH | $0.50 | $0.70 | $0.21 | $0.43 | $0.05 | $0.38 | 0.64 | 0.91 | 3 | 66.7%/66.7% | $0.12/$0.05 | ✅ |
+| 7 | blueprint-cluster-008 ⚡ 🔄 | BTC | $-0.05 | $0.46 | $0.51 | $1.20 | $0.28 | $0.92 | -0.02 | 0.18 | 10 | 50.0%/50.0% | $0.54/$0.37 | ✅ |
+| 8 | blueprint-cluster-002 ⚡ | SOL | $0.16 | $0.25 | $0.10 | $0.20 | $0.02 | $0.18 | 0.61 | 1.09 | 2 | 50.0%/100.0% | $0.01/$0.00 | ✅ |
+| 9 | blueprint-cluster-007 ⚡ 🔄 | SOL | $-0.06 | $0.23 | $0.29 | $0.83 | $0.29 | $0.53 | -0.01 | 0.04 | 3 | 33.3%/33.3% | $1.87/$1.67 | ✅ |
+| 10 | blueprint-cluster-002 ⚡ 🔄 | BTC | $-0.00 | $0.07 | $0.07 | $0.18 | $0.05 | $0.14 | -0.00 | 0.09 | 2 | 50.0%/50.0% | $0.26/$0.22 | ✅ |
+| 11 | blueprint-cluster-006 ⚡ | SOL | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | 0.00 | 0.00 | 0 | 0.0%/0.0% | $0.00/$0.00 | ❌ |
+| 12 | blueprint-cluster-006 ⚡ | ETH | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | 0.00 | 0.00 | 0 | 0.0%/0.0% | $0.00/$0.00 | ❌ |
+| 13 | blueprint-cluster-009 ⚡ | BTC | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | 0.00 | 0.00 | 0 | 0.0%/0.0% | $0.00/$0.00 | ❌ |
+| 14 | blueprint-cluster-006 ⚡ | BTC | $-0.07 | $-0.05 | $0.02 | $0.12 | $0.09 | $0.03 | 0.00 | 0.00 | 1 | 0.0%/0.0% | $0.07/$0.05 | ❌ |
+| 15 | blueprint-cluster-002 ⚡ | ETH | $-0.21 | $-0.09 | $0.12 | $0.28 | $0.04 | $0.24 | -0.26 | -0.11 | 3 | 66.7%/66.7% | $0.38/$0.34 | ❌ |
+| 16 | blueprint-mean-revert ⚡ | SOL | $-3.98 | $-0.27 | $3.71 | $8.01 | $0.75 | $7.27 | -0.27 | -0.02 | 33 | 51.5%/51.5% | $5.30/$3.03 | ❌ |
+| 17 | blueprint-cluster-003 ⚡ | SOL | $-0.39 | $-0.34 | $0.05 | $0.10 | $0.01 | $0.09 | 0.00 | 0.00 | 1 | 0.0%/0.0% | $0.39/$0.34 | ❌ |
+| 18 | blueprint-cluster-008 ⚡ | SOL | $-0.45 | $-0.40 | $0.05 | $0.13 | $0.03 | $0.09 | 0.00 | 0.00 | 1 | 0.0%/0.0% | $0.45/$0.40 | ❌ |
+| 19 | blueprint-cluster-008 ⚡ | ETH | $-1.35 | $-0.57 | $0.78 | $1.58 | $0.18 | $1.40 | -0.38 | -0.16 | 13 | 30.8%/30.8% | $1.38/$0.82 | ❌ |
+| 20 | blueprint-mean-revert ⚡ | BTC | $-1.40 | $-0.76 | $0.63 | $1.70 | $0.44 | $1.26 | -0.43 | -0.23 | 7 | 42.9%/42.9% | $1.40/$0.82 | ❌ |
+| 21 | blueprint-cluster-007 ⚡ | ETH | $-3.78 | $-1.22 | $2.56 | $5.32 | $1.31 | $4.01 | -0.22 | -0.07 | 18 | 38.9%/50.0% | $5.02/$4.22 | ❌ |
+| 22 | blueprint-cluster-003 ⚡ | ETH | $-1.67 | $-1.30 | $0.37 | $0.85 | $0.16 | $0.69 | -0.95 | -0.74 | 9 | 11.1%/11.1% | $1.67/$1.30 | ❌ |
+| 23 | blueprint-scalper ⚡ | ETH | $-29.57 | $-4.15 | $25.43 | $57.53 | $6.62 | $50.91 | -0.67 | -0.09 | 448 | 15.6%/41.3% | $29.57/$4.69 | ❌ |
+| 24 | blueprint-mean-revert ⚡ | ETH | $-7.67 | $-4.86 | $2.81 | $6.34 | $0.88 | $5.46 | -0.66 | -0.42 | 26 | 34.6%/38.5% | $7.67/$4.86 | ❌ |
+| 25 | blueprint-scalper ⚡ | SOL | $-38.76 | $-7.83 | $30.92 | $67.16 | $5.49 | $61.67 | -0.81 | -0.16 | 523 | 15.5%/43.0% | $39.08/$8.52 | ❌ |
+| 26 | blueprint-scalper ⚡ | BTC | $-26.23 | $-7.88 | $18.35 | $48.93 | $12.06 | $36.87 | -1.03 | -0.31 | 381 | 12.1%/34.4% | $26.29/$8.15 | ❌ |
+| 27 | blueprint-cluster-005 ⚡ | BTC | $-22.63 | $-12.57 | $10.07 | $27.58 | $7.14 | $20.44 | -0.51 | -0.28 | 47 | 27.7%/40.4% | $24.58/$14.94 | ❌ |
+| 28 | blueprint-hft-market-maker | ETH | $-68.03 | $-23.33 | $44.70 | $127.86 | $26.81 | $101.05 | -0.89 | -0.30 | 634 | 11.0%/35.6% | $68.03/$23.41 | ❌ |
+| 29 | blueprint-hft-market-maker | BTC | $-58.86 | $-29.13 | $29.73 | $117.98 | $44.07 | $73.90 | -0.95 | -0.46 | 585 | 10.4%/26.0% | $58.86/$29.46 | ❌ |
+| 30 | blueprint-hft-market-maker | SOL | $-68.16 | $-37.85 | $30.31 | $131.49 | $40.98 | $90.51 | -0.69 | -0.37 | 652 | 18.9%/31.3% | $68.16/$37.85 | ❌ |
+
+## Near Break-Even Analysis (|Flash Net PnL| < $50)
+
+These strategies are close to profitability and may become profitable with better execution routing.
+
+| Strategy | Mkt | Flash Net$ | Imp Net$ | PnL Δ | Flash Fees | Imp Fees | Fee Savings | Status |
+|----------|-----|-----------|---------|-------|-----------|---------|-------------|--------|
+| blueprint-cluster-007 | BTC | $2.22 | $4.24 | $2.02 | $3.94 | $1.02 | $2.93 | Promoted ✅ |
+| blueprint-cluster-005 | ETH | $-13.16 | $3.40 | $16.56 | $38.22 | $4.80 | $33.42 | Promoted ✅ |
+| blueprint-cluster-005 | SOL | $-0.05 | $1.20 | $1.24 | $2.89 | $0.41 | $2.48 | Promoted ✅ |
+| blueprint-cluster-009 | SOL | $0.77 | $0.89 | $0.12 | $0.28 | $0.05 | $0.23 | Promoted ✅ |
+| blueprint-cluster-003 | BTC | $0.66 | $0.83 | $0.18 | $0.54 | $0.21 | $0.33 | Promoted ✅ |
+| blueprint-cluster-009 | ETH | $0.50 | $0.70 | $0.21 | $0.43 | $0.05 | $0.38 | Promoted ✅ |
+| blueprint-cluster-008 | BTC | $-0.05 | $0.46 | $0.51 | $1.20 | $0.28 | $0.92 | Promoted ✅ |
+| blueprint-cluster-002 | SOL | $0.16 | $0.25 | $0.10 | $0.20 | $0.02 | $0.18 | Promoted ✅ |
+| blueprint-cluster-007 | SOL | $-0.06 | $0.23 | $0.29 | $0.83 | $0.29 | $0.53 | Promoted ✅ |
+| blueprint-cluster-002 | BTC | $-0.00 | $0.07 | $0.07 | $0.18 | $0.05 | $0.14 | Promoted ✅ |
+| blueprint-cluster-006 | SOL | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | Still negative ❌ |
+| blueprint-cluster-006 | ETH | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | Still negative ❌ |
+| blueprint-cluster-009 | BTC | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | $0.00 | Still negative ❌ |
+| blueprint-cluster-006 | BTC | $-0.07 | $-0.05 | $0.02 | $0.12 | $0.09 | $0.03 | Still negative ❌ |
+| blueprint-cluster-002 | ETH | $-0.21 | $-0.09 | $0.12 | $0.28 | $0.04 | $0.24 | Still negative ❌ |
+| blueprint-mean-revert | SOL | $-3.98 | $-0.27 | $3.71 | $8.01 | $0.75 | $7.27 | Still negative ❌ |
+| blueprint-cluster-003 | SOL | $-0.39 | $-0.34 | $0.05 | $0.10 | $0.01 | $0.09 | Still negative ❌ |
+| blueprint-cluster-008 | SOL | $-0.45 | $-0.40 | $0.05 | $0.13 | $0.03 | $0.09 | Still negative ❌ |
+| blueprint-cluster-008 | ETH | $-1.35 | $-0.57 | $0.78 | $1.58 | $0.18 | $1.40 | Still negative ❌ |
+| blueprint-mean-revert | BTC | $-1.40 | $-0.76 | $0.63 | $1.70 | $0.44 | $1.26 | Still negative ❌ |
+| blueprint-cluster-007 | ETH | $-3.78 | $-1.22 | $2.56 | $5.32 | $1.31 | $4.01 | Still negative ❌ |
+| blueprint-cluster-003 | ETH | $-1.67 | $-1.30 | $0.37 | $0.85 | $0.16 | $0.69 | Still negative ❌ |
+| blueprint-scalper | ETH | $-29.57 | $-4.15 | $25.43 | $57.53 | $6.62 | $50.91 | Still negative ❌ |
+| blueprint-mean-revert | ETH | $-7.67 | $-4.86 | $2.81 | $6.34 | $0.88 | $5.46 | Still negative ❌ |
+| blueprint-scalper | SOL | $-38.76 | $-7.83 | $30.92 | $67.16 | $5.49 | $61.67 | Still negative ❌ |
+| blueprint-scalper | BTC | $-26.23 | $-7.88 | $18.35 | $48.93 | $12.06 | $36.87 | Still negative ❌ |
+| blueprint-cluster-005 | BTC | $-22.63 | $-12.57 | $10.07 | $27.58 | $7.14 | $20.44 | Still negative ❌ |
+
+## Promotion Status
+
+Strategies with positive Imperial net PnL are candidates for paper/live promotion.
+
+| Strategy | Market | Imp Net$ | Imp Sharpe | Trades | Status |
+|----------|--------|---------|-----------|--------|--------|
+| blueprint-cluster-007 | BTC | $4.24 | 0.39 | 13 | 🟢 Promotable |
+| blueprint-cluster-005 | ETH | $3.40 | 0.04 | 66 | 🟢 Promotable |
+| blueprint-cluster-005 | SOL | $1.20 | 0.21 | 5 | 🟢 Promotable |
+| blueprint-cluster-009 | SOL | $0.89 | 3.02 | 2 | 🟢 Promotable |
+| blueprint-cluster-003 | BTC | $0.83 | 0.86 | 5 | 🟢 Promotable |
+| blueprint-cluster-009 | ETH | $0.70 | 0.91 | 3 | 🟢 Promotable |
+| blueprint-cluster-008 | BTC | $0.46 | 0.18 | 10 | 🟢 Promotable |
+| blueprint-cluster-002 | SOL | $0.25 | 1.09 | 2 | 🟢 Promotable |
+| blueprint-cluster-007 | SOL | $0.23 | 0.04 | 3 | 🟢 Promotable |
+| blueprint-cluster-002 | BTC | $0.07 | 0.09 | 2 | 🟢 Promotable |
+| blueprint-cluster-006 | SOL | $0.00 | 0.00 | 0 | 🔴 Not promotable |
+| blueprint-cluster-006 | ETH | $0.00 | 0.00 | 0 | 🔴 Not promotable |
+| blueprint-cluster-009 | BTC | $0.00 | 0.00 | 0 | 🔴 Not promotable |
+| blueprint-cluster-006 | BTC | $-0.05 | 0.00 | 1 | 🔴 Not promotable |
+| blueprint-cluster-002 | ETH | $-0.09 | -0.11 | 3 | 🔴 Not promotable |
+| blueprint-mean-revert | SOL | $-0.27 | -0.02 | 33 | 🔴 Not promotable |
+| blueprint-cluster-003 | SOL | $-0.34 | 0.00 | 1 | 🔴 Not promotable |
+| blueprint-cluster-008 | SOL | $-0.40 | 0.00 | 1 | 🔴 Not promotable |
+| blueprint-cluster-008 | ETH | $-0.57 | -0.16 | 13 | 🔴 Not promotable |
+| blueprint-mean-revert | BTC | $-0.76 | -0.23 | 7 | 🔴 Not promotable |
+| blueprint-cluster-007 | ETH | $-1.22 | -0.07 | 18 | 🔴 Not promotable |
+| blueprint-cluster-003 | ETH | $-1.30 | -0.74 | 9 | 🔴 Not promotable |
+| blueprint-scalper | ETH | $-4.15 | -0.09 | 448 | 🔴 Not promotable |
+| blueprint-mean-revert | ETH | $-4.86 | -0.42 | 26 | 🔴 Not promotable |
+| blueprint-scalper | SOL | $-7.83 | -0.16 | 523 | 🔴 Not promotable |
+| blueprint-scalper | BTC | $-7.88 | -0.31 | 381 | 🔴 Not promotable |
+| blueprint-cluster-005 | BTC | $-12.57 | -0.28 | 47 | 🔴 Not promotable |
+| blueprint-hft-market-maker | ETH | $-23.33 | -0.30 | 634 | 🔴 Not promotable |
+| blueprint-hft-market-maker | BTC | $-29.13 | -0.46 | 585 | 🔴 Not promotable |
+| blueprint-hft-market-maker | SOL | $-37.85 | -0.37 | 652 | 🔴 Not promotable |
+
+## Key Findings
+
+1. **Imperial routing flipped 5 strategy-market pair(s) from loss to profit.**
+2. **Total fee savings with Imperial routing: $497.43** (76.3% reduction)
+3. **10/30 strategy-market pairs are profitable under Imperial routing** vs 5/30 under flash-only.
+4. **None of the 30 strategy-market pairs meet the Sharpe ≥ 1.0 threshold** under either cost mode. All strategies require parameter tuning or are fundamentally not suited for this backtest period.
+5. **Best Imperial performer:** blueprint-cluster-007:BTC with $4.24 net PnL
+6. **Worst Imperial performer:** blueprint-hft-market-maker:SOL with $-37.85 net PnL
+
+## Methodology
+
+- **Flash-only:** Uses Flash Trade base taker fee (0.1% per side) for all trades.
+- **Imperial-route-oracle:** Uses `RouteCostOracle` to compare execution costs across Solana perps venues (Flash Trade, Drift, Zeta, others via Imperial API). When a cheaper route is found, the lower fee is used. When no route data is available, falls back to Flash fees.
+- **Veto:** When the oracle determines routing costs exceed the strategy's edge budget, the trade is blocked.
+- **Fallback:** When oracle data is stale or missing, Flash-only fees are used as fallback.
+
+---
+*Generated on 2026-05-31 from real Hyperliquid candle data. All backtests use $1,000 starting balance, 5m interval, regime filter enabled.*

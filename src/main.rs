@@ -101,6 +101,10 @@ struct Args {
     /// Backtest fee rate as decimal per side (default: 0.001 = 0.1%, matching Flash Trade base taker fee)
     #[arg(long, default_value_t = 0.001)]
     backtest_fee_rate: f64,
+
+    /// Backtest cost mode: "flash-only" (default) or "imperial-route-oracle" (uses RouteCostOracle for cross-venue routing)
+    #[arg(long, default_value = "flash-only")]
+    cost_mode: String,
 }
 
 #[tokio::main]
@@ -250,6 +254,7 @@ async fn main() -> anyhow::Result<()> {
             &args.backtest_interval,
             args.paper_balance,
             args.backtest_fee_rate,
+            &args.cost_mode,
         ).await;
     }
 
@@ -442,6 +447,7 @@ async fn run_backtest(
     interval: &str,
     starting_balance: f64,
     fee_rate: f64,
+    cost_mode: &str,
 ) -> anyhow::Result<()> {
     use chrono::Utc;
 
@@ -511,7 +517,7 @@ async fn run_backtest(
         walk_forward_enabled: false,
         walk_forward_train_ratio: 0.7,
         slippage_bps: 0.0, // Default: no slippage; set via config to enable
-        cost_mode: "flash-only".to_string(),
+        cost_mode: cost_mode.to_string(),
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;
