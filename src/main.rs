@@ -127,6 +127,14 @@ struct Args {
     /// Borrow rate override (hourly rate on notional, default: 0.0001)
     #[arg(long)]
     borrow_rate: Option<f64>,
+
+    /// Walk-forward mode: "single" (existing 70/30 split) or "expanding" (N expanding windows)
+    #[arg(long, default_value = "single")]
+    walk_forward_mode: String,
+
+    /// Number of expanding walk-forward windows (default: 5, only used with --walk-forward-mode expanding)
+    #[arg(long, default_value_t = 5)]
+    walk_forward_windows: usize,
 }
 
 #[tokio::main]
@@ -312,6 +320,8 @@ async fn main() -> anyhow::Result<()> {
             args.output_path.as_deref(),
             args.param_override.as_deref(),
             args.borrow_rate,
+            &args.walk_forward_mode,
+            args.walk_forward_windows,
         ).await;
     }
 
@@ -510,6 +520,8 @@ async fn run_backtest(
     output_path: Option<&str>,
     param_override_json: Option<&str>,
     borrow_rate_override: Option<f64>,
+    walk_forward_mode_str: &str,
+    walk_forward_windows: usize,
 ) -> anyhow::Result<()> {
     use chrono::Utc;
 
@@ -593,6 +605,10 @@ async fn run_backtest(
         fee_rate * 100.0, leverage, starting_balance, sizing_mode.name(), borrow_rate_hourly);
     tracing::info!("Output path: {}", output_dir);
 
+    // Parse walk-forward mode
+    let walk_forward_mode = backtest::WalkForwardMode::from_cli_str(walk_forward_mode_str)?;
+    tracing::info!("Walk-forward mode: {} (windows={})", walk_forward_mode.name(), walk_forward_windows);
+
     let bt_config = backtest::BacktestConfig {
         strategies: strategy_names,
         markets: market_names,
@@ -604,8 +620,15 @@ async fn run_backtest(
         borrow_rate_hourly,
         leverage,
         regime_filter: true, // Always enable regime filtering
-        walk_forward_enabled: false,
+        walk_forward_enabled: walk_forward_mode_str != "single" || config.backtest.walk_forward_enabled,
         walk_forward_train_ratio: 0.7,
+        walk_forward_mode: match &walk_forward_mode {
+            backtest::WalkForwardMode::Single => backtest::WalkForwardMode::Single,
+            backtest::WalkForwardMode::Expanding { .. } => backtest::WalkForwardMode::Expanding {
+                windows: walk_forward_windows,
+                initial_train_ratio: 0.6,
+            },
+        },
         slippage_bps: 0.0, // Default: no slippage; set via config to enable
         cost_mode: cost_mode.to_string(),
         sizing_mode,
@@ -827,5 +850,54 @@ mod tests {
         assert!(args.param_override.is_some());
         assert_eq!(args.sizing_mode, "volatility-adjusted");
         assert!((args.borrow_rate.unwrap() - 0.0005).abs() < f64::EPSILON);
+    }
+
+    // ── Walk-forward CLI flag tests (VAL-M1-029) ───────────────────────────
+
+    #[test]
+    fn test_walk_forward_mode_flag_default() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert_eq!(args.walk_forward_mode, "single");
+    }
+
+    #[test]
+    fn test_walk_forward_mode_flag_expanding() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest", "--walk-forward-mode", "expanding",
+        ]).unwrap();
+        assert_eq!(args.walk_forward_mode, "expanding");
+    }
+
+    #[test]
+    fn test_walk_forward_mode_flag_single() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest", "--walk-forward-mode", "single",
+        ]).unwrap();
+        assert_eq!(args.walk_forward_mode, "single");
+    }
+
+    #[test]
+    fn test_walk_forward_windows_flag_default() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert_eq!(args.walk_forward_windows, 5);
+    }
+
+    #[test]
+    fn test_walk_forward_windows_flag_custom() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest", "--walk-forward-windows", "10",
+        ]).unwrap();
+        assert_eq!(args.walk_forward_windows, 10);
+    }
+
+    #[test]
+    fn test_walk_forward_flags_together() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest",
+            "--walk-forward-mode", "expanding",
+            "--walk-forward-windows", "7",
+        ]).unwrap();
+        assert_eq!(args.walk_forward_mode, "expanding");
+        assert_eq!(args.walk_forward_windows, 7);
     }
 }

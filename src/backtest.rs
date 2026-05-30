@@ -418,6 +418,159 @@ impl SizingMode {
 }
 
 // ---------------------------------------------------------------------------
+// Walk-Forward Mode
+// ---------------------------------------------------------------------------
+
+/// Walk-forward validation mode.
+///
+/// `Single` is the existing 70/30 train/test split. `Expanding` divides data
+/// into an initial training set (60% by default) and N equal test slices.
+/// Each window expands the training set by including the previous test slice.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "kebab-case")]
+pub enum WalkForwardMode {
+    /// Single train/test split (existing behavior).
+    /// Uses `walk_forward_train_ratio` to split.
+    Single,
+    /// Expanding window walk-forward with configurable number of windows.
+    /// Initial train = `initial_train_ratio` of candles.
+    /// Remaining divided into `windows` equal test slices.
+    /// Each window's training set grows by one slice.
+    Expanding {
+        #[serde(default = "default_wf_windows")]
+        windows: usize,
+        #[serde(default = "default_wf_initial_train_ratio")]
+        initial_train_ratio: f64,
+    },
+}
+
+fn default_wf_windows() -> usize {
+    5
+}
+fn default_wf_initial_train_ratio() -> f64 {
+    0.6
+}
+
+impl Default for WalkForwardMode {
+    fn default() -> Self {
+        WalkForwardMode::Single
+    }
+}
+
+impl WalkForwardMode {
+    /// Parse from CLI string (case-insensitive).
+    pub fn from_cli_str(s: &str) -> anyhow::Result<Self> {
+        match s.to_lowercase().as_str() {
+            "single" => Ok(WalkForwardMode::Single),
+            "expanding" => Ok(WalkForwardMode::Expanding {
+                windows: default_wf_windows(),
+                initial_train_ratio: default_wf_initial_train_ratio(),
+            }),
+            _ => anyhow::bail!(
+                "Unknown walk-forward mode '{}'. Valid options: single, expanding",
+                s
+            ),
+        }
+    }
+
+    /// Human-readable kebab-case name.
+    pub fn name(&self) -> &'static str {
+        match self {
+            WalkForwardMode::Single => "single",
+            WalkForwardMode::Expanding { .. } => "expanding",
+        }
+    }
+}
+
+/// A single expanding walk-forward window with its train and test candle slices.
+#[derive(Debug, Clone)]
+pub struct WalkForwardWindow {
+    /// Window label: "test-w1", "test-w2", etc.
+    pub label: String,
+    /// Window index (0-based).
+    pub index: usize,
+    /// Training candles for this window.
+    pub train_candles: Vec<HlCandle>,
+    /// Test candles for this window.
+    pub test_candles: Vec<HlCandle>,
+}
+
+/// Compute expanding walk-forward windows from a slice of candles.
+///
+/// Initial train = `initial_train_ratio` of total candles.
+/// Remaining `(1 - initial_train_ratio)` divided into `num_windows` equal test slices.
+/// Each window expands training by including the previous test slice.
+///
+/// Returns `None` and logs a warning if data is insufficient.
+pub fn compute_expanding_windows(
+    candles: &[HlCandle],
+    num_windows: usize,
+    initial_train_ratio: f64,
+) -> Option<Vec<WalkForwardWindow>> {
+    if candles.len() < 10 {
+        warn!(
+            "Insufficient candles for expanding walk-forward ({} candles, need >= 10)",
+            candles.len()
+        );
+        return None;
+    }
+
+    let initial_train_ratio = initial_train_ratio.clamp(0.1, 0.9);
+    let num_windows = num_windows.max(1);
+
+    let initial_train_end = (candles.len() as f64 * initial_train_ratio).floor() as usize;
+    if initial_train_end == 0 || initial_train_end >= candles.len() {
+        warn!(
+            "Insufficient candles for expanding walk-forward split ({} candles, ratio={}, initial_train_end={})",
+            candles.len(), initial_train_ratio, initial_train_end
+        );
+        return None;
+    }
+
+    let remaining = candles.len() - initial_train_end;
+    if remaining < num_windows {
+        warn!(
+            "Insufficient remaining candles for {} windows ({} remaining, need >= {})",
+            num_windows, remaining, num_windows
+        );
+        return None;
+    }
+
+    let slice_size = remaining / num_windows;
+    if slice_size == 0 {
+        warn!(
+            "Slice size is 0 for {} windows ({} remaining candles)",
+            num_windows, remaining
+        );
+        return None;
+    }
+
+    let mut windows = Vec::with_capacity(num_windows);
+
+    for i in 0..num_windows {
+        let test_start = initial_train_end + i * slice_size;
+        let test_end = if i == num_windows - 1 {
+            // Last window gets all remaining candles
+            candles.len()
+        } else {
+            initial_train_end + (i + 1) * slice_size
+        };
+
+        let train_end = test_start; // Training set expands up to test start
+        let label = format!("test-w{}", i + 1);
+
+        windows.push(WalkForwardWindow {
+            label,
+            index: i,
+            train_candles: candles[..train_end].to_vec(),
+            test_candles: candles[test_start..test_end].to_vec(),
+        });
+    }
+
+    Some(windows)
+}
+
+// ---------------------------------------------------------------------------
 // Sentinel values for enhanced metrics
 // ---------------------------------------------------------------------------
 
@@ -1081,6 +1234,8 @@ pub struct BacktestConfig {
     pub walk_forward_enabled: bool,
     /// Walk-forward: fraction of data for training (e.g., 0.7 = 70% train, 30% test).
     pub walk_forward_train_ratio: f64,
+    /// Walk-forward mode: "single" (existing 70/30) or "expanding" (5 windows, 60% initial train).
+    pub walk_forward_mode: WalkForwardMode,
     /// Slippage in basis points (e.g., 10 = 0.1% slippage applied to entries/exits).
     pub slippage_bps: f64,
     /// Cost mode: "flash-only" (default) or "imperial-route-oracle" (uses RouteCostOracle).
@@ -1109,6 +1264,7 @@ impl Default for BacktestConfig {
             regime_filter: false,
             walk_forward_enabled: false,
             walk_forward_train_ratio: 0.7,
+            walk_forward_mode: WalkForwardMode::Single,
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
             sizing_mode: SizingMode::FixedNotional,
@@ -1291,6 +1447,27 @@ impl BacktestEngine {
         candles_by_market: HashMap<String, Vec<HlCandle>>,
         oracle: Option<&RouteCostOracle>,
     ) -> anyhow::Result<BacktestResult> {
+        match &self.bt_config.walk_forward_mode {
+            WalkForwardMode::Single => {
+                self.run_walk_forward_single(candles_by_market, oracle).await
+            }
+            WalkForwardMode::Expanding { windows, initial_train_ratio } => {
+                self.run_walk_forward_expanding(
+                    candles_by_market,
+                    oracle,
+                    *windows,
+                    *initial_train_ratio,
+                ).await
+            }
+        }
+    }
+
+    /// Single walk-forward: existing 70/30 train/test split.
+    async fn run_walk_forward_single(
+        &self,
+        candles_by_market: HashMap<String, Vec<HlCandle>>,
+        oracle: Option<&RouteCostOracle>,
+    ) -> anyhow::Result<BacktestResult> {
         let train_ratio = self.bt_config.walk_forward_train_ratio.clamp(0.1, 0.9);
         let mut train_cells = Vec::new();
         let mut test_cells = Vec::new();
@@ -1380,6 +1557,120 @@ impl BacktestEngine {
                     train.strategy, train.market,
                     train.sharpe_ratio, test.sharpe_ratio,
                     train.net_pnl, test.net_pnl
+                );
+            }
+        }
+
+        Ok(result)
+    }
+
+    /// Expanding walk-forward: N windows with growing training set.
+    async fn run_walk_forward_expanding(
+        &self,
+        candles_by_market: HashMap<String, Vec<HlCandle>>,
+        oracle: Option<&RouteCostOracle>,
+        num_windows: usize,
+        initial_train_ratio: f64,
+    ) -> anyhow::Result<BacktestResult> {
+        let mut train_cells = Vec::new();
+        let mut test_cells = Vec::new();
+        let mut all_trades: Vec<BtTrade> = Vec::new();
+        let mut total_net_pnl = 0.0;
+        let mut total_fees = 0.0;
+        let mut total_trades = 0;
+
+        for strat_name in &self.bt_config.strategies {
+            for market in &self.bt_config.markets {
+                let candles = match candles_by_market.get(market) {
+                    Some(c) if !c.is_empty() => c,
+                    _ => {
+                        warn!("No candles for {}/{}, skipping", strat_name, market);
+                        continue;
+                    }
+                };
+
+                let windows = match compute_expanding_windows(
+                    candles, num_windows, initial_train_ratio,
+                ) {
+                    Some(w) => w,
+                    None => {
+                        warn!(
+                            "Skipping expanding walk-forward for {} on {}: insufficient data ({} candles, {} windows)",
+                            strat_name, market, candles.len(), num_windows
+                        );
+                        continue;
+                    }
+                };
+
+                info!(
+                    "Expanding walk-forward {} on {}: {} windows, initial_train={}, train_ratio={}",
+                    strat_name, market, windows.len(),
+                    windows.first().map(|w| w.train_candles.len()).unwrap_or(0),
+                    initial_train_ratio
+                );
+
+                for window in &windows {
+                    info!(
+                        "  Window {} ({}): train={} candles, test={} candles",
+                        window.label,
+                        window.index + 1,
+                        window.train_candles.len(),
+                        window.test_candles.len(),
+                    );
+
+                    // Train (in-sample for this window)
+                    let (train_stats, train_trades) =
+                        self.run_cell(strat_name, market, &window.train_candles, "train", oracle).await?;
+                    total_net_pnl += train_stats.net_pnl;
+                    total_fees += train_stats.total_fees;
+                    total_trades += train_stats.trade_count;
+                    all_trades.extend(train_trades);
+                    train_cells.push(train_stats);
+
+                    // Test (out-of-sample for this window)
+                    let (test_stats, test_trades) =
+                        self.run_cell(strat_name, market, &window.test_candles, &window.label, oracle).await?;
+                    total_net_pnl += test_stats.net_pnl;
+                    total_fees += test_stats.total_fees;
+                    total_trades += test_stats.trade_count;
+                    all_trades.extend(test_trades);
+                    test_cells.push(test_stats);
+                }
+            }
+        }
+
+        // Write trades
+        let trades_path = format!("{}/backtest-trades.json", self.bt_config.output_dir);
+        write_json_atomic(&trades_path, &all_trades)?;
+
+        let mut candle_stats = HashMap::new();
+        for (m, c) in &candles_by_market {
+            candle_stats.insert(m.clone(), c.len());
+        }
+
+        let mut result = self.build_result(
+            total_net_pnl,
+            total_trades,
+            total_fees,
+            train_cells,
+            candle_stats,
+            &all_trades,
+        );
+        result.walk_forward_test_cells = test_cells.clone();
+
+        // Write summary
+        let summary_path = format!("{}/summary.json", self.bt_config.output_dir);
+        write_json_atomic(&summary_path, &result)?;
+
+        self.print_summary(&result);
+
+        // Log expanding walk-forward comparison per window
+        for test_cell in &result.walk_forward_test_cells {
+            if test_cell.walk_forward_window.starts_with("test-w") {
+                info!(
+                    "Expanding WF {} on {} [{}]: test Sharpe={:.2}, net=${:.2}, trades={}",
+                    test_cell.strategy, test_cell.market, test_cell.walk_forward_window,
+                    test_cell.sharpe_ratio, test_cell.net_pnl, test_cell.trade_count
                 );
             }
         }
@@ -2629,6 +2920,7 @@ max_drawdown_pct = 20.0
             regime_filter: false,
             walk_forward_enabled: false,
             walk_forward_train_ratio: 0.7,
+            walk_forward_mode: WalkForwardMode::Single,
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
             sizing_mode: SizingMode::FixedNotional,
@@ -3413,6 +3705,235 @@ max_drawdown_pct = 20.0
         assert_eq!(test_stats.walk_forward_window, "test");
         assert_eq!(train_stats.total_candles, 70);
         assert_eq!(test_stats.total_candles, 30);
+    }
+
+    // =========================================================================
+    // Expanding Walk-Forward Tests
+    // VAL-M1-025 through VAL-M1-030, VAL-M1-038
+    // =========================================================================
+
+    // --- WalkForwardMode enum tests ---
+
+    #[test]
+    fn test_walk_forward_mode_parse_single() {
+        let mode = WalkForwardMode::from_cli_str("single").unwrap();
+        assert_eq!(mode, WalkForwardMode::Single);
+        assert_eq!(mode.name(), "single");
+    }
+
+    #[test]
+    fn test_walk_forward_mode_parse_expanding() {
+        let mode = WalkForwardMode::from_cli_str("expanding").unwrap();
+        assert_eq!(mode.name(), "expanding");
+        match mode {
+            WalkForwardMode::Expanding { windows, initial_train_ratio } => {
+                assert_eq!(windows, 5);
+                assert!((initial_train_ratio - 0.6).abs() < 0.001);
+            }
+            _ => panic!("Expected Expanding variant"),
+        }
+    }
+
+    #[test]
+    fn test_walk_forward_mode_case_insensitive() {
+        assert!(WalkForwardMode::from_cli_str("Single").is_ok());
+        assert!(WalkForwardMode::from_cli_str("EXPANDING").is_ok());
+        assert!(WalkForwardMode::from_cli_str("Expanding").is_ok());
+    }
+
+    #[test]
+    fn test_walk_forward_mode_rejects_invalid() {
+        let result = WalkForwardMode::from_cli_str("rolling");
+        assert!(result.is_err());
+        let err = result.err().unwrap().to_string();
+        assert!(err.contains("Unknown walk-forward mode"));
+    }
+
+    #[test]
+    fn test_walk_forward_mode_default_is_single() {
+        let default = WalkForwardMode::default();
+        assert_eq!(default, WalkForwardMode::Single);
+    }
+
+    #[test]
+    fn test_walk_forward_mode_serialization_roundtrip() {
+        let modes = vec![
+            WalkForwardMode::Single,
+            WalkForwardMode::Expanding { windows: 5, initial_train_ratio: 0.6 },
+        ];
+        for mode in &modes {
+            let json = serde_json::to_string(mode).unwrap();
+            let parsed: WalkForwardMode = serde_json::from_str(&json).unwrap();
+            assert_eq!(*mode, parsed, "Round-trip failed for {:?}", mode);
+        }
+    }
+
+    // --- compute_expanding_windows tests ---
+
+    #[test]
+    fn test_compute_expanding_windows_basic() {
+        // VAL-M1-026: 1000 candles, 5 windows, 60% initial train
+        let candles = make_synthetic_candles(1000, 100.0, "5m");
+        let windows = compute_expanding_windows(&candles, 5, 0.6).unwrap();
+
+        // Should produce exactly 5 windows
+        assert_eq!(windows.len(), 5);
+
+        // Initial train = 60% of 1000 = 600 candles
+        let initial_train = &windows[0].train_candles;
+        assert_eq!(initial_train.len(), 600);
+
+        // Remaining 400 / 5 = 80 candles per test slice
+        for (i, w) in windows.iter().enumerate() {
+            let expected_test = if i < 4 { 80 } else { 80 + (400 - 5 * 80) }; // last gets remainder
+            assert_eq!(w.test_candles.len(), expected_test,
+                "Window {} test should have {} candles, got {}", i + 1, expected_test, w.test_candles.len());
+        }
+
+        // Labels should be test-w1 through test-w5
+        assert_eq!(windows[0].label, "test-w1");
+        assert_eq!(windows[1].label, "test-w2");
+        assert_eq!(windows[2].label, "test-w3");
+        assert_eq!(windows[3].label, "test-w4");
+        assert_eq!(windows[4].label, "test-w5");
+    }
+
+    #[test]
+    fn test_compute_expanding_windows_train_expands() {
+        // Each window's train set should expand by including previous test slice
+        let candles = make_synthetic_candles(1000, 100.0, "5m");
+        let windows = compute_expanding_windows(&candles, 5, 0.6).unwrap();
+
+        // Window 1: train = [0..600]
+        assert_eq!(windows[0].train_candles.len(), 600);
+        // Window 2: train = [0..680] (600 + 80)
+        assert_eq!(windows[1].train_candles.len(), 680);
+        // Window 3: train = [0..760] (680 + 80)
+        assert_eq!(windows[2].train_candles.len(), 760);
+        // Window 4: train = [0..840]
+        assert_eq!(windows[3].train_candles.len(), 840);
+        // Window 5: train = [0..920]
+        assert_eq!(windows[4].train_candles.len(), 920);
+
+        // Train sets should be strictly expanding
+        for i in 1..windows.len() {
+            assert!(
+                windows[i].train_candles.len() > windows[i - 1].train_candles.len(),
+                "Window {} train ({}) should be larger than window {} ({})",
+                i + 1, windows[i].train_candles.len(),
+                i, windows[i - 1].train_candles.len()
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_expanding_windows_non_overlapping_test() {
+        // VAL-M1-027: Test windows should be non-overlapping and contiguous
+        let candles = make_synthetic_candles(1000, 100.0, "5m");
+        let windows = compute_expanding_windows(&candles, 5, 0.6).unwrap();
+
+        // Collect all test candle timestamps
+        let mut all_test_times: Vec<i64> = Vec::new();
+        for w in &windows {
+            for c in &w.test_candles {
+                all_test_times.push(c.t);
+            }
+        }
+
+        // No duplicates
+        let original_len = all_test_times.len();
+        all_test_times.sort();
+        all_test_times.dedup();
+        assert_eq!(all_test_times.len(), original_len, "Test windows should have no overlapping timestamps");
+
+        // Verify contiguous: each window starts where previous ended
+        for i in 1..windows.len() {
+            let prev_last = windows[i - 1].test_candles.last().unwrap().t_close;
+            let curr_first = windows[i].test_candles.first().unwrap().t;
+            assert!(
+                curr_first > prev_last,
+                "Window {} first candle ({}) should be after window {} last ({})",
+                i + 1, curr_first, i, prev_last
+            );
+        }
+    }
+
+    #[test]
+    fn test_compute_expanding_windows_insufficient_data() {
+        // VAL-M1-030: Too few candles should return None (no panic)
+        let few_candles = make_synthetic_candles(5, 100.0, "5m");
+        assert!(compute_expanding_windows(&few_candles, 5, 0.6).is_none());
+
+        // Empty candles
+        let empty: Vec<HlCandle> = vec![];
+        assert!(compute_expanding_windows(&empty, 5, 0.6).is_none());
+
+        // Just barely enough (10 candles, 5 windows)
+        let barely = make_synthetic_candles(10, 100.0, "5m");
+        // 60% of 10 = 6 train, 4 remaining for 5 windows -> not enough
+        assert!(compute_expanding_windows(&barely, 5, 0.6).is_none());
+    }
+
+    #[test]
+    fn test_compute_expanding_windows_exactly_enough() {
+        // 10 candles, 2 windows, 60% train -> 6 train, 4 remaining, 2 slices of 2 each
+        let candles = make_synthetic_candles(10, 100.0, "5m");
+        let windows = compute_expanding_windows(&candles, 2, 0.6).unwrap();
+        assert_eq!(windows.len(), 2);
+        assert_eq!(windows[0].train_candles.len(), 6);
+        assert_eq!(windows[0].test_candles.len(), 2);
+        assert_eq!(windows[1].train_candles.len(), 8);
+        assert_eq!(windows[1].test_candles.len(), 2);
+    }
+
+    // --- Integration: run_cell with expanding window labels ---
+
+    #[tokio::test]
+    async fn test_expanding_walk_forward_per_window_metrics() {
+        // VAL-M1-028: Each window should have labeled metrics
+        let config: crate::config::Config = toml::from_str(&test_config_toml("BTC")).unwrap();
+        let bt_config = test_bt_config(vec!["momentum-scalper"], vec!["BTC"], "5m");
+        let engine = BacktestEngine::new(config, bt_config).unwrap();
+
+        let candles = make_synthetic_candles(1000, 100.0, "5m");
+        let windows = compute_expanding_windows(&candles, 5, 0.6).unwrap();
+
+        for window in &windows {
+            let (stats, _trades) = engine.run_cell(
+                "momentum-scalper", "BTC", &window.test_candles, &window.label, None,
+            ).await.unwrap();
+
+            // Each test cell should have the correct window label
+            assert_eq!(stats.walk_forward_window, window.label,
+                "Window label should be {}", window.label);
+            assert_eq!(stats.total_candles, window.test_candles.len());
+            // Strategy/market should be set correctly
+            assert_eq!(stats.strategy, "momentum-scalper");
+            assert_eq!(stats.market, "BTC");
+        }
+    }
+
+    /// Helper: generate N synthetic candles with rising prices.
+    fn make_synthetic_candles(count: usize, base_price: f64, interval: &str) -> Vec<HlCandle> {
+        let interval_ms = parse_interval_ms(interval).unwrap();
+        let base_time = 1778812800000i64;
+        let mut candles = Vec::with_capacity(count);
+        for i in 0..count {
+            let price = base_price + (i as f64 * 0.05);
+            candles.push(HlCandle {
+                t: base_time + (i as i64 * interval_ms),
+                t_close: base_time + ((i as i64 + 1) * interval_ms) - 1,
+                s: "BTC".to_string(),
+                i: interval.to_string(),
+                o: format!("{:.2}", price - 0.02),
+                c: format!("{:.2}", price),
+                h: format!("{:.2}", price + 0.05),
+                l: format!("{:.2}", price - 0.05),
+                v: "50.0".to_string(),
+                n: 20,
+            });
+        }
+        candles
     }
 
     // -------------------------------------------------------------------------
