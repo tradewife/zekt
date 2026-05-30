@@ -23,6 +23,8 @@ pub struct Config {
     pub hypurrscan: HypurrscanConfig,
     #[serde(default, rename = "liquidation")]
     pub liquidation: LiquidationConfig,
+    #[serde(default)]
+    pub backtest: BacktestConfigSection,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -629,6 +631,70 @@ impl LiquidationConfig {
             }
         }
         Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Backtest Config Section
+// ---------------------------------------------------------------------------
+
+/// Configuration for the `[backtest]` TOML section.
+///
+/// Controls backtest engine defaults that can be overridden via CLI flags.
+///
+/// ```toml
+/// [backtest]
+/// walk_forward_enabled = false
+/// walk_forward_train_ratio = 0.7
+/// slippage_bps = 0.0
+/// regime_filter = true
+/// sizing_mode = "fixed-notional"
+/// borrow_rate_hourly = 0.0001
+/// ```
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct BacktestConfigSection {
+    /// Walk-forward validation: split candle data into train/test.
+    #[serde(default)]
+    pub walk_forward_enabled: bool,
+
+    /// Fraction of data for training (e.g., 0.7 = 70% train, 30% test).
+    #[serde(default = "default_walk_forward_train_ratio")]
+    pub walk_forward_train_ratio: f64,
+
+    /// Slippage in basis points applied to entries/exits.
+    #[serde(default)]
+    pub slippage_bps: f64,
+
+    /// Whether to apply regime filtering during backtests.
+    #[serde(default = "default_true")]
+    pub regime_filter: bool,
+
+    /// Default sizing mode for backtests.
+    /// Valid values: "fixed-notional", "fixed-fractional", "volatility-adjusted",
+    /// "drawdown-throttled", "route-cost-adjusted".
+    #[serde(default = "default_sizing_mode")]
+    pub sizing_mode: String,
+
+    /// Default hourly borrow rate on notional (e.g., 0.0001 = 0.01%/hr).
+    #[serde(default = "default_borrow_rate_hourly")]
+    pub borrow_rate_hourly: f64,
+}
+
+fn default_walk_forward_train_ratio() -> f64 { 0.7 }
+fn default_true() -> bool { true }
+fn default_sizing_mode() -> String { "fixed-notional".to_string() }
+fn default_borrow_rate_hourly() -> f64 { 0.0001 }
+
+impl Default for BacktestConfigSection {
+    fn default() -> Self {
+        Self {
+            walk_forward_enabled: false,
+            walk_forward_train_ratio: default_walk_forward_train_ratio(),
+            slippage_bps: 0.0,
+            regime_filter: true,
+            sizing_mode: default_sizing_mode(),
+            borrow_rate_hourly: default_borrow_rate_hourly(),
+        }
     }
 }
 
@@ -1633,5 +1699,110 @@ base_confidence = 0.5
     fn test_liquidation_config_validate_ok_defaults() {
         let cfg = LiquidationConfig::default();
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── Backtest Config Section tests ─────────────────────────────────────
+
+    #[test]
+    fn test_backtest_config_defaults_when_absent() {
+        let minimal = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+"#;
+        let f = write_temp_toml(minimal);
+        let config = Config::load(f.path()).expect("config without [backtest] should parse");
+
+        assert!(!config.backtest.walk_forward_enabled);
+        assert!((config.backtest.walk_forward_train_ratio - 0.7).abs() < 0.001);
+        assert!((config.backtest.slippage_bps - 0.0).abs() < 0.001);
+        assert!(config.backtest.regime_filter);
+        assert_eq!(config.backtest.sizing_mode, "fixed-notional");
+        assert!((config.backtest.borrow_rate_hourly - 0.0001).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_backtest_config_custom_values() {
+        let custom = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[backtest]
+walk_forward_enabled = true
+slippage_bps = 10.0
+sizing_mode = "volatility-adjusted"
+borrow_rate_hourly = 0.0005
+"#;
+        let f = write_temp_toml(custom);
+        let config = Config::load(f.path()).expect("config with [backtest] should parse");
+
+        assert!(config.backtest.walk_forward_enabled);
+        assert!((config.backtest.slippage_bps - 10.0).abs() < 0.001);
+        assert_eq!(config.backtest.sizing_mode, "volatility-adjusted");
+        assert!((config.backtest.borrow_rate_hourly - 0.0005).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_backtest_config_default_impl() {
+        let cfg = BacktestConfigSection::default();
+        assert!(!cfg.walk_forward_enabled);
+        assert!((cfg.walk_forward_train_ratio - 0.7).abs() < 0.001);
+        assert!((cfg.slippage_bps).abs() < 0.001);
+        assert!(cfg.regime_filter);
+        assert_eq!(cfg.sizing_mode, "fixed-notional");
+        assert!((cfg.borrow_rate_hourly - 0.0001).abs() < 0.0001);
+    }
+
+    #[test]
+    fn test_real_perps_toml_backtest_section() {
+        let config_path = Path::new("config/perps.toml");
+        if !config_path.exists() {
+            eprintln!("Skipping: config/perps.toml not found");
+            return;
+        }
+        let config = Config::load(config_path).expect("real perps.toml should load");
+
+        assert!(!config.backtest.walk_forward_enabled);
+        assert!((config.backtest.walk_forward_train_ratio - 0.7).abs() < 0.001);
+        assert!(config.backtest.regime_filter);
+        assert_eq!(config.backtest.sizing_mode, "fixed-notional");
+        assert!((config.backtest.borrow_rate_hourly - 0.0001).abs() < 0.0001);
     }
 }

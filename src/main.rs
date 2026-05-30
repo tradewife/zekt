@@ -30,6 +30,7 @@ mod signal;
 mod strategy;
 
 use clap::Parser;
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 
@@ -109,6 +110,23 @@ struct Args {
     /// Sizing mode: "fixed-notional" (default), "fixed-fractional", "volatility-adjusted", "drawdown-throttled", "route-cost-adjusted"
     #[arg(long, default_value = "fixed-notional")]
     sizing_mode: String,
+
+    /// Leverage override for backtest mode (must be > 0)
+    #[arg(long)]
+    leverage: Option<f64>,
+
+    /// Output directory for backtest results (creates directory if needed, default: data/backtest-results)
+    #[arg(long)]
+    output_path: Option<String>,
+
+    /// JSON string of parameter overrides applied on top of strategy defaults
+    /// Example: --param-override '{"clip_size_usd": 200, "take_profit_pct": 1.5}'
+    #[arg(long)]
+    param_override: Option<String>,
+
+    /// Borrow rate override (hourly rate on notional, default: 0.0001)
+    #[arg(long)]
+    borrow_rate: Option<f64>,
 }
 
 #[tokio::main]
@@ -249,6 +267,36 @@ async fn main() -> anyhow::Result<()> {
         ).await;
     }
     if args.backtest {
+        // Validate leverage if provided
+        if let Some(lev) = args.leverage {
+            if lev <= 0.0 {
+                anyhow::bail!(
+                    "Invalid --leverage {}: must be > 0",
+                    lev
+                );
+            }
+        }
+
+        // Validate param-override JSON if provided
+        if let Some(ref json_str) = args.param_override {
+            if serde_json::from_str::<serde_json::Value>(json_str).is_err() {
+                anyhow::bail!(
+                    "Invalid --param-override JSON: '{}'. Must be a valid JSON object, e.g. '{{\"clip_size_usd\": 200}}'",
+                    json_str
+                );
+            }
+        }
+
+        // Validate borrow-rate if provided
+        if let Some(rate) = args.borrow_rate {
+            if rate < 0.0 {
+                anyhow::bail!(
+                    "Invalid --borrow-rate {}: must be >= 0",
+                    rate
+                );
+            }
+        }
+
         return run_backtest(
             config,
             args.strategies.as_deref(),
@@ -260,6 +308,10 @@ async fn main() -> anyhow::Result<()> {
             args.backtest_fee_rate,
             &args.cost_mode,
             &args.sizing_mode,
+            args.leverage,
+            args.output_path.as_deref(),
+            args.param_override.as_deref(),
+            args.borrow_rate,
         ).await;
     }
 
@@ -454,6 +506,10 @@ async fn run_backtest(
     fee_rate: f64,
     cost_mode: &str,
     sizing_mode_str: &str,
+    leverage_override: Option<f64>,
+    output_path: Option<&str>,
+    param_override_json: Option<&str>,
+    borrow_rate_override: Option<f64>,
 ) -> anyhow::Result<()> {
     use chrono::Utc;
 
@@ -496,7 +552,30 @@ async fn run_backtest(
         );
     }
 
-    let leverage = config.flash.leverage;
+    // Resolve leverage: CLI override > config
+    let leverage = leverage_override.unwrap_or(config.flash.leverage);
+
+    // Resolve borrow rate: CLI override > config [backtest] section > default
+    let borrow_rate_hourly = borrow_rate_override
+        .unwrap_or(config.backtest.borrow_rate_hourly);
+
+    // Parse param-override JSON into a HashMap
+    let param_overrides: HashMap<String, serde_json::Value> = param_override_json
+        .map(|s| serde_json::from_str(s))
+        .transpose()?
+        .unwrap_or_default();
+
+    if !param_overrides.is_empty() {
+        tracing::info!("Param overrides: {} key(s)", param_overrides.len());
+        for (k, v) in &param_overrides {
+            tracing::info!("  {} = {}", k, v);
+        }
+    }
+
+    // Resolve output path: CLI override > default
+    let output_dir = output_path
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "data/backtest-results".to_string());
 
     tracing::info!("Strategies: {}", strategy_names.join(", "));
     tracing::info!("Markets: {}", market_names.join(", "));
@@ -510,7 +589,9 @@ async fn run_backtest(
             .unwrap_or_default(),
     );
     tracing::info!("Interval: {}", interval);
-    tracing::info!("Fee rate: {:.2}%  |  Leverage: {}x  |  Balance: ${:.0}  |  Sizing: {}", fee_rate * 100.0, leverage, starting_balance, sizing_mode.name());
+    tracing::info!("Fee rate: {:.2}%  |  Leverage: {}x  |  Balance: ${:.0}  |  Sizing: {}  |  Borrow rate: {}",
+        fee_rate * 100.0, leverage, starting_balance, sizing_mode.name(), borrow_rate_hourly);
+    tracing::info!("Output path: {}", output_dir);
 
     let bt_config = backtest::BacktestConfig {
         strategies: strategy_names,
@@ -520,7 +601,7 @@ async fn run_backtest(
         interval: interval.to_string(),
         starting_balance,
         fee_rate,
-        borrow_rate_hourly: 0.0001, // 0.01%/hr default
+        borrow_rate_hourly,
         leverage,
         regime_filter: true, // Always enable regime filtering
         walk_forward_enabled: false,
@@ -528,6 +609,8 @@ async fn run_backtest(
         slippage_bps: 0.0, // Default: no slippage; set via config to enable
         cost_mode: cost_mode.to_string(),
         sizing_mode,
+        output_dir: output_dir.clone(),
+        param_overrides,
     };
 
     let engine = backtest::BacktestEngine::new(config, bt_config)?;
@@ -649,5 +732,100 @@ mod tests {
         let args = Args::try_parse_from(["zekt", "--hl-paper", "--backtest"]).unwrap();
         assert!(args.hl_paper);
         assert!(args.backtest);
+    }
+
+    // ── New CLI flag tests (VAL-M1-018 through VAL-M1-024) ────────────────
+
+    #[test]
+    fn test_leverage_flag_parsed() {
+        let args = Args::try_parse_from(["zekt", "--backtest", "--leverage", "3.0"]).unwrap();
+        assert!(args.backtest);
+        assert!((args.leverage.unwrap() - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_leverage_flag_not_provided() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert!(args.leverage.is_none());
+    }
+
+    #[test]
+    fn test_output_path_flag_parsed() {
+        let args = Args::try_parse_from(["zekt", "--backtest", "--output-path", "data/custom"]).unwrap();
+        assert_eq!(args.output_path.as_deref(), Some("data/custom"));
+    }
+
+    #[test]
+    fn test_output_path_flag_not_provided() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert!(args.output_path.is_none());
+    }
+
+    #[test]
+    fn test_param_override_valid_json() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest",
+            "--param-override", "{\"clip_size_usd\": 200}",
+        ]).unwrap();
+        let json = args.param_override.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["clip_size_usd"], 200);
+    }
+
+    #[test]
+    fn test_param_override_multiple_keys() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest",
+            "--param-override", "{\"clip_size_usd\": 200, \"take_profit_pct\": 1.5}",
+        ]).unwrap();
+        let json = args.param_override.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["clip_size_usd"], 200);
+        assert_eq!(parsed["take_profit_pct"], 1.5);
+    }
+
+    #[test]
+    fn test_param_override_not_provided() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert!(args.param_override.is_none());
+    }
+
+    #[test]
+    fn test_sizing_mode_flag_valid() {
+        for mode in &["fixed-notional", "fixed-fractional", "volatility-adjusted",
+                       "drawdown-throttled", "route-cost-adjusted"] {
+            let args = Args::try_parse_from(["zekt", "--backtest", "--sizing-mode", mode]).unwrap();
+            assert_eq!(args.sizing_mode, *mode);
+        }
+    }
+
+    #[test]
+    fn test_borrow_rate_flag_parsed() {
+        let args = Args::try_parse_from(["zekt", "--backtest", "--borrow-rate", "0.0005"]).unwrap();
+        assert!((args.borrow_rate.unwrap() - 0.0005).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn test_borrow_rate_flag_not_provided() {
+        let args = Args::try_parse_from(["zekt", "--backtest"]).unwrap();
+        assert!(args.borrow_rate.is_none());
+    }
+
+    #[test]
+    fn test_all_new_flags_together() {
+        let args = Args::try_parse_from([
+            "zekt", "--backtest",
+            "--leverage", "3.0",
+            "--output-path", "data/custom-run",
+            "--param-override", "{\"clip_size_usd\": 200}",
+            "--sizing-mode", "volatility-adjusted",
+            "--borrow-rate", "0.0005",
+        ]).unwrap();
+        assert!(args.backtest);
+        assert!((args.leverage.unwrap() - 3.0).abs() < f64::EPSILON);
+        assert_eq!(args.output_path.as_deref(), Some("data/custom-run"));
+        assert!(args.param_override.is_some());
+        assert_eq!(args.sizing_mode, "volatility-adjusted");
+        assert!((args.borrow_rate.unwrap() - 0.0005).abs() < f64::EPSILON);
     }
 }

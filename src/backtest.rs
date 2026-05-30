@@ -1087,6 +1087,11 @@ pub struct BacktestConfig {
     pub cost_mode: String,
     /// Sizing mode for position sizing.
     pub sizing_mode: SizingMode,
+    /// Output directory for summary.json and backtest-trades.json.
+    /// Default: "data/backtest-results".
+    pub output_dir: String,
+    /// Parameter overrides from --param-override JSON, applied on top of strategy defaults.
+    pub param_overrides: HashMap<String, serde_json::Value>,
 }
 
 impl Default for BacktestConfig {
@@ -1107,6 +1112,8 @@ impl Default for BacktestConfig {
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
             sizing_mode: SizingMode::FixedNotional,
+            output_dir: "data/backtest-results".to_string(),
+            param_overrides: HashMap::new(),
         }
     }
 }
@@ -1252,8 +1259,8 @@ impl BacktestEngine {
         let _final_balance = self.bt_config.starting_balance + total_net_pnl;
 
         // Write trades to JSON
-        let trades_path = "data/backtest-trades.json";
-        write_json_atomic(trades_path, &trades)?;
+        let trades_path = format!("{}/backtest-trades.json", self.bt_config.output_dir);
+        write_json_atomic(&trades_path, &trades)?;
 
         let mut candle_stats = HashMap::new();
         for (m, c) in &candles_by_market {
@@ -1270,8 +1277,8 @@ impl BacktestEngine {
         );
 
         // Write summary
-        let summary_path = "data/backtest-results/summary.json";
-        write_json_atomic(summary_path, &result)?;
+        let summary_path = format!("{}/summary.json", self.bt_config.output_dir);
+        write_json_atomic(&summary_path, &result)?;
 
         self.print_summary(&result);
 
@@ -1339,8 +1346,8 @@ impl BacktestEngine {
         }
 
         // Write trades
-        let trades_path = "data/backtest-trades.json";
-        write_json_atomic(trades_path, &all_trades)?;
+        let trades_path = format!("{}/backtest-trades.json", self.bt_config.output_dir);
+        write_json_atomic(&trades_path, &all_trades)?;
 
         let mut candle_stats = HashMap::new();
         for (m, c) in &candles_by_market {
@@ -1358,8 +1365,8 @@ impl BacktestEngine {
         result.walk_forward_test_cells = test_cells.clone();
 
         // Write summary
-        let summary_path = "data/backtest-results/summary.json";
-        write_json_atomic(summary_path, &result)?;
+        let summary_path = format!("{}/summary.json", self.bt_config.output_dir);
+        write_json_atomic(&summary_path, &result)?;
 
         self.print_summary(&result);
 
@@ -1482,7 +1489,15 @@ impl BacktestEngine {
         });
 
         let mut strat = strategy::create_strategy_from_config(strategy_name, sub_table, fallback_params)?;
-        let params = strat.parameters().clone();
+        let mut params = strat.parameters().clone();
+
+        // Apply param overrides from --param-override JSON
+        if !self.bt_config.param_overrides.is_empty() {
+            apply_param_overrides(&mut params, &self.bt_config.param_overrides);
+            // Recreate strategy with overridden params so internal state is consistent
+            let sub_table = self.config.strategy.get_sub_table(strategy_name);
+            strat = strategy::create_strategy_from_config(strategy_name, sub_table, params.clone())?;
+        }
         let interval_secs = parse_interval_ms(&self.bt_config.interval)? as f64 / 1000.0;
         let interval_ms = parse_interval_ms(&self.bt_config.interval)?;
 
@@ -2091,6 +2106,75 @@ impl BacktestEngine {
 // Helpers
 // ---------------------------------------------------------------------------
 
+/// Apply parameter overrides from --param-override JSON on top of strategy defaults.
+///
+/// Supported keys: clip_size_usd, take_profit_pct, stop_loss_pct, trailing_stop_pct,
+/// trailing_activation_pct, max_hold_secs, momentum_threshold_pct, lookback_count,
+/// scale_in_clips, cooldown_after_loss_secs.
+fn apply_param_overrides(
+    params: &mut crate::strategy::StrategyParams,
+    overrides: &HashMap<String, serde_json::Value>,
+) {
+
+    /// Helper: extract an f64 from a JSON value, returning None if not numeric.
+    fn get_f64(v: &serde_json::Value) -> Option<f64> {
+        v.as_f64()
+    }
+
+    /// Helper: extract a u64 from a JSON value.
+    fn get_u64(v: &serde_json::Value) -> Option<u64> {
+        v.as_u64()
+    }
+
+    /// Helper: extract a usize from a JSON value.
+    fn get_usize(v: &serde_json::Value) -> Option<usize> {
+        v.as_u64().map(|n| n as usize)
+    }
+
+    /// Helper: extract a u32 from a JSON value.
+    fn get_u32(v: &serde_json::Value) -> Option<u32> {
+        v.as_u64().map(|n| n as u32)
+    }
+
+    // Apply overrides to the params struct
+    if let Some(v) = overrides.get("clip_size_usd").and_then(get_f64) {
+        params.clip_size_usd = v;
+    }
+    if let Some(v) = overrides.get("take_profit_pct").and_then(get_f64) {
+        params.take_profit_pct = v;
+    }
+    if let Some(v) = overrides.get("stop_loss_pct").and_then(get_f64) {
+        params.stop_loss_pct = v;
+    }
+    if let Some(v) = overrides.get("trailing_stop_pct").and_then(get_f64) {
+        params.trailing_stop_pct = v;
+    }
+    if let Some(v) = overrides.get("trailing_activation_pct").and_then(get_f64) {
+        params.trailing_activation_pct = v;
+    }
+    if let Some(v) = overrides.get("max_hold_secs").and_then(get_u64) {
+        params.max_hold_secs = v;
+    }
+    if let Some(v) = overrides.get("momentum_threshold_pct").and_then(get_f64) {
+        params.momentum_threshold_pct = v;
+    }
+    if let Some(v) = overrides.get("lookback_count").and_then(get_usize) {
+        params.lookback_count = v;
+    }
+    if let Some(v) = overrides.get("scale_in_clips").and_then(get_u32) {
+        params.scale_in_clips = v;
+    }
+    if let Some(v) = overrides.get("cooldown_after_loss_secs").and_then(get_u64) {
+        params.cooldown_after_loss_secs = v;
+    }
+    if let Some(v) = overrides.get("direction_bias").and_then(|v| v.as_str()) {
+        params.direction_bias = v.to_string();
+    }
+    if let Some(v) = overrides.get("use_native_tp_sl").and_then(|v| v.as_bool()) {
+        params.use_native_tp_sl = v;
+    }
+}
+
 /// Map a strategy name to its blueprint source path (for data-driven strategies).
 /// Returns an empty string for built-in strategies.
 fn strategy_source_path(name: &str) -> String {
@@ -2548,6 +2632,8 @@ max_drawdown_pct = 20.0
             slippage_bps: 0.0,
             cost_mode: "flash-only".to_string(),
             sizing_mode: SizingMode::FixedNotional,
+            output_dir: "data/backtest-results".to_string(),
+            param_overrides: HashMap::new(),
         }
     }
 
@@ -4723,5 +4809,153 @@ max_drawdown_pct = 20.0
         assert!(METRIC_UNDEFINED.is_finite(), "METRIC_UNDEFINED should be finite");
         assert!(METRIC_INF > 99999.0, "METRIC_INF should be large");
         assert!(METRIC_UNDEFINED < 0.0, "METRIC_UNDEFINED should be negative");
+    }
+
+    // --- Param override tests ---
+
+    #[test]
+    fn test_apply_param_overrides_clip_size() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"clip_size_usd": 200}"#
+        ).unwrap();
+        apply_param_overrides(&mut params, &overrides);
+        assert!((params.clip_size_usd - 200.0).abs() < 0.001, "clip_size_usd should be 200");
+        // Unlisted params retain defaults
+        assert!((params.take_profit_pct - 2.5).abs() < 0.001, "take_profit_pct should remain 2.5");
+    }
+
+    #[test]
+    fn test_apply_param_overrides_multiple() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"clip_size_usd": 200, "take_profit_pct": 1.5, "stop_loss_pct": 0.8}"#
+        ).unwrap();
+        apply_param_overrides(&mut params, &overrides);
+        assert!((params.clip_size_usd - 200.0).abs() < 0.001);
+        assert!((params.take_profit_pct - 1.5).abs() < 0.001);
+        assert!((params.stop_loss_pct - 0.8).abs() < 0.001);
+        // Unlisted retain defaults
+        assert!((params.trailing_stop_pct - 0.8).abs() < 0.001);
+        assert_eq!(params.lookback_count, 60);
+    }
+
+    #[test]
+    fn test_apply_param_overrides_empty() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = HashMap::new();
+        apply_param_overrides(&mut params, &overrides);
+        // All values unchanged
+        assert!((params.clip_size_usd - 100.0).abs() < 0.001);
+        assert!((params.take_profit_pct - 2.5).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_apply_param_overrides_unknown_key_ignored() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"unknown_key": 42, "clip_size_usd": 300}"#
+        ).unwrap();
+        apply_param_overrides(&mut params, &overrides);
+        // clip_size_usd overridden, unknown_key ignored
+        assert!((params.clip_size_usd - 300.0).abs() < 0.001);
+    }
+
+    #[test]
+    fn test_apply_param_overrides_max_hold_secs() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"max_hold_secs": 3600}"#
+        ).unwrap();
+        apply_param_overrides(&mut params, &overrides);
+        assert_eq!(params.max_hold_secs, 3600);
+    }
+
+    #[test]
+    fn test_apply_param_overrides_direction_bias() {
+        let mut params = crate::strategy::StrategyParams {
+            direction_bias: "neutral".to_string(),
+            momentum_threshold_pct: 0.15,
+            lookback_count: 60,
+            scale_in_clips: 1,
+            clip_size_usd: 100.0,
+            max_hold_secs: 1800,
+            take_profit_pct: 2.5,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            cooldown_after_loss_secs: 300,
+            use_native_tp_sl: true,
+        };
+        let overrides: HashMap<String, serde_json::Value> = serde_json::from_str(
+            r#"{"direction_bias": "long"}"#
+        ).unwrap();
+        apply_param_overrides(&mut params, &overrides);
+        assert_eq!(params.direction_bias, "long");
     }
 }

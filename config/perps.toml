@@ -299,6 +299,12 @@ walk_forward_train_ratio = 0.7
 slippage_bps = 0.0
 # Whether to apply regime filtering during backtests.
 regime_filter = true
+# Default sizing mode for backtests. Overridden by --sizing-mode CLI flag.
+# Valid values: "fixed-notional", "fixed-fractional", "volatility-adjusted",
+# "drawdown-throttled", "route-cost-adjusted".
+sizing_mode = "fixed-notional"
+# Default hourly borrow rate on notional (0.0001 = 0.01%/hr). Overridden by --borrow-rate CLI flag.
+borrow_rate_hourly = 0.0001
 
 # =============================================================================
 # ALPHA SCANNER — Wallet discovery configuration
