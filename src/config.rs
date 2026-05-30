@@ -415,6 +415,10 @@ impl Default for RouteCostConfig {
 /// staleness_penalty = 0.10
 /// wallet_count_bonus_factor = 0.02
 /// notional_bonus_factor = 0.01
+/// interval_secs = 30
+/// snapshot_dir = "data/liquidation-zones"
+/// retention_days = 7
+/// symbols = ["BTC", "ETH", "SOL"]
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LiquidationConfig {
@@ -486,6 +490,22 @@ pub struct LiquidationConfig {
     /// Notional logarithmic bonus factor: +factor*log10(notional/1_000_000).
     #[serde(default = "default_notional_bonus_factor")]
     pub notional_bonus_factor: f64,
+
+    /// Capture interval in seconds (default 30).
+    #[serde(default = "default_interval_secs")]
+    pub interval_secs: u64,
+
+    /// Directory for persisted snapshots (default "data/liquidation-zones").
+    #[serde(default = "default_snapshot_dir")]
+    pub snapshot_dir: String,
+
+    /// Snapshot retention period in days (default 7). Older files are deleted.
+    #[serde(default = "default_retention_days")]
+    pub retention_days: u64,
+
+    /// Symbols to capture (default ["BTC", "ETH", "SOL"]).
+    #[serde(default = "default_symbols")]
+    pub symbols: Vec<String>,
 }
 
 fn default_liquidation_sources() -> Vec<String> {
@@ -510,6 +530,10 @@ fn default_multi_source_bonus() -> Vec<f64> { vec![0.15, 0.10, 0.10] }
 fn default_staleness_penalty() -> f64 { 0.10 }
 fn default_wallet_count_bonus_factor() -> f64 { 0.02 }
 fn default_notional_bonus_factor() -> f64 { 0.01 }
+fn default_interval_secs() -> u64 { 30 }
+fn default_snapshot_dir() -> String { "data/liquidation-zones".to_string() }
+fn default_retention_days() -> u64 { 7 }
+fn default_symbols() -> Vec<String> { vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()] }
 
 impl Default for LiquidationConfig {
     fn default() -> Self {
@@ -531,6 +555,10 @@ impl Default for LiquidationConfig {
             staleness_penalty: default_staleness_penalty(),
             wallet_count_bonus_factor: default_wallet_count_bonus_factor(),
             notional_bonus_factor: default_notional_bonus_factor(),
+            interval_secs: default_interval_secs(),
+            snapshot_dir: default_snapshot_dir(),
+            retention_days: default_retention_days(),
+            symbols: default_symbols(),
         }
     }
 }
@@ -582,6 +610,23 @@ impl LiquidationConfig {
         }
         if self.base_confidence < 0.0 || self.base_confidence > 1.0 {
             anyhow::bail!("base_confidence must be in [0.0, 1.0], got {}", self.base_confidence);
+        }
+        if self.interval_secs == 0 {
+            anyhow::bail!("interval_secs must be > 0");
+        }
+        if self.snapshot_dir.trim().is_empty() {
+            anyhow::bail!("snapshot_dir must be non-empty");
+        }
+        if self.retention_days == 0 {
+            anyhow::bail!("retention_days must be > 0");
+        }
+        if self.symbols.is_empty() {
+            anyhow::bail!("symbols must be non-empty");
+        }
+        for sym in &self.symbols {
+            if sym.trim().is_empty() {
+                anyhow::bail!("symbols must not contain empty strings");
+            }
         }
         Ok(())
     }
