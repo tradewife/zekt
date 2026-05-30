@@ -276,34 +276,34 @@ async fn main() -> anyhow::Result<()> {
     }
     if args.backtest {
         // Validate leverage if provided
-        if let Some(lev) = args.leverage {
-            if lev <= 0.0 {
+        if let Some(lev) = args.leverage
+            && lev <= 0.0
+        {
                 anyhow::bail!(
                     "Invalid --leverage {}: must be > 0",
                     lev
                 );
             }
-        }
 
         // Validate param-override JSON if provided
-        if let Some(ref json_str) = args.param_override {
-            if serde_json::from_str::<serde_json::Value>(json_str).is_err() {
+        if let Some(ref json_str) = args.param_override
+            && serde_json::from_str::<serde_json::Value>(json_str).is_err()
+        {
                 anyhow::bail!(
                     "Invalid --param-override JSON: '{}'. Must be a valid JSON object, e.g. '{{\"clip_size_usd\": 200}}'",
                     json_str
                 );
             }
-        }
 
         // Validate borrow-rate if provided
-        if let Some(rate) = args.borrow_rate {
-            if rate < 0.0 {
+        if let Some(rate) = args.borrow_rate
+            && rate < 0.0
+        {
                 anyhow::bail!(
                     "Invalid --borrow-rate {}: must be >= 0",
                     rate
                 );
             }
-        }
 
         return run_backtest(
             config,
@@ -573,7 +573,7 @@ async fn run_backtest(
 
     // Parse param-override JSON into a HashMap
     let param_overrides: HashMap<String, serde_json::Value> = param_override_json
-        .map(|s| serde_json::from_str(s))
+        .map(serde_json::from_str)
         .transpose()?
         .unwrap_or_default();
 

@@ -402,7 +402,7 @@ impl ReplayPipeline {
             let snapshot = self.build_snapshot(point, price_count, velocity);
 
             // Check if zone data is stale at current timestamp
-            let zone_stale = point.zone_capture_timestamp_ms.map_or(true, |ts| {
+            let zone_stale = point.zone_capture_timestamp_ms.is_none_or(|ts| {
                 let age_secs = (point.timestamp_ms - ts).max(0) as u64 / 1000;
                 age_secs > self.params.stale_data_threshold_secs
             });
@@ -741,9 +741,7 @@ impl ReplayPipeline {
         ));
 
         report.push_str("## Performance Metrics\n\n");
-        report.push_str(&format!(
-            "| Metric | Value |\n|---|---|\n"
-        ));
+        report.push_str("| Metric | Value |\n|---|---|\n");
         report.push_str(&format!(
             "| Trades | {} |\n",
             result.trade_count
@@ -920,6 +918,7 @@ fn compute_net_expectancy(trades: &[ReplayTrade]) -> f64 {
 }
 
 /// Evaluate all promotion criteria.
+#[allow(clippy::too_many_arguments)]
 fn evaluate_promotion_criteria(
     _trades: &[ReplayTrade],
     net_expectancy: f64,

@@ -214,10 +214,11 @@ fn parse_interval_ms(interval: &str) -> anyhow::Result<i64> {
 /// behavior) where every trade uses the same constant notional from strategy
 /// params. Other variants adjust size based on equity, volatility, drawdown,
 /// or route costs.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum SizingMode {
     /// Fixed notional size from strategy params (current behavior, baseline).
+    #[default]
     FixedNotional,
 
     /// Scales position size with account equity: `size = equity * risk_fraction`.
@@ -289,11 +290,7 @@ fn default_max_penalty_pct() -> f64 {
     0.80
 }
 
-impl Default for SizingMode {
-    fn default() -> Self {
-        SizingMode::FixedNotional
-    }
-}
+
 
 impl SizingMode {
     /// Parse a sizing mode from a CLI string (case-insensitive).
@@ -426,11 +423,12 @@ impl SizingMode {
 /// `Single` is the existing 70/30 train/test split. `Expanding` divides data
 /// into an initial training set (60% by default) and N equal test slices.
 /// Each window expands the training set by including the previous test slice.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum WalkForwardMode {
     /// Single train/test split (existing behavior).
     /// Uses `walk_forward_train_ratio` to split.
+    #[default]
     Single,
     /// Expanding window walk-forward with configurable number of windows.
     /// Initial train = `initial_train_ratio` of candles.
@@ -451,11 +449,7 @@ fn default_wf_initial_train_ratio() -> f64 {
     0.6
 }
 
-impl Default for WalkForwardMode {
-    fn default() -> Self {
-        WalkForwardMode::Single
-    }
-}
+
 
 impl WalkForwardMode {
     /// Parse from CLI string (case-insensitive).
