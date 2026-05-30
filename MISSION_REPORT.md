@@ -1,9 +1,9 @@
 # Zekt — Bootstrap Alpha Compounding System — Mission Report
 
-**Date:** 2026-05-30
-**Mission:** Bootstrap Alpha Compounding System (7 milestones)
-**Status:** Complete (M1–M7)
-**Commits:** 6 feature commits (20e4a9b → 076be95)
+**Date:** 2026-05-31 (updated)
+**Mission:** Imperial Route Oracle + Liquidation-Zone Alpha Validation
+**Status:** Complete (M1–M4)
+**Commits:** 5 feature commits (imperial client → route oracle → liquidation capture → strategy → replay)
 
 ---
 
@@ -151,13 +151,42 @@
 
 | Suite | Count | Status |
 |-------|-------|--------|
-| Rust tests | 414 passed | ✅ All pass |
+| Rust tests | 736 passed | ✅ All pass |
 | Python tests | 132 passed | ✅ All pass |
 | `cargo build --release` | 0 errors, 0 warnings (from Zekt source) | ✅ Clean |
 | `cargo clippy` | Clean | ✅ Clean |
 | Paper trading smoke test (60s) | No panic, price fetched | ✅ Pass |
 
-**New tests added during mission:** +33 tests (12 in M2, 16 in M3, 2 in M4, 3 in M5 regime module)
+**New tests added during Imperial mission:** +345 tests across 4 milestones (736 total Rust tests; 132 Python tests)
+
+---
+
+## Imperial Mission: M1–M4 Additions
+
+### M1: Imperial Read-Only Client
+- `src/imperial.rs` — 10 read-only GET endpoints for `https://api.imperial.space`
+- `src/config.rs` — `[imperial]` config section with safe defaults
+- No auth, no POST/PUT/DELETE, no `/mobile/*`, no `/deposit/*`
+- Live smoke tests marked `#[ignore]`
+
+### M2: Route Cost Oracle + Blueprint Revalidation
+- `src/route_cost.rs` — Multi-venue cost estimation using Imperial route data
+- `src/backtest.rs` — `imperial-route-oracle` cost mode integrated into BacktestEngine
+- `data/imperial-route-comparison.md` — Before/after comparison table for all 10 blueprint strategies
+- Backward compatible: `cost_mode = "flash"` (default) produces identical results
+
+### M3: Liquidation Zone Intelligence Capture
+- `src/liquidation.rs` — Data model, source fusion, confidence scoring, snapshot persistence
+- 4 sources: HL positions, HL fills, Imperial OI imbalance, Imperial depth fragility
+- Atomic write snapshots to `data/liquidation-zones/`
+- Config: `[liquidation]` section with `enabled = false` default
+
+### M4: Liquidation Strategy + Replay Validation Pipeline
+- `src/strategy.rs` — `liquidation-cascade-hunter` strategy (cascade continuation + exhaustion reversal)
+- `src/replay.rs` — Replay validation pipeline with promotion gate
+- 45 new replay tests covering VAL-STRAT-046 through VAL-STRAT-080, VAL-CROSS-005 through VAL-CROSS-008
+- Promotion gate checks: net expectancy, max drawdown, stale-data trades, duplicate pendings, signal count, Sharpe ratio
+- Documentation: `docs/imperial-integration-gate.md`, `docs/liquidation-zone-methodology.md`, `data/liquidation-zone-capture-summary.md`
 
 ---
 
@@ -178,7 +207,8 @@
 - **No live trading enabled:** All runs used `--paper` or `--backtest` modes. No `--keypair` flag used. ✅
 - **No secrets committed:** No private keys, API tokens, or wallet secrets in git history. ✅
 - **No risk limits weakened:** Risk config changes were additive only (new fields with safe defaults). No existing limits were decreased. ✅
-- **All tests pass at every milestone:** 381 → 396 → 412 → 414 Rust tests; 132 Python tests throughout. ✅
+- **All tests pass at every milestone:** 736 Rust tests; 132 Python tests throughout. ✅
+- **No Imperial trading:** All Imperial API calls are read-only GET. No JWT, no auth headers. ✅
 
 ---
 
@@ -192,4 +222,9 @@
 - **RiskManager**: Holds `RiskConfig` with 12 fields. `check_can_trade()` gates all entries. Thread-safe via `Mutex` + `AtomicBool`.
 - **BacktestEngine**: Replays candles through `Strategy` trait. Supports walk-forward, slippage, regime filtering, fee decomposition.
 - **Blueprint strategies**: `blueprint-scalper` (cluster-001), `blueprint-mean-revert` (cluster-004) — parameters from actual profitable HL wallet clusters.
-- **Pipeline**: Orchestrator binary that launches alpha-scanner + copy-trader + whale-watcher + paper engine.
+- **ImperialClient**: Read-only HTTP client for Imperial Solana perps aggregator API. 10 GET endpoints.
+- **RouteCostOracle**: Multi-venue cost estimation comparing Imperial routes vs Flash-only costs.
+- **LiquidationZoneSnapshot**: Captured liquidation zone data per symbol per timestamp.
+- **LiquidationCascadeHunter**: Paper-only strategy exploiting liquidation cascades (continuation + reversal setups).
+- **ReplayPipeline**: Loads captured data, replays through strategy, evaluates promotion gate criteria.
+- **PromotionGate**: Checks ALL criteria before strategy promotion: expectancy, drawdown, stale-data, duplicates, signal count, Sharpe.
