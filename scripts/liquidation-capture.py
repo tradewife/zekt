@@ -46,8 +46,13 @@ IMPERIAL_API = "https://api.imperial.space"
 VALID_SOURCES = [
     "hyperliquid_positions",
     "hyperliquid_fills",
-    "oi_imbalance",
-    "depth_fragility",
+    "hyperliquid_l2_book",
+    "hyperliquid_candles",
+    "hyperliquid_funding",
+    "imperial_oi",
+    "imperial_depth",
+    "imperial_mark_prices",
+    "imperial_funding",
 ]
 
 # Default config matching Rust LiquidationConfig::default()
@@ -98,6 +103,95 @@ def imperial_get(path: str, timeout: int = 30) -> Optional[Any]:
     except Exception as e:
         log.warning("Imperial API error for %s: %s", path, e)
         return None
+
+
+# ---------------------------------------------------------------------------
+# Retry Logic
+# ---------------------------------------------------------------------------
+
+def hl_post_with_retry(payload: dict, timeout: int = 30, max_retries: int = 3,
+                        base_delay: float = 1.0) -> Optional[Any]:
+    """POST to Hyperliquid Info API with exponential backoff retry."""
+    for attempt in range(max_retries):
+        try:
+            resp = requests.post(HL_API, json=payload, timeout=timeout)
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", base_delay * (2 ** attempt)))
+                log.warning("HL API rate limited (429), retrying after %ds (attempt %d/%d)",
+                            retry_after, attempt + 1, max_retries)
+                time.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                log.warning("HL API connection error, retrying in %.1fs (attempt %d/%d): %s",
+                            delay, attempt + 1, max_retries, e)
+                time.sleep(delay)
+            else:
+                log.error("HL API connection failed after %d retries: %s", max_retries, e)
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                log.warning("HL API timeout, retrying in %.1fs (attempt %d/%d)",
+                            delay, attempt + 1, max_retries)
+                time.sleep(delay)
+            else:
+                log.error("HL API timeout after %d retries: %s", max_retries, e)
+        except Exception as e:
+            if attempt < max_retries - 1 and "5" in str(getattr(e, 'response', None) or ''):
+                delay = base_delay * (2 ** attempt)
+                log.warning("HL API server error, retrying in %.1fs (attempt %d/%d): %s",
+                            delay, attempt + 1, max_retries, e)
+                time.sleep(delay)
+            else:
+                log.error("HL API error (non-retryable): %s", e)
+                return None
+    return None
+
+
+def imperial_get_with_retry(path: str, timeout: int = 30, max_retries: int = 3,
+                             base_delay: float = 1.0) -> Optional[Any]:
+    """GET from Imperial API with exponential backoff retry."""
+    for attempt in range(max_retries):
+        try:
+            url = f"{IMPERIAL_API}{path}"
+            resp = requests.get(url, timeout=timeout)
+            if resp.status_code == 429:
+                retry_after = int(resp.headers.get("Retry-After", base_delay * (2 ** attempt)))
+                log.warning("Imperial API rate limited (429), retrying after %ds (attempt %d/%d)",
+                            retry_after, attempt + 1, max_retries)
+                time.sleep(retry_after)
+                continue
+            resp.raise_for_status()
+            return resp.json()
+        except requests.exceptions.ConnectionError as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                log.warning("Imperial API connection error, retrying in %.1fs (attempt %d/%d): %s",
+                            delay, attempt + 1, max_retries, e)
+                time.sleep(delay)
+            else:
+                log.error("Imperial API connection failed after %d retries: %s", max_retries, e)
+        except requests.exceptions.Timeout as e:
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                log.warning("Imperial API timeout, retrying in %.1fs (attempt %d/%d)",
+                            delay, attempt + 1, max_retries)
+                time.sleep(delay)
+            else:
+                log.error("Imperial API timeout after %d retries: %s", max_retries, e)
+        except Exception as e:
+            if attempt < max_retries - 1 and "5" in str(getattr(e, 'response', None) or ''):
+                delay = base_delay * (2 ** attempt)
+                log.warning("Imperial API server error, retrying in %.1fs (attempt %d/%d): %s",
+                            delay, attempt + 1, max_retries, e)
+                time.sleep(delay)
+            else:
+                log.error("Imperial API error (non-retryable): %s", e)
+                return None
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -491,6 +585,489 @@ def fetch_mark_prices(symbols: List[str]) -> Dict[str, float]:
 
 
 # ---------------------------------------------------------------------------
+# HL L2 Book Snapshot
+# ---------------------------------------------------------------------------
+
+def fetch_hl_l2_book(symbol: str) -> Optional[dict]:
+    """Fetch L2 order book from HL for a symbol."""
+    data = hl_post_with_retry({"type": "l2Book", "coin": symbol})
+    if not data:
+        return None
+    return data
+
+
+def parse_l2_book(raw_book: dict) -> Optional[dict]:
+    """Parse raw L2 book into structured best bid/ask and levels."""
+    levels = raw_book.get("levels", [])
+    if not levels or len(levels) < 2:
+        return None
+
+    bids = levels[0]
+    asks = levels[1]
+
+    if not bids or not asks:
+        return None
+
+    try:
+        best_bid = float(bids[0].get("px", 0))
+        best_ask = float(asks[0].get("px", 0))
+    except (ValueError, TypeError, IndexError):
+        return None
+
+    if best_bid <= 0 or best_ask <= 0:
+        return None
+
+    parsed_bids = []
+    for b in bids:
+        try:
+            parsed_bids.append({"px": float(b["px"]), "sz": float(b["sz"]), "n": int(b.get("n", 0))})
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    parsed_asks = []
+    for a in asks:
+        try:
+            parsed_asks.append({"px": float(a["px"]), "sz": float(a["sz"]), "n": int(a.get("n", 0))})
+        except (ValueError, TypeError, KeyError):
+            continue
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "bids": parsed_bids,
+        "asks": parsed_asks,
+    }
+
+
+def compute_depth_summary(raw_book: dict, mid_price: float) -> Optional[dict]:
+    """Compute depth summary from L2 book data at various bps thresholds."""
+    parsed = parse_l2_book(raw_book)
+    if parsed is None or mid_price <= 0:
+        return None
+
+    best_bid = parsed["best_bid"]
+    best_ask = parsed["best_ask"]
+    spread = best_ask - best_bid
+    spread_bps = (spread / mid_price) * 10_000 if mid_price > 0 else 0
+
+    # Depth at various bps thresholds
+    thresholds_bps = [10, 25, 50]
+    bid_depth = {}
+    ask_depth = {}
+
+    for bps in thresholds_bps:
+        price_range = mid_price * (bps / 10_000)
+        bid_low = mid_price - price_range
+        ask_high = mid_price + price_range
+
+        bid_total = sum(
+            b["px"] * b["sz"]
+            for b in parsed["bids"]
+            if bid_low <= b["px"] <= mid_price
+        )
+        ask_total = sum(
+            a["px"] * a["sz"]
+            for a in parsed["asks"]
+            if mid_price <= a["px"] <= ask_high
+        )
+
+        bid_depth[f"bid_depth_{bps}bps_usd"] = bid_total
+        ask_depth[f"ask_depth_{bps}bps_usd"] = ask_total
+
+    # Total bid/ask depth
+    total_bid_usd = sum(b["px"] * b["sz"] for b in parsed["bids"])
+    total_ask_usd = sum(a["px"] * a["sz"] for a in parsed["asks"])
+
+    # Imbalance: bid_depth / ask_depth (clamped)
+    if total_ask_usd > 0:
+        imbalance = total_bid_usd / total_ask_usd
+    elif total_bid_usd > 0:
+        imbalance = float('inf')
+    else:
+        imbalance = 1.0
+
+    return {
+        "best_bid": best_bid,
+        "best_ask": best_ask,
+        "spread_bps": spread_bps,
+        "bid_depth_usd": total_bid_usd,
+        "ask_depth_usd": total_ask_usd,
+        "imbalance": imbalance,
+        **bid_depth,
+        **ask_depth,
+    }
+
+
+# ---------------------------------------------------------------------------
+# HL Funding Rate Capture
+# ---------------------------------------------------------------------------
+
+def fetch_hl_funding_meta() -> Optional[dict]:
+    """Fetch HL meta (contains funding rates and universe info)."""
+    return hl_post_with_retry({"type": "meta"})
+
+
+def extract_funding_rates_from_meta(meta: dict) -> Dict[str, float]:
+    """Extract per-symbol funding rates from HL meta response."""
+    universe = meta.get("universe", [])
+    if not universe:
+        return {}
+
+    rates = {}
+    for asset in universe:
+        name = asset.get("name", "")
+        funding_str = asset.get("funding", "0")
+        if name and funding_str:
+            try:
+                rates[name] = float(funding_str)
+            except (ValueError, TypeError):
+                continue
+    return rates
+
+
+def fetch_imperial_funding(symbols: List[str]) -> Dict[str, float]:
+    """Fetch funding rates from Imperial API."""
+    data = imperial_get_with_retry("/api/v1/funding/rates")
+    if not data:
+        return {}
+
+    rates = {}
+    # Handle various response formats
+    items = data if isinstance(data, list) else data.get("rates", data.get("rows", []))
+    for item in items:
+        sym = item.get("symbol", "")
+        # Normalize symbol name (BTC-PERP -> BTC)
+        base_sym = sym.replace("-PERP", "").replace("_PERP", "")
+        if base_sym not in symbols:
+            continue
+        rate_str = item.get("fundingRate", item.get("rate", "0"))
+        try:
+            rates[base_sym] = float(rate_str)
+        except (ValueError, TypeError):
+            continue
+    return rates
+
+
+# ---------------------------------------------------------------------------
+# HL Candle Fetching (for local H/L + VWAP)
+# ---------------------------------------------------------------------------
+
+def fetch_hl_candles(symbol: str, interval: str = "5m", lookback_candles: int = 100) -> List[dict]:
+    """Fetch recent candles from HL for local H/L and VWAP computation."""
+    now_ms = int(time.time() * 1000)
+    # Estimate lookback time based on interval
+    interval_ms = _interval_to_ms(interval)
+    start_ms = now_ms - (lookback_candles * interval_ms)
+
+    data = hl_post_with_retry({
+        "type": "candleSnapshot",
+        "req": {
+            "coin": symbol,
+            "interval": interval,
+            "startTime": start_ms,
+            "endTime": now_ms,
+        }
+    })
+    if not data:
+        return []
+    return data
+
+
+def _interval_to_ms(interval: str) -> int:
+    """Convert interval string to milliseconds."""
+    mapping = {
+        "1m": 60_000,
+        "5m": 300_000,
+        "15m": 900_000,
+        "1h": 3_600_000,
+        "4h": 14_400_000,
+        "1d": 86_400_000,
+        "1w": 604_800_000,
+    }
+    return mapping.get(interval, 300_000)  # Default 5m
+
+
+def parse_candle_snapshot(raw_candles: List[dict]) -> List[dict]:
+    """Parse raw candle snapshot data into standardized format."""
+    parsed = []
+    for c in raw_candles:
+        try:
+            parsed.append({
+                "t": int(c.get("t", 0)),
+                "o": float(c.get("o", 0)),
+                "h": float(c.get("h", 0)),
+                "l": float(c.get("l", 0)),
+                "c": float(c.get("c", 0)),
+                "v": float(c.get("v", 0)),
+                "n": int(c.get("n", 0)),
+            })
+        except (ValueError, TypeError):
+            continue
+    return parsed
+
+
+# ---------------------------------------------------------------------------
+# Local High/Low Detection
+# ---------------------------------------------------------------------------
+
+def compute_local_high_low(candles: List[dict]) -> Optional[dict]:
+    """Compute local high and low from recent candle data."""
+    if not candles:
+        return None
+
+    parsed = parse_candle_snapshot(candles)
+    if not parsed:
+        return None
+
+    highs = [c["h"] for c in parsed if c["h"] > 0]
+    lows = [c["l"] for c in parsed if c["l"] > 0]
+
+    if not highs or not lows:
+        return None
+
+    return {
+        "local_high": max(highs),
+        "local_low": min(lows),
+        "candle_count": len(parsed),
+    }
+
+
+# ---------------------------------------------------------------------------
+# Anchored VWAP Computation
+# ---------------------------------------------------------------------------
+
+def compute_anchored_vwap(candles: List[dict]) -> Optional[float]:
+    """Compute anchored VWAP from candle data using typical price * volume."""
+    if not candles:
+        return None
+
+    parsed = parse_candle_snapshot(candles)
+    if not parsed:
+        return None
+
+    total_volume = 0.0
+    total_pv = 0.0
+
+    for c in parsed:
+        vol = c["v"]
+        if vol <= 0:
+            continue
+        typical_price = (c["h"] + c["l"] + c["c"]) / 3.0
+        total_pv += typical_price * vol
+        total_volume += vol
+
+    if total_volume <= 0:
+        return None
+
+    return total_pv / total_volume
+
+
+# ---------------------------------------------------------------------------
+# Imperial Mark Prices
+# ---------------------------------------------------------------------------
+
+def fetch_imperial_mark_prices(symbols: List[str]) -> Dict[str, float]:
+    """Fetch mark prices from Imperial API."""
+    data = imperial_get_with_retry("/api/v1/mark/prices")
+    if not data:
+        return {}
+
+    # Handle list response
+    items = data if isinstance(data, list) else data.get("prices", data.get("rows", []))
+    return parse_imperial_mark_prices(items)
+
+
+def parse_imperial_mark_prices(items: list) -> Dict[str, float]:
+    """Parse Imperial mark price response."""
+    prices = {}
+    for item in items:
+        sym = item.get("symbol", "")
+        base_sym = sym.replace("-PERP", "").replace("_PERP", "")
+        price_str = item.get("markPrice", item.get("price", "0"))
+        try:
+            price = float(price_str)
+            if price > 0:
+                prices[base_sym] = price
+        except (ValueError, TypeError):
+            continue
+    return prices
+
+
+# ---------------------------------------------------------------------------
+# Imperial Phoenix Depth Parsing
+# ---------------------------------------------------------------------------
+
+def parse_phoenix_depth(raw_data: dict, symbol: str) -> Optional[dict]:
+    """Parse Phoenix depth data for a specific symbol."""
+    snapshots = raw_data.get("snapshots", {})
+    snap = snapshots.get(symbol) or snapshots.get(f"{symbol}-PERP")
+    if not snap:
+        return None
+
+    try:
+        mid = float(snap.get("mid", 0))
+    except (ValueError, TypeError):
+        return None
+
+    bids = []
+    for b in snap.get("bids", []):
+        try:
+            bids.append({"price": float(b.get("price", 0)), "sizeBase": float(b.get("sizeBase", 0))})
+        except (ValueError, TypeError):
+            continue
+
+    asks = []
+    for a in snap.get("asks", []):
+        try:
+            asks.append({"price": float(a.get("price", 0)), "sizeBase": float(a.get("sizeBase", 0))})
+        except (ValueError, TypeError):
+            continue
+
+    return {"mid": mid, "bids": bids, "asks": asks}
+
+
+# ---------------------------------------------------------------------------
+# Source Freshness Tracking
+# ---------------------------------------------------------------------------
+
+def detect_stale_sources(source_freshness: Dict[str, int], now_ms: int,
+                          staleness_threshold_ms: int) -> List[str]:
+    """Detect which sources are stale based on staleness threshold."""
+    stale = []
+    for source, ts in source_freshness.items():
+        if ts == 0 or (now_ms - ts) > staleness_threshold_ms:
+            stale.append(source)
+    return stale
+
+
+# ---------------------------------------------------------------------------
+# Capture Gap Detection
+# ---------------------------------------------------------------------------
+
+def detect_capture_gap(prev_ts: Optional[int], current_ts: int,
+                        interval_ms: int) -> Optional[dict]:
+    """Detect if gap between captures exceeds 2x the configured interval.
+
+    Returns None if no gap, or dict with gap details if gap > 2x interval.
+    """
+    if prev_ts is None or prev_ts == 0:
+        return None
+
+    gap_ms = current_ts - prev_ts
+    threshold_ms = 2 * interval_ms
+
+    if gap_ms > threshold_ms:
+        return {
+            "gap_ms": gap_ms,
+            "expected_interval_ms": interval_ms,
+            "gap_ratio": gap_ms / interval_ms if interval_ms > 0 else 0,
+        }
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Aggressive Flow Capture
+# ---------------------------------------------------------------------------
+
+def compute_aggressive_flow(fills: List[dict]) -> Dict[str, dict]:
+    """Compute aggressive flow metrics from fill data.
+
+    Returns per-symbol flow: sell_flow_usd, buy_flow_usd, net_flow_usd.
+    """
+    if not fills:
+        return {}
+
+    per_symbol: Dict[str, dict] = {}
+
+    for f in fills:
+        coin = f.get("coin", "")
+        if not coin:
+            continue
+
+        if coin not in per_symbol:
+            per_symbol[coin] = {"sell_flow_usd": 0.0, "buy_flow_usd": 0.0, "fill_count": 0}
+
+        price = f.get("price", 0)
+        size = f.get("size", 0)
+        side = f.get("side", "")
+        notional = price * size
+
+        if side == "A":  # Ask/sell
+            per_symbol[coin]["sell_flow_usd"] += notional
+        elif side == "B":  # Bid/buy
+            per_symbol[coin]["buy_flow_usd"] += notional
+
+        per_symbol[coin]["fill_count"] += 1
+
+    # Compute net flow
+    for coin in per_symbol:
+        per_symbol[coin]["net_flow_usd"] = (
+            per_symbol[coin]["sell_flow_usd"] - per_symbol[coin]["buy_flow_usd"]
+        )
+
+    return per_symbol
+
+
+# ---------------------------------------------------------------------------
+# Snapshot Validation
+# ---------------------------------------------------------------------------
+
+def validate_snapshot(snapshot: dict) -> bool:
+    """Validate a snapshot for required fields and sane values.
+
+    Rejects: empty symbols, out-of-range timestamps, negative notional,
+    invalid confidence scores.
+    """
+    # Required top-level fields
+    if "symbol" not in snapshot or not snapshot["symbol"]:
+        return False
+    if "timestamp_ms" not in snapshot:
+        return False
+    if snapshot["timestamp_ms"] < 0:
+        return False
+    if "mark_price" not in snapshot:
+        return False
+
+    # Validate zones
+    for zone in snapshot.get("zones", []):
+        if "price" not in zone:
+            return False
+        notional = zone.get("estimated_notional_usd", 0)
+        if notional < 0:
+            return False
+        confidence = zone.get("confidence", 0)
+        if confidence < 0 or confidence > 1:
+            return False
+        side = zone.get("side_at_risk", "")
+        if side not in ("long", "short", ""):
+            return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Health Status
+# ---------------------------------------------------------------------------
+
+def generate_health_status(status: str, last_capture_ts: int,
+                            symbols_captured: List[str], total_zones: int,
+                            uptime_secs: float, source_freshness: Dict[str, int],
+                            stale_sources: List[str]) -> str:
+    """Generate --health JSON output."""
+    health = {
+        "status": status,
+        "last_capture_ts": last_capture_ts,
+        "symbols_captured": symbols_captured,
+        "total_zones": total_zones,
+        "uptime_secs": uptime_secs,
+        "source_freshness": source_freshness,
+        "stale_sources": stale_sources,
+        "timestamp_utc": datetime.now(timezone.utc).isoformat(),
+    }
+    return json.dumps(health, indent=2)
+
+
+# ---------------------------------------------------------------------------
 # Zone Merging (Cross-Source Fusion)
 # ---------------------------------------------------------------------------
 
@@ -619,7 +1196,8 @@ def persist_snapshot(snapshot: dict, output_dir: str) -> str:
 # Main Capture Cycle
 # ---------------------------------------------------------------------------
 
-def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_num: int) -> dict:
+def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_num: int,
+                      prev_cycle_ts: Optional[int] = None, interval_secs: int = 30) -> dict:
     """Run a single capture cycle for all configured symbols."""
     now_ms = int(time.time() * 1000)
     log.info("Cycle %d: starting capture at %s", cycle_num, datetime.now(timezone.utc).isoformat())
@@ -634,6 +1212,10 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
     }
 
     source_freshness = {}
+    staleness_threshold_ms = config.get("staleness_threshold_secs", 60) * 1000
+
+    # Detect capture gap
+    capture_gap = detect_capture_gap(prev_cycle_ts, now_ms, interval_secs * 1000)
 
     # 1. Fetch mark prices from HL
     log.info("Fetching mark prices from Hyperliquid...")
@@ -644,26 +1226,55 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
     else:
         cycle_stats["source_errors"].append("hyperliquid_mark: failed to fetch")
 
-    # 2. Fetch Imperial OI data
+    # 2. Fetch HL meta for funding rates
+    log.info("Fetching HL meta for funding rates...")
+    hl_meta = fetch_hl_funding_meta()
+    hl_funding = {}
+    if hl_meta:
+        source_freshness["hyperliquid_funding"] = now_ms
+        hl_funding = extract_funding_rates_from_meta(hl_meta)
+        log.info("HL funding rates for %d symbols", len(hl_funding))
+    else:
+        cycle_stats["source_errors"].append("hyperliquid_funding: failed to fetch")
+
+    # 3. Fetch Imperial OI data
     log.info("Fetching Imperial OI data...")
     oi_data = fetch_imperial_oi(SYMBOLS)
     if oi_data:
-        source_freshness["oi_imbalance"] = now_ms
+        source_freshness["imperial_oi"] = now_ms
         log.info("OI data for %d symbols: %s", len(oi_data),
                  [d["symbol"] for d in oi_data])
     else:
-        cycle_stats["source_errors"].append("oi_imbalance: no data returned")
+        cycle_stats["source_errors"].append("imperial_oi: no data returned")
 
-    # 3. Fetch Imperial depth data
+    # 4. Fetch Imperial depth data
     log.info("Fetching Imperial depth data...")
     depth_data = fetch_imperial_depth(SYMBOLS)
     if depth_data:
-        source_freshness["depth_fragility"] = now_ms
+        source_freshness["imperial_depth"] = now_ms
         log.info("Depth data for %d symbols: %s", len(depth_data), list(depth_data.keys()))
     else:
-        cycle_stats["source_errors"].append("depth_fragility: no data returned")
+        cycle_stats["source_errors"].append("imperial_depth: no data returned")
 
-    # 4. Fetch HL positions for known wallets
+    # 5. Fetch Imperial mark prices
+    log.info("Fetching Imperial mark prices...")
+    imperial_prices = fetch_imperial_mark_prices(SYMBOLS)
+    if imperial_prices:
+        source_freshness["imperial_mark_prices"] = now_ms
+        log.info("Imperial mark prices for %d symbols", len(imperial_prices))
+    else:
+        cycle_stats["source_errors"].append("imperial_mark_prices: no data returned")
+
+    # 6. Fetch Imperial funding rates
+    log.info("Fetching Imperial funding rates...")
+    imperial_funding = fetch_imperial_funding(SYMBOLS)
+    if imperial_funding:
+        source_freshness["imperial_funding"] = now_ms
+        log.info("Imperial funding for %d symbols", len(imperial_funding))
+    else:
+        cycle_stats["source_errors"].append("imperial_funding: no data returned")
+
+    # 7. Fetch HL positions for known wallets
     log.info("Fetching HL positions for %d wallets...", len(wallets))
     hl_positions = fetch_hl_positions(wallets, SYMBOLS)
     if hl_positions:
@@ -672,7 +1283,7 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
     else:
         cycle_stats["source_errors"].append("hyperliquid_positions: no positions found")
 
-    # 5. Fetch HL fills for burst detection
+    # 8. Fetch HL fills for burst detection
     log.info("Fetching HL fills for burst detection...")
     hl_fills = fetch_hl_fills(wallets, config["fills_lookback_secs"])
     if hl_fills:
@@ -680,6 +1291,11 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
         log.info("Found %d recent fills", len(hl_fills))
     else:
         cycle_stats["source_errors"].append("hyperliquid_fills: no fills in lookback window")
+
+    # Detect stale sources
+    stale_sources = detect_stale_sources(source_freshness, now_ms, staleness_threshold_ms)
+    if stale_sources:
+        log.warning("Stale sources detected: %s", stale_sources)
 
     # Process per symbol
     for sym in SYMBOLS:
@@ -723,13 +1339,87 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
         min_conf = config["min_confidence"]
         filtered = [z for z in merged if z["confidence"] >= min_conf]
 
-        # Build snapshot
+        # Fetch L2 book depth summary
+        depth_summary = None
+        log.info("  %s: Fetching L2 book...", sym)
+        raw_book = fetch_hl_l2_book(sym)
+        if raw_book:
+            source_freshness["hyperliquid_l2_book"] = now_ms
+            depth_summary = compute_depth_summary(raw_book, mark)
+            if depth_summary:
+                log.info("  %s: L2 spread=%.1f bps, imbalance=%.2f",
+                         sym, depth_summary["spread_bps"], depth_summary["imbalance"])
+        else:
+            cycle_stats["source_errors"].append(f"hyperliquid_l2_book_{sym}: no data")
+
+        # Fetch candles for local H/L + VWAP
+        local_hl = None
+        vwap = None
+        log.info("  %s: Fetching candles for local H/L + VWAP...", sym)
+        raw_candles = fetch_hl_candles(sym, interval="5m", lookback_candles=100)
+        if raw_candles:
+            source_freshness["hyperliquid_candles"] = now_ms
+            local_hl = compute_local_high_low(raw_candles)
+            vwap = compute_anchored_vwap(raw_candles)
+            if local_hl:
+                log.info("  %s: H=%.2f L=%.2f", sym, local_hl["local_high"], local_hl["local_low"])
+            if vwap:
+                log.info("  %s: VWAP=%.2f", sym, vwap)
+        else:
+            cycle_stats["source_errors"].append(f"hyperliquid_candles_{sym}: no candles")
+
+        # Aggressive flow for this symbol
+        sym_all_fills = [f for f in hl_fills if f["coin"] == sym]
+        aggressive_flow = compute_aggressive_flow(sym_all_fills)
+        sym_flow = aggressive_flow.get(sym, {})
+
+        # Funding rate for this symbol
+        funding_rate = hl_funding.get(sym, None)
+        imp_funding_rate = imperial_funding.get(sym, None)
+        funding_rate_annual = None
+        if funding_rate is not None:
+            # Annualized: rate * 365 * 24 * 100 (8-hour funding periods)
+            funding_rate_annual = funding_rate * 365 * 3 * 100  # 3 periods per day
+
+        # Imperial mark price divergence
+        imperial_mark = imperial_prices.get(sym, None)
+        price_divergence_bps = None
+        if imperial_mark and mark > 0:
+            price_divergence_bps = (imperial_mark - mark) / mark * 10_000
+
+        # Build enriched snapshot
         snapshot = {
             "symbol": sym,
             "timestamp_ms": now_ms,
             "mark_price": mark,
             "zones": filtered,
+            # Enrichment: L2 depth
+            "depth_summary": depth_summary,
+            # Enrichment: Funding rates
+            "funding_rate": funding_rate,
+            "funding_rate_annual_pct": funding_rate_annual,
+            "imperial_funding_rate": imp_funding_rate,
+            # Enrichment: Local H/L + VWAP
+            "local_high": local_hl["local_high"] if local_hl else None,
+            "local_low": local_hl["local_low"] if local_hl else None,
+            "vwap": vwap,
+            # Enrichment: Imperial mark price
+            "imperial_mark_price": imperial_mark,
+            "price_divergence_bps": price_divergence_bps,
+            # Enrichment: Aggressive flow
+            "aggressive_flow": sym_flow if sym_flow else None,
+            # Enrichment: Source freshness
+            "source_freshness": dict(source_freshness),
+            "stale_sources": stale_sources,
         }
+
+        # Capture gap metadata
+        if capture_gap:
+            snapshot["capture_gap"] = capture_gap
+
+        # Validate snapshot
+        if not validate_snapshot(snapshot):
+            log.warning("  %s: snapshot validation failed", sym)
 
         # Persist
         try:
@@ -750,6 +1440,11 @@ def run_capture_cycle(config: dict, wallets: List[str], output_dir: str, cycle_n
                 "oi_imbalance": len(oi_zones),
                 "depth_fragility": len(fragility_zones),
             },
+            "has_l2_depth": depth_summary is not None,
+            "has_funding": funding_rate is not None,
+            "has_local_hl": local_hl is not None,
+            "has_vwap": vwap is not None,
+            "has_imperial_mark": imperial_mark is not None,
         }
 
     log.info("Cycle %d complete: %d snapshots written, %d source errors",
@@ -800,7 +1495,7 @@ def generate_summary_report(all_cycles: List[dict], output_path: str, config: di
         }
 
     # Confidence distribution (from snapshot files)
-    snapshot_dir = output_dir.rstrip("/")
+    snapshot_dir = output_path.rstrip("/")
     confidence_dist = _analyze_confidence_distribution(snapshot_dir)
 
     now_utc = datetime.now(timezone.utc).isoformat()
@@ -1026,7 +1721,13 @@ def main():
     parser.add_argument("--interval-secs", type=int, default=30, help="Seconds between cycles")
     parser.add_argument("--output-dir", default="data/liquidation-zones", help="Snapshot output directory")
     parser.add_argument("--wallets-file", default="data/watchlist.json", help="Wallet list JSON")
+    parser.add_argument("--health", action="store_true", help="Print health/status JSON and exit")
     args = parser.parse_args()
+
+    # --health: return JSON status from latest snapshot files
+    if args.health:
+        _run_health_check(args.output_dir)
+        return
 
     log.info("Liquidation Zone Capture starting")
     log.info("  Cycles: %d, Interval: %ds, Output: %s", args.cycles, args.interval_secs, args.output_dir)
@@ -1042,10 +1743,16 @@ def main():
     config = DEFAULT_CONFIG
     all_cycles = []
     start_time = time.time()
+    prev_cycle_ts = None
 
     for i in range(args.cycles):
-        cycle_stats = run_capture_cycle(config, wallets, args.output_dir, i + 1)
+        cycle_stats = run_capture_cycle(
+            config, wallets, args.output_dir, i + 1,
+            prev_cycle_ts=prev_cycle_ts,
+            interval_secs=args.interval_secs,
+        )
         all_cycles.append(cycle_stats)
+        prev_cycle_ts = cycle_stats["timestamp_ms"]
 
         if i < args.cycles - 1:
             log.info("Sleeping %d seconds until next cycle...", args.interval_secs)
@@ -1056,6 +1763,70 @@ def main():
     # Generate summary report
     report_path = generate_summary_report(all_cycles, args.output_dir, config, elapsed)
     log.info("Done. Report: %s", report_path)
+
+
+def _run_health_check(output_dir: str):
+    """Print health status JSON based on latest snapshot files."""
+    start_time = time.time()
+
+    # Find latest snapshot files
+    symbols_captured = []
+    last_capture_ts = 0
+    total_zones = 0
+
+    if os.path.isdir(output_dir):
+        snapshot_files = sorted(
+            [f for f in os.listdir(output_dir) if f.endswith(".json")],
+            reverse=True,
+        )
+        # Get unique symbols and latest timestamp
+        seen_symbols = set()
+        for fname in snapshot_files:
+            parts = fname.replace(".json", "").split("_", 1)
+            if len(parts) >= 2:
+                sym = parts[0]
+                ts_str = parts[1]
+                try:
+                    ts = int(ts_str)
+                    if ts > last_capture_ts:
+                        last_capture_ts = ts
+                    if sym not in seen_symbols:
+                        seen_symbols.add(sym)
+                        symbols_captured.append(sym)
+                except ValueError:
+                    continue
+
+        # Count total zones from most recent snapshots per symbol
+        for sym in symbols_captured:
+            for fname in snapshot_files:
+                if fname.startswith(f"{sym}_") and fname.endswith(".json"):
+                    try:
+                        with open(os.path.join(output_dir, fname)) as f:
+                            snap = json.load(f)
+                        total_zones += len(snap.get("zones", []))
+                    except Exception:
+                        pass
+                    break
+
+    # Determine status
+    if last_capture_ts == 0:
+        status = "degraded"
+    else:
+        age_secs = time.time() - last_capture_ts / 1000
+        status = "ok" if age_secs < 300 else "degraded"
+
+    uptime_secs = time.time() - start_time
+
+    health_json = generate_health_status(
+        status=status,
+        last_capture_ts=last_capture_ts,
+        symbols_captured=symbols_captured,
+        total_zones=total_zones,
+        uptime_secs=uptime_secs,
+        source_freshness={},
+        stale_sources=[],
+    )
+    print(health_json)
 
 
 if __name__ == "__main__":
