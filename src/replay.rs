@@ -333,6 +333,7 @@ impl ReplayPipeline {
             regime_label: point.regime_label.clone(),
             liquidation_burst_detected: point.liquidation_burst_detected,
             symbol: Some(point.symbol.clone()),
+            oi_contracting: None,
         };
 
         MomentumSnapshot {

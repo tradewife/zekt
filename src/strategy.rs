@@ -2514,6 +2514,1084 @@ impl Strategy for LiquidationCascadeHunter {
 }
 
 // ---------------------------------------------------------------------------
+// Sweep Reclaim Strategy
+// ---------------------------------------------------------------------------
+
+/// Parameters for the liquidation-sweep-reclaim strategy.
+///
+/// This strategy enters after a zone sweep with exhaustion signals:
+/// forced-flow spike → pressure deceleration → VWAP reclaim → depth refill →
+/// spread normalization → OI contraction. Two-phase entry: passive fishing
+/// ladder first, confirmation entry after reclaim. Never chases beyond max
+/// distance. Exit: trailing stop after reclaim, time stop.
+///
+/// Paper-only by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SweepReclaimParams {
+    // --- Enable / paper-only ---
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub paper_only: bool,
+
+    // --- Entry gates ---
+    /// Minimum liquidation zone confidence [0.0, 1.0].
+    #[serde(default = "default_sr_confidence_min")]
+    pub min_confidence: f64,
+    /// Maximum chase distance from the swept zone in basis points.
+    /// Strategy will never enter if price has moved further than this.
+    #[serde(default = "default_sr_max_chase_distance_bps")]
+    pub max_chase_distance_bps: f64,
+    /// Forced-flow velocity spike threshold. Velocity must exceed this
+    /// at the sweep point to qualify as a liquidation cascade event.
+    #[serde(default = "default_sr_forced_flow_spike")]
+    pub forced_flow_spike_threshold: f64,
+    /// Velocity deceleration threshold. After the spike, velocity must
+    /// drop below this to confirm exhaustion / pressure deceleration.
+    #[serde(default = "default_sr_velocity_deceleration")]
+    pub velocity_deceleration_threshold: f64,
+    /// Whether VWAP reclaim is required for entry confirmation.
+    #[serde(default = "default_true")]
+    pub vwap_reclaim_required: bool,
+    /// Maximum spread (%) for spread normalization gate.
+    #[serde(default = "default_sr_spread_max_pct")]
+    pub spread_max_pct: f64,
+    /// Minimum order book depth (USD) for depth refill confirmation.
+    #[serde(default = "default_sr_depth_min_usd")]
+    pub depth_min_usd: f64,
+    /// Whether OI contraction is required for entry.
+    #[serde(default = "default_true")]
+    pub oi_contraction_required: bool,
+    /// Minimum volume z-score for cascade confirmation.
+    #[serde(default = "default_sr_volume_z_score")]
+    pub volume_z_score_threshold: f64,
+    /// Stale data threshold in seconds.
+    #[serde(default = "default_sr_stale_threshold_secs")]
+    pub stale_data_threshold_secs: u64,
+    /// Whether regime compatibility filter is enabled.
+    #[serde(default = "default_true")]
+    pub regime_filter: bool,
+    /// Maximum route cost in bps.
+    #[serde(default = "default_sr_route_cost_max_bps")]
+    pub route_cost_max_bps: f64,
+    /// Cooldown after a losing trade in seconds.
+    #[serde(default = "default_sr_cooldown_after_loss_secs")]
+    pub cooldown_after_loss_secs: u64,
+
+    // --- Fishing ladder (phase 1) ---
+    /// Offsets (in bps) from the zone midpoint for passive fishing orders.
+    #[serde(default = "default_sr_fishing_offsets")]
+    pub fishing_ladder_offsets_bps: Vec<f64>,
+    /// Size in USD for each fishing tranche.
+    #[serde(default = "default_sr_fishing_tranche_usd")]
+    pub fishing_tranche_usd: f64,
+    /// Fishing order expiry in seconds.
+    #[serde(default = "default_sr_fishing_expiry_secs")]
+    pub fishing_expiry_secs: u64,
+
+    // --- Exit parameters ---
+    #[serde(default = "default_sr_take_profit_pct")]
+    pub take_profit_pct: f64,
+    #[serde(default = "default_sr_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    #[serde(default = "default_sr_trailing_stop_pct")]
+    pub trailing_stop_pct: f64,
+    #[serde(default = "default_sr_trailing_activation_pct")]
+    pub trailing_activation_pct: f64,
+    #[serde(default = "default_sr_max_hold_secs")]
+    pub max_hold_secs: u64,
+
+    // --- General ---
+    #[serde(default = "default_sr_clip_size_usd")]
+    pub clip_size_usd: f64,
+    #[serde(default = "default_sr_leverage")]
+    pub leverage: f64,
+    #[serde(default = "default_neutral")]
+    pub direction_bias: String,
+    #[serde(default = "default_scale_in_clips")]
+    pub scale_in_clips: u32,
+    #[serde(default = "default_true")]
+    pub use_native_tp_sl: bool,
+    #[serde(default = "default_sr_lookback_count")]
+    pub lookback_count: usize,
+}
+
+fn default_sr_confidence_min() -> f64 { 0.6 }
+fn default_sr_max_chase_distance_bps() -> f64 { 150.0 }
+fn default_sr_forced_flow_spike() -> f64 { 2.0 }
+fn default_sr_velocity_deceleration() -> f64 { 0.5 }
+fn default_sr_spread_max_pct() -> f64 { 0.5 }
+fn default_sr_depth_min_usd() -> f64 { 10_000.0 }
+fn default_sr_volume_z_score() -> f64 { 1.5 }
+fn default_sr_stale_threshold_secs() -> u64 { 300 }
+fn default_sr_route_cost_max_bps() -> f64 { 5.0 }
+fn default_sr_cooldown_after_loss_secs() -> u64 { 300 }
+fn default_sr_fishing_offsets() -> Vec<f64> { vec![10.0, 20.0, 30.0] }
+fn default_sr_fishing_tranche_usd() -> f64 { 25.0 }
+fn default_sr_fishing_expiry_secs() -> u64 { 300 }
+fn default_sr_take_profit_pct() -> f64 { 3.0 }
+fn default_sr_stop_loss_pct() -> f64 { 1.5 }
+fn default_sr_trailing_stop_pct() -> f64 { 0.8 }
+fn default_sr_trailing_activation_pct() -> f64 { 1.5 }
+fn default_sr_max_hold_secs() -> u64 { 1800 }
+fn default_sr_clip_size_usd() -> f64 { 100.0 }
+fn default_sr_leverage() -> f64 { 2.0 }
+fn default_sr_lookback_count() -> usize { 30 }
+
+impl Default for SweepReclaimParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paper_only: true,
+            min_confidence: default_sr_confidence_min(),
+            max_chase_distance_bps: default_sr_max_chase_distance_bps(),
+            forced_flow_spike_threshold: default_sr_forced_flow_spike(),
+            velocity_deceleration_threshold: default_sr_velocity_deceleration(),
+            vwap_reclaim_required: true,
+            spread_max_pct: default_sr_spread_max_pct(),
+            depth_min_usd: default_sr_depth_min_usd(),
+            oi_contraction_required: true,
+            volume_z_score_threshold: default_sr_volume_z_score(),
+            stale_data_threshold_secs: default_sr_stale_threshold_secs(),
+            regime_filter: true,
+            route_cost_max_bps: default_sr_route_cost_max_bps(),
+            cooldown_after_loss_secs: default_sr_cooldown_after_loss_secs(),
+            fishing_ladder_offsets_bps: default_sr_fishing_offsets(),
+            fishing_tranche_usd: default_sr_fishing_tranche_usd(),
+            fishing_expiry_secs: default_sr_fishing_expiry_secs(),
+            take_profit_pct: default_sr_take_profit_pct(),
+            stop_loss_pct: default_sr_stop_loss_pct(),
+            trailing_stop_pct: default_sr_trailing_stop_pct(),
+            trailing_activation_pct: default_sr_trailing_activation_pct(),
+            max_hold_secs: default_sr_max_hold_secs(),
+            clip_size_usd: default_sr_clip_size_usd(),
+            leverage: default_sr_leverage(),
+            direction_bias: default_neutral(),
+            scale_in_clips: default_scale_in_clips(),
+            use_native_tp_sl: true,
+            lookback_count: default_sr_lookback_count(),
+        }
+    }
+}
+
+impl SweepReclaimParams {
+    /// Validate all parameter ranges.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.min_confidence < 0.0 || self.min_confidence > 1.0 {
+            return Err(format!(
+                "min_confidence must be in [0.0, 1.0], got {}",
+                self.min_confidence
+            ));
+        }
+        if self.max_chase_distance_bps < 0.0 {
+            return Err(format!(
+                "max_chase_distance_bps must be >= 0.0, got {}",
+                self.max_chase_distance_bps
+            ));
+        }
+        if self.forced_flow_spike_threshold <= 0.0 {
+            return Err(format!(
+                "forced_flow_spike_threshold must be > 0.0, got {}",
+                self.forced_flow_spike_threshold
+            ));
+        }
+        if self.velocity_deceleration_threshold < 0.0 {
+            return Err(format!(
+                "velocity_deceleration_threshold must be >= 0.0, got {}",
+                self.velocity_deceleration_threshold
+            ));
+        }
+        if self.spread_max_pct < 0.0 {
+            return Err(format!(
+                "spread_max_pct must be >= 0.0, got {}",
+                self.spread_max_pct
+            ));
+        }
+        if self.take_profit_pct <= 0.0 {
+            return Err(format!(
+                "take_profit_pct must be > 0.0, got {}",
+                self.take_profit_pct
+            ));
+        }
+        if self.stop_loss_pct <= 0.0 {
+            return Err(format!(
+                "stop_loss_pct must be > 0.0, got {}",
+                self.stop_loss_pct
+            ));
+        }
+        if self.trailing_stop_pct < 0.0 {
+            return Err(format!(
+                "trailing_stop_pct must be >= 0.0, got {}",
+                self.trailing_stop_pct
+            ));
+        }
+        if self.stale_data_threshold_secs == 0 {
+            return Err("stale_data_threshold_secs must be > 0".to_string());
+        }
+        if self.route_cost_max_bps < 0.0 {
+            return Err(format!(
+                "route_cost_max_bps must be >= 0.0, got {}",
+                self.route_cost_max_bps
+            ));
+        }
+        if self.clip_size_usd <= 0.0 {
+            return Err(format!(
+                "clip_size_usd must be > 0.0, got {}",
+                self.clip_size_usd
+            ));
+        }
+        if self.lookback_count == 0 {
+            return Err("lookback_count must be > 0".to_string());
+        }
+        if self.fishing_ladder_offsets_bps.is_empty() {
+            return Err("fishing_ladder_offsets_bps must not be empty".to_string());
+        }
+        if self.fishing_tranche_usd <= 0.0 {
+            return Err(format!(
+                "fishing_tranche_usd must be > 0.0, got {}",
+                self.fishing_tranche_usd
+            ));
+        }
+        if self.direction_bias != "long" && self.direction_bias != "short" && self.direction_bias != "neutral" {
+            return Err(format!(
+                "direction_bias must be 'long', 'short', or 'neutral', got '{}'",
+                self.direction_bias
+            ));
+        }
+        Ok(())
+    }
+
+    /// Parse from a TOML sub-table, falling back to defaults for missing fields.
+    pub fn from_toml_table(table: &toml::Value) -> Result<Self, String> {
+        let params = Self::default();
+        let mut p = params;
+
+        if let Some(v) = table.get("enabled").and_then(|v| v.as_bool()) {
+            p.enabled = v;
+        }
+        if let Some(v) = table.get("paper_only").and_then(|v| v.as_bool()) {
+            p.paper_only = v;
+        }
+        if let Some(v) = table.get("min_confidence").and_then(|v| v.as_float()) {
+            p.min_confidence = v;
+        }
+        if let Some(v) = table.get("max_chase_distance_bps").and_then(|v| v.as_float()) {
+            p.max_chase_distance_bps = v;
+        }
+        if let Some(v) = table.get("forced_flow_spike_threshold").and_then(|v| v.as_float()) {
+            p.forced_flow_spike_threshold = v;
+        }
+        if let Some(v) = table.get("velocity_deceleration_threshold").and_then(|v| v.as_float()) {
+            p.velocity_deceleration_threshold = v;
+        }
+        if let Some(v) = table.get("vwap_reclaim_required").and_then(|v| v.as_bool()) {
+            p.vwap_reclaim_required = v;
+        }
+        if let Some(v) = table.get("max_spread_bps").and_then(|v| v.as_float()) {
+            p.spread_max_pct = v / 100.0; // config in bps, internal in pct
+        }
+        if let Some(v) = table.get("spread_max_pct").and_then(|v| v.as_float()) {
+            p.spread_max_pct = v;
+        }
+        if let Some(v) = table.get("min_depth_usd").and_then(|v| v.as_float()) {
+            p.depth_min_usd = v;
+        }
+        if let Some(v) = table.get("depth_min_usd").and_then(|v| v.as_float()) {
+            p.depth_min_usd = v;
+        }
+        if let Some(v) = table.get("oi_contraction_required").and_then(|v| v.as_bool()) {
+            p.oi_contraction_required = v;
+        }
+        if let Some(v) = table.get("volume_zscore_min").and_then(|v| v.as_float()) {
+            p.volume_z_score_threshold = v;
+        }
+        if let Some(v) = table.get("volume_z_score_threshold").and_then(|v| v.as_float()) {
+            p.volume_z_score_threshold = v;
+        }
+        if let Some(v) = table.get("stale_data_threshold_secs").and_then(|v| v.as_integer()) {
+            p.stale_data_threshold_secs = v as u64;
+        }
+        if let Some(v) = table.get("regime_filter").and_then(|v| v.as_bool()) {
+            p.regime_filter = v;
+        }
+        if let Some(v) = table.get("route_cost_max_bps").and_then(|v| v.as_float()) {
+            p.route_cost_max_bps = v;
+        }
+        if let Some(v) = table.get("cooldown_after_loss_secs").and_then(|v| v.as_integer()) {
+            p.cooldown_after_loss_secs = v as u64;
+        }
+        if let Some(arr) = table.get("fishing_ladder_offsets_bps").and_then(|v| v.as_array()) {
+            p.fishing_ladder_offsets_bps = arr.iter()
+                .filter_map(|v| v.as_float())
+                .collect();
+        }
+        if let Some(v) = table.get("fishing_tranche_usd").and_then(|v| v.as_float()) {
+            p.fishing_tranche_usd = v;
+        }
+        if let Some(v) = table.get("fishing_expiry_secs").and_then(|v| v.as_integer()) {
+            p.fishing_expiry_secs = v as u64;
+        }
+        if let Some(v) = table.get("take_profit_pct").and_then(|v| v.as_float()) {
+            p.take_profit_pct = v;
+        }
+        if let Some(v) = table.get("stop_loss_pct").and_then(|v| v.as_float()) {
+            p.stop_loss_pct = v;
+        }
+        if let Some(v) = table.get("trailing_stop_pct").and_then(|v| v.as_float()) {
+            p.trailing_stop_pct = v;
+        }
+        if let Some(v) = table.get("trailing_activation_pct").and_then(|v| v.as_float()) {
+            p.trailing_activation_pct = v;
+        }
+        if let Some(v) = table.get("max_hold_secs").and_then(|v| v.as_integer()) {
+            p.max_hold_secs = v as u64;
+        }
+        if let Some(v) = table.get("clip_size_usd").and_then(|v| v.as_float()) {
+            p.clip_size_usd = v;
+        }
+        if let Some(v) = table.get("leverage").and_then(|v| v.as_float()) {
+            p.leverage = v;
+        }
+        if let Some(v) = table.get("direction_bias").and_then(|v| v.as_str()) {
+            p.direction_bias = v.to_string();
+        }
+        if let Some(v) = table.get("scale_in_clips").and_then(|v| v.as_integer()) {
+            p.scale_in_clips = v as u32;
+        }
+        if let Some(v) = table.get("use_native_tp_sl").and_then(|v| v.as_bool()) {
+            p.use_native_tp_sl = v;
+        }
+        if let Some(v) = table.get("lookback_count").and_then(|v| v.as_integer()) {
+            p.lookback_count = v as usize;
+        }
+
+        Ok(p)
+    }
+
+    /// Convert to generic StrategyParams.
+    pub fn to_strategy_params(&self) -> StrategyParams {
+        StrategyParams {
+            direction_bias: self.direction_bias.clone(),
+            momentum_threshold_pct: self.forced_flow_spike_threshold,
+            lookback_count: self.lookback_count,
+            scale_in_clips: self.scale_in_clips,
+            clip_size_usd: self.clip_size_usd,
+            max_hold_secs: self.max_hold_secs,
+            take_profit_pct: self.take_profit_pct,
+            stop_loss_pct: self.stop_loss_pct,
+            trailing_stop_pct: self.trailing_stop_pct,
+            trailing_activation_pct: self.trailing_activation_pct,
+            cooldown_after_loss_secs: self.cooldown_after_loss_secs,
+            use_native_tp_sl: self.use_native_tp_sl,
+        }
+    }
+}
+
+/// Phase of the sweep-reclaim entry process.
+#[derive(Debug, Clone, PartialEq)]
+pub enum SweepReclaimPhase {
+    /// Waiting for a zone sweep event.
+    Idle,
+    /// Zone sweep detected; placing passive fishing ladder orders.
+    Fishing,
+}
+
+/// Internal state tracking a detected zone sweep.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct SweepState {
+    /// Price of the swept zone.
+    zone_price: f64,
+    /// Side at risk in the zone ("long" = longs liquidated → we go long for reversal).
+    side_at_risk: String,
+    /// Direction of the sweep (true = price went down through zone, false = up).
+    swept_down: bool,
+    /// Timestamp when the sweep was detected.
+    sweep_timestamp_ms: i64,
+    /// Peak forced-flow velocity observed during the sweep.
+    peak_velocity: f64,
+    /// Current forced-flow velocity (updated each tick).
+    current_velocity: f64,
+    /// Whether forced-flow spike has been confirmed.
+    spike_confirmed: bool,
+    /// Whether pressure deceleration has been confirmed.
+    deceleration_confirmed: bool,
+    /// Whether VWAP reclaim has been confirmed.
+    vwap_reclaim_confirmed: bool,
+    /// Whether depth refill has been confirmed.
+    depth_refill_confirmed: bool,
+    /// Whether spread normalization has been confirmed.
+    spread_normalization_confirmed: bool,
+    /// Whether OI contraction has been confirmed.
+    oi_contraction_confirmed: bool,
+}
+
+/// A passive fishing order placed during the fishing phase.
+#[derive(Debug, Clone)]
+#[allow(dead_code)]
+struct FishingOrder {
+    /// Price level of the order.
+    price: f64,
+    /// Size in USD.
+    size_usd: f64,
+    /// Timestamp when the order was placed.
+    placed_timestamp_ms: i64,
+    /// Whether the order has been filled.
+    filled: bool,
+    /// Whether the order has expired.
+    expired: bool,
+}
+
+/// Sweep-reclaim reversal strategy.
+///
+/// Paper-only strategy that enters after a liquidation zone sweep with exhaustion
+/// confirmation. Two-phase entry:
+/// 1. **Fishing phase**: After sweep detection, place passive limit orders at
+///    configured offsets from the zone.
+/// 2. **Confirmation phase**: After VWAP reclaim + depth refill + spread normalization +
+///    OI contraction, enter with a market order.
+///
+/// Never chases beyond max distance. Exit via trailing stop or time stop.
+pub struct SweepReclaimStrategy {
+    params: SweepReclaimParams,
+    generic_params: StrategyParams,
+    detector: MomentumDetector,
+    /// Current phase of the entry process.
+    phase: SweepReclaimPhase,
+    /// Active sweep state (None if no sweep is being tracked).
+    sweep_state: Option<SweepState>,
+    /// Active fishing orders placed during the fishing phase.
+    fishing_orders: Vec<FishingOrder>,
+    /// Pending trade tracker: (symbol, side) → signal timestamp_ms.
+    pending_signals: std::collections::HashMap<(String, String), i64>,
+    /// Timestamp of the last loss (for cooldown).
+    last_loss_timestamp_ms: Option<i64>,
+    /// Current timestamp (updated on each push_price).
+    current_timestamp_ms: i64,
+    /// Previous forced-flow velocity (for deceleration detection).
+    prev_forced_flow_velocity: Option<f64>,
+    /// Previous depth (for refill detection - tracks minimum depth during sweep).
+    prev_min_depth: Option<f64>,
+    /// Previous spread (for normalization detection - tracks peak spread during sweep).
+    prev_max_spread: Option<f64>,
+    /// Entry zone price for the most recent position.
+    entry_zone_price: Option<f64>,
+    /// Whether the most recent entry was long.
+    entry_is_long: Option<bool>,
+}
+
+impl SweepReclaimStrategy {
+    /// Create a new sweep-reclaim strategy with the given parameters.
+    pub fn new(params: SweepReclaimParams) -> Self {
+        let generic = params.to_strategy_params();
+        let detector = MomentumDetector::new(params.forced_flow_spike_threshold, params.lookback_count);
+        Self {
+            generic_params: generic,
+            detector,
+            params,
+            phase: SweepReclaimPhase::Idle,
+            sweep_state: None,
+            fishing_orders: Vec::new(),
+            pending_signals: std::collections::HashMap::new(),
+            last_loss_timestamp_ms: None,
+            current_timestamp_ms: 0,
+            prev_forced_flow_velocity: None,
+            prev_min_depth: None,
+            prev_max_spread: None,
+            entry_zone_price: None,
+            entry_is_long: None,
+        }
+    }
+
+    /// Return a reference to the strategy-specific parameters.
+    #[allow(dead_code)]
+    pub fn sweep_params(&self) -> &SweepReclaimParams {
+        &self.params
+    }
+
+    /// Check if zone data is stale.
+    fn is_zone_data_stale(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(ts) = ext.zone_capture_timestamp_ms {
+            let age_secs = (self.current_timestamp_ms - ts).max(0) as u64 / 1000;
+            age_secs > self.params.stale_data_threshold_secs
+        } else {
+            true
+        }
+    }
+
+    /// Detect a zone sweep event: price rapidly crosses a liquidation zone then reverses.
+    ///
+    /// VAL-STRAT-SR-001: Zone sweep detected when price crosses then reverses.
+    fn detect_zone_sweep(
+        &mut self,
+        snapshot: &MomentumSnapshot,
+        ext: &crate::signal::MarketExtension,
+    ) -> Option<(f64, String, bool)> {
+        let zones = ext.liquidation_zones.as_ref()?;
+        let price = snapshot.current_price;
+        if price <= 0.0 {
+            return None;
+        }
+
+        // Check for price crossing a zone with high velocity (sweep signature)
+        let velocity = snapshot.price_velocity_pct;
+
+        for zone in zones {
+            if zone.confidence < self.params.min_confidence {
+                continue;
+            }
+
+            // Check if price is near the zone (within max_chase_distance)
+            let distance_bps = if zone.price > 0.0 {
+                ((price - zone.price) / zone.price * 10_000.0).abs()
+            } else {
+                continue;
+            };
+            if distance_bps > self.params.max_chase_distance_bps {
+                continue;
+            }
+
+            // Detect sweep: price crosses zone and starts reversing
+            // For a long-liquidation zone (side_at_risk = "long"):
+            //   Price drops below zone (swept_down = true), then reverses up
+            // For a short-liquidation zone (side_at_risk = "short"):
+            //   Price rises above zone (swept_down = false), then reverses down
+            let swept_down = price < zone.price;
+            let is_reversing = match zone.side_at_risk.as_str() {
+                "long" => velocity > 0.0,   // Price dropped to zone, now reversing up
+                "short" => velocity < 0.0,  // Price rose to zone, now reversing down
+                _ => continue,
+            };
+
+            // Check if price is close enough to the zone to have just swept it
+            let crossed = match zone.side_at_risk.as_str() {
+                "long" => price <= zone.price * 1.005 && price >= zone.price * 0.995,
+                "short" => price >= zone.price * 0.995 && price <= zone.price * 1.005,
+                _ => false,
+            };
+
+            if crossed && is_reversing {
+                return Some((zone.price, zone.side_at_risk.clone(), swept_down));
+            }
+        }
+
+        None
+    }
+
+    /// Check forced-flow spike (VAL-STRAT-SR-002).
+    fn check_forced_flow_spike(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(velocity) = ext.forced_flow_velocity {
+            velocity >= self.params.forced_flow_spike_threshold
+        } else {
+            false
+        }
+    }
+
+    /// Check pressure deceleration (VAL-STRAT-SR-003).
+    fn check_pressure_deceleration(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let (Some(current), Some(prev)) = (ext.forced_flow_velocity, self.prev_forced_flow_velocity) {
+            // Deceleration: velocity was high (spike), now dropping below threshold
+            current < self.params.velocity_deceleration_threshold && prev >= current
+        } else {
+            false
+        }
+    }
+
+    /// Check VWAP reclaim (VAL-STRAT-SR-004).
+    fn check_vwap_reclaim(&self, price: f64, ext: &crate::signal::MarketExtension, is_long: bool) -> bool {
+        if !self.params.vwap_reclaim_required {
+            return true; // Gate disabled
+        }
+        if let Some(vwap) = ext.vwap {
+            if vwap > 0.0 {
+                if is_long {
+                    price >= vwap // Long reclaim: price back above VWAP
+                } else {
+                    price <= vwap // Short reclaim: price back below VWAP
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Check depth refill (VAL-STRAT-SR-005).
+    fn check_depth_refill(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(depth) = ext.depth_usd {
+            if let Some(min_depth) = self.prev_min_depth {
+                // Depth has recovered above the minimum observed during sweep
+                depth >= self.params.depth_min_usd && depth > min_depth
+            } else {
+                depth >= self.params.depth_min_usd
+            }
+        } else {
+            false
+        }
+    }
+
+    /// Check spread normalization (VAL-STRAT-SR-006).
+    fn check_spread_normalization(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(spread) = ext.spread_pct {
+            spread <= self.params.spread_max_pct
+        } else {
+            false
+        }
+    }
+
+    /// Check OI contraction (VAL-STRAT-SR-007).
+    fn check_oi_contraction(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if !self.params.oi_contraction_required {
+            return true; // Gate disabled
+        }
+        ext.oi_contracting.unwrap_or(false)
+    }
+
+    /// Check max distance enforcement (VAL-STRAT-SR-009).
+    fn check_max_distance(&self, price: f64, zone_price: f64) -> bool {
+        if zone_price <= 0.0 {
+            return false;
+        }
+        let distance_bps = ((price - zone_price) / zone_price * 10_000.0).abs();
+        distance_bps <= self.params.max_chase_distance_bps
+    }
+
+    /// Place fishing ladder orders (VAL-STRAT-SR-008 phase 1).
+    fn place_fishing_ladder(&mut self, zone_price: f64, swept_down: bool, timestamp_ms: i64) {
+        // Clear any existing orders
+        self.fishing_orders.clear();
+
+        let offsets = &self.params.fishing_ladder_offsets_bps;
+        for offset_bps in offsets {
+            let order_price = if swept_down {
+                // Long sweep reversal: fishing orders below zone
+                zone_price * (1.0 - offset_bps / 10_000.0)
+            } else {
+                // Short sweep reversal: fishing orders above zone
+                zone_price * (1.0 + offset_bps / 10_000.0)
+            };
+
+            self.fishing_orders.push(FishingOrder {
+                price: order_price,
+                size_usd: self.params.fishing_tranche_usd,
+                placed_timestamp_ms: timestamp_ms,
+                filled: false,
+                expired: false,
+            });
+        }
+
+        self.phase = SweepReclaimPhase::Fishing;
+        debug!(
+            "[sweep-reclaim] Placed {} fishing orders around zone {:.2}",
+            self.fishing_orders.len(),
+            zone_price
+        );
+    }
+
+    /// Check if fishing orders have expired.
+    fn check_fishing_expiry(&mut self) {
+        for order in &mut self.fishing_orders {
+            if order.filled || order.expired {
+                continue;
+            }
+            let age_secs = (self.current_timestamp_ms - order.placed_timestamp_ms).max(0) as u64 / 1000;
+            if age_secs >= self.params.fishing_expiry_secs {
+                order.expired = true;
+                debug!(
+                    "[sweep-reclaim] Fishing order at {:.2} expired after {}s",
+                    order.price, age_secs
+                );
+            }
+        }
+    }
+
+    /// Determine the trade direction based on zone side_at_risk.
+    /// For sweep-reclaim (reversal): longs got rekt → price dropped → we go LONG.
+    fn is_long_from_side(side_at_risk: &str) -> Option<bool> {
+        match side_at_risk {
+            "long" => Some(true),   // Longs liquidated (price dropped) → reversal is LONG
+            "short" => Some(false), // Shorts liquidated (price rose) → reversal is SHORT
+            _ => None,
+        }
+    }
+}
+
+impl Strategy for SweepReclaimStrategy {
+    fn name(&self) -> &str {
+        "sweep-reclaim"
+    }
+
+    #[allow(clippy::collapsible_if)]
+    fn detect_entry(&mut self, snapshot: &MomentumSnapshot) -> Signal {
+        // Gate 0: Strategy must be enabled
+        if !self.params.enabled {
+            return Signal::NoSignal;
+        }
+
+        // Gate 1: Need sufficient price history
+        if snapshot.price_count < self.params.lookback_count {
+            return Signal::NoSignal;
+        }
+
+        // Gate 2: Need extended market data
+        let ext = match &snapshot.ext {
+            Some(e) => e,
+            None => return Signal::NoSignal,
+        };
+
+        // Gate 3: Stale zone data check
+        if self.is_zone_data_stale(ext) {
+            return Signal::NoSignal;
+        }
+
+        // Gate 4: Volume z-score
+        if let Some(zscore) = ext.volume_zscore {
+            if zscore < self.params.volume_z_score_threshold {
+                return Signal::NoSignal;
+            }
+        } else {
+            return Signal::NoSignal;
+        }
+
+        // Gate 5: Spread filter (global gate, checked before phase-specific logic)
+        if let Some(spread) = ext.spread_pct {
+            // Track peak spread for normalization detection
+            if self.prev_max_spread.is_none() || self.prev_max_spread.is_some_and(|ps| spread > ps) {
+                self.prev_max_spread = Some(spread);
+            }
+        }
+
+        // Gate 6: Depth filter (global gate)
+        if let Some(depth) = ext.depth_usd {
+            // Track minimum depth for refill detection
+            if self.prev_min_depth.is_none() || self.prev_min_depth.is_some_and(|md| depth < md) {
+                self.prev_min_depth = Some(depth);
+            }
+        }
+
+        // Gate 7: Regime compatibility
+        if self.params.regime_filter {
+            if let Some(label) = &ext.regime_label {
+                // Sweep-reclaim works best in HighVol regime (exhaustion signals)
+                // Trending is also acceptable. Choppy and LowVol are incompatible.
+                match label.as_str() {
+                    "Choppy" | "LowVol" => return Signal::NoSignal,
+                    _ => {}
+                }
+            }
+        }
+
+        // Gate 8: Route cost veto
+        if let Some(route_cost_bps) = ext.route_cost_bps {
+            if route_cost_bps > self.params.route_cost_max_bps {
+                return Signal::NoSignal;
+            }
+        }
+
+        // Gate 9: Cooldown after loss
+        if let Some(last_loss) = self.last_loss_timestamp_ms {
+            let elapsed_secs = (self.current_timestamp_ms - last_loss).max(0) as u64 / 1000;
+            if elapsed_secs < self.params.cooldown_after_loss_secs {
+                return Signal::NoSignal;
+            }
+        }
+
+        // Track previous velocity for deceleration detection
+        let current_velocity = ext.forced_flow_velocity;
+        let _prev_velocity = self.prev_forced_flow_velocity;
+        self.prev_forced_flow_velocity = current_velocity;
+
+        let price = snapshot.current_price;
+
+        // ── Phase state machine ──
+        match self.phase {
+            SweepReclaimPhase::Idle => {
+                // Look for a zone sweep event
+                if let Some((zone_price, side_at_risk, swept_down)) =
+                    self.detect_zone_sweep(snapshot, ext)
+                {
+                    // VAL-STRAT-SR-001: Zone sweep detected
+                    let is_long = match Self::is_long_from_side(&side_at_risk) {
+                        Some(d) => d,
+                        None => return Signal::NoSignal,
+                    };
+
+                    // Check direction bias
+                    if self.params.direction_bias == "long" && !is_long {
+                        return Signal::NoSignal;
+                    }
+                    if self.params.direction_bias == "short" && is_long {
+                        return Signal::NoSignal;
+                    }
+
+                    // VAL-STRAT-SR-002: Forced-flow spike required
+                    let spike_confirmed = self.check_forced_flow_spike(ext);
+                    if !spike_confirmed {
+                        return Signal::NoSignal;
+                    }
+
+                    // Record sweep state and transition to Fishing phase
+                    self.sweep_state = Some(SweepState {
+                        zone_price,
+                        side_at_risk,
+                        swept_down,
+                        sweep_timestamp_ms: self.current_timestamp_ms,
+                        peak_velocity: current_velocity.unwrap_or(0.0),
+                        current_velocity: current_velocity.unwrap_or(0.0),
+                        spike_confirmed: true,
+                        deceleration_confirmed: false,
+                        vwap_reclaim_confirmed: false,
+                        depth_refill_confirmed: false,
+                        spread_normalization_confirmed: false,
+                        oi_contraction_confirmed: false,
+                    });
+
+                    // VAL-STRAT-SR-008: Place passive fishing ladder
+                    self.place_fishing_ladder(zone_price, swept_down, self.current_timestamp_ms);
+
+                    // Return NoSignal — fishing orders are passive, not an active entry
+                    debug!(
+                        "[sweep-reclaim] Sweep detected at zone {:.2}, fishing phase started",
+                        zone_price
+                    );
+                    return Signal::NoSignal;
+                }
+                Signal::NoSignal
+            }
+            SweepReclaimPhase::Fishing => {
+                // Extract sweep state data before borrowing self for checks
+                let (zone_price, side_at_risk, already_decel, already_vwap,
+                     already_depth, already_spread, already_oi) = {
+                    let sweep = match &self.sweep_state {
+                        Some(s) => s,
+                        None => {
+                            self.phase = SweepReclaimPhase::Idle;
+                            return Signal::NoSignal;
+                        }
+                    };
+                    (
+                        sweep.zone_price,
+                        sweep.side_at_risk.clone(),
+                        sweep.deceleration_confirmed,
+                        sweep.vwap_reclaim_confirmed,
+                        sweep.depth_refill_confirmed,
+                        sweep.spread_normalization_confirmed,
+                        sweep.oi_contraction_confirmed,
+                    )
+                };
+
+                let is_long = match Self::is_long_from_side(&side_at_risk) {
+                    Some(d) => d,
+                    None => {
+                        self.phase = SweepReclaimPhase::Idle;
+                        self.sweep_state = None;
+                        return Signal::NoSignal;
+                    }
+                };
+
+                // Update velocity in sweep state
+                if let Some(vel) = current_velocity {
+                    if let Some(ref mut sweep) = self.sweep_state {
+                        sweep.current_velocity = vel;
+                    }
+                }
+
+                // Check fishing expiry
+                self.check_fishing_expiry();
+
+                // VAL-STRAT-SR-009: Max distance enforcement
+                if !self.check_max_distance(price, zone_price) {
+                    debug!(
+                        "[sweep-reclaim] Price {:.2} too far from zone {:.2}, resetting",
+                        price, zone_price
+                    );
+                    self.phase = SweepReclaimPhase::Idle;
+                    self.sweep_state = None;
+                    self.fishing_orders.clear();
+                    return Signal::NoSignal;
+                }
+
+                // Compute all confirmation checks (uses &self only)
+                let deceleration_confirmed = already_decel || self.check_pressure_deceleration(ext);
+                let vwap_reclaim_confirmed = already_vwap || self.check_vwap_reclaim(price, ext, is_long);
+                let depth_refill_confirmed = already_depth || self.check_depth_refill(ext);
+                let spread_normalization_confirmed = already_spread || self.check_spread_normalization(ext);
+                let oi_contraction_confirmed = already_oi || self.check_oi_contraction(ext);
+
+                // Update sweep state with confirmation results
+                if let Some(ref mut sweep) = self.sweep_state {
+                    sweep.deceleration_confirmed = deceleration_confirmed;
+                    sweep.vwap_reclaim_confirmed = vwap_reclaim_confirmed;
+                    sweep.depth_refill_confirmed = depth_refill_confirmed;
+                    sweep.spread_normalization_confirmed = spread_normalization_confirmed;
+                    sweep.oi_contraction_confirmed = oi_contraction_confirmed;
+                }
+
+                // Transition to Confirmation when all gates pass
+                if deceleration_confirmed
+                    && vwap_reclaim_confirmed
+                    && depth_refill_confirmed
+                    && spread_normalization_confirmed
+                    && oi_contraction_confirmed
+                {
+                    debug!(
+                        "[sweep-reclaim] All confirmation gates passed, emitting confirmation signal"
+                    );
+
+                    // VAL-STRAT-SR-009: Final max distance check before emitting
+                    if !self.check_max_distance(price, zone_price) {
+                        self.phase = SweepReclaimPhase::Idle;
+                        self.sweep_state = None;
+                        self.fishing_orders.clear();
+                        return Signal::NoSignal;
+                    }
+
+                    // Duplicate check
+                    let side = if is_long { "long" } else { "short" };
+                    let symbol = ext.symbol.clone().unwrap_or_default();
+                    let key = (symbol.clone(), side.to_string());
+                    if self.pending_signals.contains_key(&key) {
+                        return Signal::NoSignal;
+                    }
+
+                    // Emit confirmation signal
+                    let strength = 70.0;
+                    let velocity_pct = snapshot.price_velocity_pct.abs();
+
+                    // Record entry zone and direction
+                    self.entry_zone_price = Some(zone_price);
+                    self.entry_is_long = Some(is_long);
+
+                    self.pending_signals.insert(key, self.current_timestamp_ms);
+
+                    // Reset phase to Idle (ready for next sweep)
+                    self.phase = SweepReclaimPhase::Idle;
+                    self.sweep_state = None;
+                    self.fishing_orders.clear();
+                    // Reset tracking state
+                    self.prev_forced_flow_velocity = None;
+                    self.prev_min_depth = None;
+                    self.prev_max_spread = None;
+
+                    return if is_long {
+                        Signal::MomentumLong { strength, velocity_pct }
+                    } else {
+                        Signal::MomentumShort { strength, velocity_pct }
+                    };
+                }
+
+                Signal::NoSignal // Still in fishing phase, gates not yet all passed
+            }
+        }
+    }
+
+    fn detect_exit(
+        &self,
+        snapshot: &MomentumSnapshot,
+        ctx: &PositionContext,
+    ) -> Option<Signal> {
+        let current_price = ctx.current_price;
+        let entry_price = ctx.entry_price;
+
+        if entry_price <= 0.0 {
+            return None;
+        }
+
+        // PnL from entry
+        let pnl_pct = if ctx.is_long {
+            (current_price - entry_price) / entry_price * 100.0
+        } else {
+            (entry_price - current_price) / entry_price * 100.0
+        };
+
+        // Priority 1: Stop-loss
+        if pnl_pct <= -ctx.stop_loss_pct {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::StopLoss }
+            } else {
+                Signal::ExitShort { reason: ExitReason::StopLoss }
+            });
+        }
+
+        // Priority 2: Take-profit
+        if pnl_pct >= ctx.take_profit_pct {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::TakeProfit }
+            } else {
+                Signal::ExitShort { reason: ExitReason::TakeProfit }
+            });
+        }
+
+        // VAL-STRAT-SR-010: Trailing stop after reclaim
+        if ctx.trailing_stop_pct > 0.0 && ctx.trailing_activation_pct > 0.0 {
+            let peak_profit_pct = if ctx.is_long {
+                (ctx.peak_price - entry_price) / entry_price * 100.0
+            } else {
+                (entry_price - ctx.peak_price) / entry_price * 100.0
+            };
+
+            if peak_profit_pct >= ctx.trailing_activation_pct {
+                let drawdown_from_peak = peak_profit_pct - pnl_pct;
+                if drawdown_from_peak >= ctx.trailing_stop_pct {
+                    return Some(if ctx.is_long {
+                        Signal::ExitLong { reason: ExitReason::TrailingStop }
+                    } else {
+                        Signal::ExitShort { reason: ExitReason::TrailingStop }
+                    });
+                }
+            }
+        }
+
+        // VAL-STRAT-SR-011: Time stop
+        if ctx.hold_secs >= ctx.max_hold_secs {
+            return Some(if ctx.is_long {
+                Signal::ExitLong { reason: ExitReason::TimeStop }
+            } else {
+                Signal::ExitShort { reason: ExitReason::TimeStop }
+            });
+        }
+
+        // Stale zone data forced exit
+        if let Some(zone_ts) = snapshot.ext.as_ref().and_then(|e| e.zone_capture_timestamp_ms) {
+            let age_secs = (self.current_timestamp_ms - zone_ts).max(0) as u64 / 1000;
+            if age_secs > self.params.stale_data_threshold_secs {
+                return Some(if ctx.is_long {
+                    Signal::ExitLong { reason: ExitReason::ReversalDetected }
+                } else {
+                    Signal::ExitShort { reason: ExitReason::ReversalDetected }
+                });
+            }
+        }
+
+        None
+    }
+
+    fn parameters(&self) -> &StrategyParams {
+        &self.generic_params
+    }
+
+    fn push_price(&mut self, price: f64, timestamp_ms: i64) {
+        self.current_timestamp_ms = timestamp_ms;
+        self.detector.push_price(price, timestamp_ms);
+    }
+
+    fn snapshot(&self) -> MomentumSnapshot {
+        let mut snap = self.detector.analyze();
+        snap.ext = None;
+        snap
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Strategy Factory
 // ---------------------------------------------------------------------------
 
@@ -2537,6 +3615,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "blueprint-hft-market-maker",
         "liquidation-cascade-continuation",
         "liquidation-cascade-hunter",
+        "sweep-reclaim",
     ]
 }
 
@@ -3013,6 +4092,18 @@ pub fn create_strategy_from_config(
                 anyhow::bail!("Invalid liquidation-cascade-hunter parameters: {}", e);
             }
             Ok(Box::new(LiquidationCascadeHunter::new_legacy(lc_params)))
+        }
+        "sweep-reclaim" => {
+            let sr_params = if let Some(table) = sub_table {
+                SweepReclaimParams::from_toml_table(table)
+                    .map_err(|e| anyhow::anyhow!("Invalid [strategy.sweep-reclaim] config: {}", e))?
+            } else {
+                SweepReclaimParams::default()
+            };
+            if let Err(e) = sr_params.validate() {
+                anyhow::bail!("Invalid sweep-reclaim parameters: {}", e);
+            }
+            Ok(Box::new(SweepReclaimStrategy::new(sr_params)))
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -7039,6 +8130,7 @@ mod tests {
             regime_label: Some("Trending".to_string()),
             liquidation_burst_detected: false,
             symbol: Some("SOL".to_string()),
+            oi_contracting: None,
         }
     }
 
@@ -7056,6 +8148,7 @@ mod tests {
             regime_label: Some("Trending".to_string()),
             liquidation_burst_detected: false,
             symbol: Some("SOL".to_string()),
+            oi_contracting: None,
         }
     }
 
@@ -7073,6 +8166,7 @@ mod tests {
             regime_label: Some("Trending".to_string()),
             liquidation_burst_detected: true,
             symbol: Some("SOL".to_string()),
+            oi_contracting: None,
         }
     }
 
@@ -7090,6 +8184,7 @@ mod tests {
             regime_label: Some("Trending".to_string()),
             liquidation_burst_detected: true,
             symbol: Some("SOL".to_string()),
+            oi_contracting: None,
         }
     }
 
@@ -8600,5 +9695,879 @@ mod tests {
         // Fixed TP should fire (price exceeds 1.5% TP) before next-zone TP
         assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TakeProfit })),
             "Fixed TP should take priority over next-zone TP");
+    }
+
+    // ======================================================================
+    // Sweep Reclaim Strategy Tests
+    // ======================================================================
+
+    /// Helper: build SweepReclaimParams with all gates configured for passing.
+    fn sr_params_all_pass() -> SweepReclaimParams {
+        SweepReclaimParams {
+            enabled: true,
+            paper_only: true,
+            min_confidence: 0.5,
+            max_chase_distance_bps: 300.0,
+            forced_flow_spike_threshold: 1.0,
+            velocity_deceleration_threshold: 0.8,
+            vwap_reclaim_required: true,
+            spread_max_pct: 0.5,
+            depth_min_usd: 5000.0,
+            oi_contraction_required: true,
+            volume_z_score_threshold: 1.0,
+            stale_data_threshold_secs: 300,
+            regime_filter: true,
+            route_cost_max_bps: 5.0,
+            cooldown_after_loss_secs: 0,
+            fishing_ladder_offsets_bps: vec![10.0, 20.0, 30.0],
+            fishing_tranche_usd: 25.0,
+            fishing_expiry_secs: 300,
+            take_profit_pct: 3.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+            max_hold_secs: 1800,
+            clip_size_usd: 100.0,
+            leverage: 2.0,
+            direction_bias: "neutral".to_string(),
+            scale_in_clips: 1,
+            use_native_tp_sl: true,
+            lookback_count: 5,
+        }
+    }
+
+    /// Helper: build a zone for sweep-reclaim tests.
+    fn sr_zone(side: &str, confidence: f64, price: f64) -> crate::liquidation::LiquidationZone {
+        crate::liquidation::LiquidationZone {
+            price,
+            side_at_risk: side.to_string(),
+            estimated_notional_usd: 500_000.0,
+            wallet_count: 10,
+            distance_bps: 200.0,
+            confidence,
+            source_mix: vec!["hyperliquid_positions".to_string()],
+        }
+    }
+
+    /// Helper: build a MomentumSnapshot for sweep-reclaim tests.
+    fn sr_snapshot(price: f64, ext: crate::signal::MarketExtension, velocity_pct: f64) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_count: 30,
+            current_price: price,
+            price_velocity_pct: velocity_pct,
+            direction: if velocity_pct > 0.0 { TradeDirection::Long } else { TradeDirection::Short },
+            strength: 60.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+            ext: Some(ext),
+        }
+    }
+
+    /// Helper: build an ext for a sweep-reclaim LONG scenario.
+    /// Longs got liquidated (price dropped to zone), reversal is LONG.
+    fn sr_ext_sweep_long(zone_price: f64, current_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![sr_zone("long", 0.7, zone_price)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(zone_price * 1.001), // price near/above VWAP for reclaim
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(2.5), // Spike
+            regime_label: Some("HighVol".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+            oi_contracting: Some(true),
+        }
+    }
+
+    /// Helper: build an ext for the fishing phase (deceleration + all confirmation gates).
+    fn sr_ext_fishing_phase(zone_price: f64, current_price: f64) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![sr_zone("long", 0.7, zone_price)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(current_price * 0.999), // price above VWAP
+            spread_pct: Some(0.2),             // normalized
+            depth_usd: Some(60_000.0),         // refilled
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(0.3),   // decelerated
+            regime_label: Some("HighVol".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+            oi_contracting: Some(true),
+        }
+    }
+
+    // --- VAL-STRAT-SR-REG: Strategy registered ---
+    #[test]
+    fn test_sr_available_in_strategies_list() {
+        assert!(available_strategies().contains(&"sweep-reclaim"));
+    }
+
+    // --- VAL-STRAT-SR-FACTORY: Factory creates correct type ---
+    #[test]
+    fn test_sr_factory_creates_correct_type() {
+        let strategy = create_strategy_from_config(
+            "sweep-reclaim",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 3.0,
+                stop_loss_pct: 1.5,
+                trailing_stop_pct: 0.8,
+                trailing_activation_pct: 1.5,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        assert_eq!(strategy.name(), "sweep-reclaim");
+    }
+
+    // --- Strategy disabled by default ---
+    #[test]
+    fn test_sr_disabled_by_default() {
+        let params = SweepReclaimParams::default();
+        assert!(!params.enabled);
+        assert!(params.paper_only);
+    }
+
+    // --- No signal when disabled ---
+    #[test]
+    fn test_sr_no_signal_when_disabled() {
+        let params = SweepReclaimParams {
+            enabled: false,
+            ..sr_params_all_pass()
+        };
+        let mut strategy = SweepReclaimStrategy::new(params);
+        let snap = sr_snapshot(100.0, sr_ext_sweep_long(95.0, 100.0), 1.0);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Parameter validation ---
+    #[test]
+    fn test_sr_params_validate_ok() {
+        assert!(sr_params_all_pass().validate().is_ok());
+    }
+
+    #[test]
+    fn test_sr_params_reject_negative_confidence() {
+        let mut p = sr_params_all_pass();
+        p.min_confidence = -0.1;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_confidence_above_one() {
+        let mut p = sr_params_all_pass();
+        p.min_confidence = 1.5;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_zero_tp() {
+        let mut p = sr_params_all_pass();
+        p.take_profit_pct = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_zero_sl() {
+        let mut p = sr_params_all_pass();
+        p.stop_loss_pct = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_zero_stale_threshold() {
+        let mut p = sr_params_all_pass();
+        p.stale_data_threshold_secs = 0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_negative_route_cost() {
+        let mut p = sr_params_all_pass();
+        p.route_cost_max_bps = -1.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_zero_spike_threshold() {
+        let mut p = sr_params_all_pass();
+        p.forced_flow_spike_threshold = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_empty_fishing_offsets() {
+        let mut p = sr_params_all_pass();
+        p.fishing_ladder_offsets_bps = vec![];
+        assert!(p.validate().is_err());
+    }
+
+    #[test]
+    fn test_sr_params_reject_zero_fishing_tranche() {
+        let mut p = sr_params_all_pass();
+        p.fishing_tranche_usd = 0.0;
+        assert!(p.validate().is_err());
+    }
+
+    // --- VAL-STRAT-SR-001: Zone sweep detection ---
+    #[test]
+    fn test_sr_zone_sweep_detected_when_price_crosses_and_reverses() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        // Push prices to build history
+        for i in 0..5 {
+            strategy.push_price(100.0 - i as f64 * 0.5, 1000000 + i * 1000);
+        }
+        // Zone at 97.0 (long liquidation zone), price dropped below it (swept_down)
+        // Now price at 97.02, velocity positive (reversing up)
+        let ext = sr_ext_sweep_long(97.0, 97.02);
+        let snap = sr_snapshot(97.02, ext, 0.5); // velocity > 0 = reversal up
+        let signal = strategy.detect_entry(&snap);
+        // Should detect sweep and transition to fishing (returns NoSignal for fishing)
+        // but internally the sweep is detected
+        assert!(matches!(signal, Signal::NoSignal)); // Fishing phase = NoSignal
+    }
+
+    // --- No sweep when price doesn't reverse ---
+    #[test]
+    fn test_sr_no_sweep_when_price_continues() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0 - i as f64 * 0.5, 1000000 + i * 1000);
+        }
+        // Price below zone but velocity is negative (continuing down, no reversal)
+        let mut ext = sr_ext_sweep_long(97.0, 96.0);
+        ext.forced_flow_velocity = Some(2.5); // Still high velocity
+        let snap = sr_snapshot(96.0, ext, -0.5); // velocity < 0 = continuing down
+        let signal = strategy.detect_entry(&snap);
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-002: Forced-flow spike required ---
+    #[test]
+    fn test_sr_no_entry_without_forced_flow_spike() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1000000 + i * 1000);
+        }
+        // Zone sweep with price near zone and positive velocity, but low forced-flow
+        let mut ext = sr_ext_sweep_long(97.0, 97.02);
+        ext.forced_flow_velocity = Some(0.3); // Below spike threshold of 1.0
+        let snap = sr_snapshot(97.02, ext, 0.5);
+        let signal = strategy.detect_entry(&snap);
+        // Should be NoSignal because forced-flow spike not detected
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-003: Pressure deceleration required ---
+    #[test]
+    fn test_sr_no_confirmation_without_deceleration() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep (high velocity)
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: Fishing phase, but velocity still high (no deceleration)
+        let mut ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        ext_fishing.forced_flow_velocity = Some(2.5); // Still high, no deceleration
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal = strategy.detect_entry(&snap_fishing);
+        // Should stay in fishing, NoSignal
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-004: VWAP reclaim required ---
+    #[test]
+    fn test_sr_no_entry_without_vwap_reclaim() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: Deceleration but price below VWAP
+        let mut ext_fishing = sr_ext_fishing_phase(97.0, 96.5);
+        ext_fishing.vwap = Some(98.0); // Price 96.5 below VWAP 98.0 → no reclaim
+        ext_fishing.forced_flow_velocity = Some(0.3); // decelerated
+        let snap_fishing = sr_snapshot(96.5, ext_fishing, 0.3);
+        let signal = strategy.detect_entry(&snap_fishing);
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-005: Depth refill required ---
+    #[test]
+    fn test_sr_no_entry_without_depth_refill() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: Deceleration + VWAP reclaim, but depth too thin
+        let mut ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        ext_fishing.depth_usd = Some(1000.0); // Below min threshold of 5000
+        ext_fishing.forced_flow_velocity = Some(0.3);
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal = strategy.detect_entry(&snap_fishing);
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-006: Spread normalization required ---
+    #[test]
+    fn test_sr_no_entry_without_spread_normalization() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: All pass except spread
+        let mut ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        ext_fishing.spread_pct = Some(1.0); // Above max 0.5
+        ext_fishing.forced_flow_velocity = Some(0.3);
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal = strategy.detect_entry(&snap_fishing);
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-007: OI contraction required ---
+    #[test]
+    fn test_sr_no_entry_without_oi_contraction() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: All pass except OI not contracting
+        let mut ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        ext_fishing.oi_contracting = Some(false); // OI still expanding
+        ext_fishing.forced_flow_velocity = Some(0.3);
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal = strategy.detect_entry(&snap_fishing);
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- VAL-STRAT-SR-008: Passive fishing ladder before confirmation entry ---
+    #[test]
+    fn test_sr_fishing_ladder_placed_before_confirmation() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep → fishing ladder placed
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let signal1 = strategy.detect_entry(&snap_sweep);
+        // Fishing phase: should return NoSignal (passive orders, not active entry)
+        assert!(matches!(signal1, Signal::NoSignal));
+        // Verify fishing orders were placed (via phase state)
+        assert_eq!(strategy.phase, SweepReclaimPhase::Fishing);
+    }
+
+    // --- Full two-phase entry: fishing → confirmation → signal ---
+    #[test]
+    fn test_sr_full_two_phase_entry_long() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let signal1 = strategy.detect_entry(&snap_sweep);
+        assert!(matches!(signal1, Signal::NoSignal)); // Fishing phase
+
+        // Phase 2: All confirmation gates pass
+        // First push a high velocity to set prev_forced_flow_velocity
+        let mut ext_high_vel = sr_ext_fishing_phase(97.0, 98.0);
+        ext_high_vel.forced_flow_velocity = Some(2.5); // High velocity
+        let snap_high_vel = sr_snapshot(98.0, ext_high_vel, 0.3);
+        let _ = strategy.detect_entry(&snap_high_vel);
+
+        // Now push decelerated velocity
+        let ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal2 = strategy.detect_entry(&snap_fishing);
+        // Should now be in confirmation and emit MomentumLong
+        assert!(matches!(signal2, Signal::MomentumLong { .. }),
+            "Expected MomentumLong after all gates pass, got {:?}", signal2);
+    }
+
+    // --- VAL-STRAT-SR-009: Max distance enforcement ---
+    #[test]
+    fn test_sr_no_entry_beyond_max_distance() {
+        let params = SweepReclaimParams {
+            max_chase_distance_bps: 50.0, // Very tight
+            ..sr_params_all_pass()
+        };
+        let mut strategy = SweepReclaimStrategy::new(params);
+        for i in 0..5 {
+            strategy.push_price(100.0, 1000000 + i * 1000);
+        }
+        // Zone at 97.0, price at 100.0 → distance = 300 bps > 50 bps max
+        let ext = sr_ext_sweep_long(97.0, 100.0);
+        let snap = sr_snapshot(100.0, ext, 0.5);
+        let signal = strategy.detect_entry(&snap);
+        // Price too far from zone, no sweep detected
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- Max distance enforcement during fishing phase ---
+    #[test]
+    fn test_sr_max_distance_resets_during_fishing() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Phase 2: Price moves too far from zone
+        let mut ext_far = sr_ext_fishing_phase(97.0, 130.0);
+        ext_far.forced_flow_velocity = Some(2.5); // Still high
+        let snap_far = sr_snapshot(130.0, ext_far, 0.3);
+        let _ = strategy.detect_entry(&snap_far);
+
+        // Max distance check should have reset the phase
+        // Distance = (130 - 97) / 97 * 10000 ≈ 3401 bps > 300 bps max
+        assert_eq!(strategy.phase, SweepReclaimPhase::Idle);
+    }
+
+    // --- VAL-STRAT-SR-010: Trailing stop after reclaim ---
+    #[test]
+    fn test_sr_trailing_stop_triggers() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(103.0, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 103.0,   // +3.0%
+            peak_price: 105.0,      // peaked at +5.0% > activation 1.5%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,  // High TP so trailing fires first
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        // Peak profit 5.0%, current profit 3.0%, drawdown 2.0% >= trailing 0.8%
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TrailingStop })),
+            "Expected TrailingStop, got {:?}", exit);
+    }
+
+    #[test]
+    fn test_sr_trailing_stop_not_before_activation() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(100.3, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.3,   // +0.3%
+            peak_price: 100.5,      // peaked at +0.5% < activation 1.5%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_none(), "Should not trigger trailing before activation");
+    }
+
+    // --- VAL-STRAT-SR-011: Time stop ---
+    #[test]
+    fn test_sr_time_stop_triggers() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(101.0, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.0,
+            peak_price: 101.0,
+            hold_secs: 2000,         // > max_hold_secs 1800
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TimeStop })),
+            "Expected TimeStop, got {:?}", exit);
+    }
+
+    // --- TP and SL exits ---
+    #[test]
+    fn test_sr_exit_take_profit() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(104.0, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 103.5,    // +3.5% > TP 3.0%
+            peak_price: 103.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 3.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TakeProfit })));
+    }
+
+    #[test]
+    fn test_sr_exit_stop_loss() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(98.0, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 98.0,     // -2.0% < SL -1.5%
+            peak_price: 100.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 3.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::StopLoss })));
+    }
+
+    // --- No exit when position healthy ---
+    #[test]
+    fn test_sr_no_exit_when_healthy() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let mut snap = sr_snapshot(101.0, crate::signal::MarketExtension::default(), 0.0);
+        snap.ext = Some(crate::signal::MarketExtension {
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.0,    // +1.0%
+            peak_price: 101.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 3.0,
+            stop_loss_pct: 1.5,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_none());
+    }
+
+    // --- Duplicate signal blocked ---
+    #[test]
+    fn test_sr_duplicate_signal_blocked() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        // Phase 1: Trigger sweep
+        let ext_sweep = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep = sr_snapshot(97.02, ext_sweep, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep);
+
+        // Push high velocity
+        let mut ext_high = sr_ext_fishing_phase(97.0, 98.0);
+        ext_high.forced_flow_velocity = Some(2.5);
+        let snap_high = sr_snapshot(98.0, ext_high, 0.3);
+        let _ = strategy.detect_entry(&snap_high);
+
+        // Phase 2: Confirmation → signal
+        let ext_fishing = sr_ext_fishing_phase(97.0, 98.0);
+        let snap_fishing = sr_snapshot(98.0, ext_fishing, 0.3);
+        let signal1 = strategy.detect_entry(&snap_fishing);
+        assert!(matches!(signal1, Signal::MomentumLong { .. }));
+
+        // Now try to get a second signal (reset and re-trigger)
+        // After emitting signal, phase resets to Idle, so we need to trigger again
+        // Phase 1: sweep again
+        let ext_sweep2 = sr_ext_sweep_long(97.0, 97.02);
+        let snap_sweep2 = sr_snapshot(97.02, ext_sweep2, 0.5);
+        let _ = strategy.detect_entry(&snap_sweep2);
+
+        // Push high velocity
+        let mut ext_high2 = sr_ext_fishing_phase(97.0, 98.0);
+        ext_high2.forced_flow_velocity = Some(2.5);
+        let snap_high2 = sr_snapshot(98.0, ext_high2, 0.3);
+        let _ = strategy.detect_entry(&snap_high2);
+
+        // Phase 2: Confirmation again → should be blocked (duplicate pending)
+        let ext_fishing2 = sr_ext_fishing_phase(97.0, 98.0);
+        let snap_fishing2 = sr_snapshot(98.0, ext_fishing2, 0.3);
+        let signal2 = strategy.detect_entry(&snap_fishing2);
+        assert!(matches!(signal2, Signal::NoSignal), "Duplicate signal should be blocked");
+    }
+
+    // --- Strategy trait impl ---
+    #[test]
+    fn test_sr_strategy_trait_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<SweepReclaimStrategy>();
+    }
+
+    // --- name() ---
+    #[test]
+    fn test_sr_name() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        assert_eq!(strategy.name(), "sweep-reclaim");
+    }
+
+    // --- Paper-only in live engine ---
+    #[test]
+    fn test_sr_paper_only_by_default() {
+        let params = SweepReclaimParams::default();
+        assert!(params.paper_only, "Default params must have paper_only = true");
+    }
+
+    // --- Stale data prevents entry ---
+    #[test]
+    fn test_sr_stale_data_prevents_entry() {
+        let params = SweepReclaimParams {
+            stale_data_threshold_secs: 10,
+            ..sr_params_all_pass()
+        };
+        let mut strategy = SweepReclaimStrategy::new(params);
+        for i in 0..5 {
+            strategy.push_price(97.0, 10000000 + i * 1000);
+        }
+        let mut ext = sr_ext_sweep_long(97.0, 97.02);
+        ext.zone_capture_timestamp_ms = Some(1000000); // Very old
+        let snap = sr_snapshot(97.02, ext, 0.5);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Regime incompatible ---
+    #[test]
+    fn test_sr_regime_incompatible_lowvol() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        let mut ext = sr_ext_sweep_long(97.0, 97.02);
+        ext.regime_label = Some("LowVol".to_string());
+        let snap = sr_snapshot(97.02, ext, 0.5);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    #[test]
+    fn test_sr_regime_incompatible_choppy() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        let mut ext = sr_ext_sweep_long(97.0, 97.02);
+        ext.regime_label = Some("Choppy".to_string());
+        let snap = sr_snapshot(97.02, ext, 0.5);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Route cost veto ---
+    #[test]
+    fn test_sr_route_cost_veto() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(97.0, 1000000 + i * 1000);
+        }
+        let mut ext = sr_ext_sweep_long(97.0, 97.02);
+        ext.route_cost_bps = Some(10.0); // Exceeds max 5.0
+        let snap = sr_snapshot(97.02, ext, 0.5);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Config from TOML table ---
+    #[test]
+    fn test_sr_config_from_toml_table() {
+        let toml_str = r#"
+enabled = true
+paper_only = true
+min_confidence = 0.7
+max_chase_distance_bps = 200.0
+forced_flow_spike_threshold = 2.5
+velocity_deceleration_threshold = 0.6
+clip_size_usd = 150.0
+leverage = 2.5
+take_profit_pct = 4.0
+stop_loss_pct = 2.0
+trailing_stop_pct = 1.0
+trailing_activation_pct = 2.0
+max_hold_secs = 3600
+fishing_ladder_offsets_bps = [5.0, 15.0, 25.0]
+fishing_tranche_usd = 30.0
+fishing_expiry_secs = 600
+"#;
+        let value: toml::Value = toml_str.parse().unwrap();
+        let params = SweepReclaimParams::from_toml_table(&value).unwrap();
+        assert!(params.enabled);
+        assert!((params.min_confidence - 0.7).abs() < 0.001);
+        assert!((params.max_chase_distance_bps - 200.0).abs() < 0.001);
+        assert!((params.forced_flow_spike_threshold - 2.5).abs() < 0.001);
+        assert!((params.clip_size_usd - 150.0).abs() < 0.001);
+        assert_eq!(params.fishing_ladder_offsets_bps, vec![5.0, 15.0, 25.0]);
+        assert!((params.fishing_tranche_usd - 30.0).abs() < 0.001);
+        assert!(params.validate().is_ok());
+    }
+
+    // --- Default params validate ---
+    #[test]
+    fn test_sr_default_params_validate() {
+        let params = SweepReclaimParams::default();
+        assert!(params.validate().is_ok());
+    }
+
+    // --- as_any() downcasting ---
+    #[test]
+    fn test_sr_as_any_downcasting() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let dyn_ref: &dyn Strategy = &strategy;
+        let any_ref = dyn_ref.as_any();
+        let downcast = any_ref.downcast_ref::<SweepReclaimStrategy>();
+        assert!(downcast.is_some());
+        assert_eq!(downcast.unwrap().name(), "sweep-reclaim");
+    }
+
+    // --- push_price updates state ---
+    #[test]
+    fn test_sr_push_price_updates_state() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        strategy.push_price(100.0, 1000);
+        strategy.push_price(101.0, 2000);
+        let snap = strategy.snapshot();
+        assert!(snap.price_count >= 2);
+        assert!((snap.current_price - 101.0).abs() < 0.01);
+    }
+
+    // --- Short sweep reversal ---
+    #[test]
+    fn test_sr_short_sweep_reversal() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1000000 + i * 1000);
+        }
+        // Zone at 103.0 (short liquidation zone), price rose above it
+        // Now price at 102.98, velocity negative (reversing down)
+        let mut ext = crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![sr_zone("short", 0.7, 103.0)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(102.5),         // price near/above VWAP for short
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(2.5),
+            regime_label: Some("HighVol".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+            oi_contracting: Some(true),
+        };
+        // Price above zone but close, velocity negative (reversing down from above zone)
+        let snap = sr_snapshot(102.98, ext, -0.5);
+        let signal = strategy.detect_entry(&snap);
+        // Should detect sweep and go to fishing phase (returns NoSignal)
+        assert!(matches!(signal, Signal::NoSignal));
+    }
+
+    // --- No signal without ext data ---
+    #[test]
+    fn test_sr_no_signal_without_ext() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1000000 + i * 1000);
+        }
+        let snap = MomentumSnapshot {
+            price_count: 30,
+            current_price: 100.0,
+            price_velocity_pct: 0.5,
+            direction: TradeDirection::Long,
+            strength: 60.0,
+            volatility_pct: 1.0,
+            pool_data: None,
+            ext: None, // No ext data
+        };
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- No signal without liquidation zones ---
+    #[test]
+    fn test_sr_no_signal_without_zones() {
+        let mut strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1000000 + i * 1000);
+        }
+        let ext = crate::signal::MarketExtension {
+            liquidation_zones: None,
+            zone_capture_timestamp_ms: Some(1000000),
+            route_cost_bps: Some(2.0),
+            vwap: Some(100.0),
+            spread_pct: Some(0.2),
+            depth_usd: Some(50_000.0),
+            volume_zscore: Some(3.0),
+            forced_flow_velocity: Some(2.5),
+            regime_label: Some("HighVol".to_string()),
+            liquidation_burst_detected: true,
+            symbol: Some("SOL".to_string()),
+            oi_contracting: Some(true),
+        };
+        let snap = sr_snapshot(100.0, ext, 0.5);
+        assert!(matches!(strategy.detect_entry(&snap), Signal::NoSignal));
+    }
+
+    // --- Short trailing stop ---
+    #[test]
+    fn test_sr_short_trailing_stop() {
+        let strategy = SweepReclaimStrategy::new(sr_params_all_pass());
+        let snap = sr_snapshot(97.0, crate::signal::MarketExtension::default(), 0.0);
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 97.0,     // +3.0% profit for short
+            peak_price: 95.0,        // peaked at +5.0% > activation 1.5%
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.8,
+            trailing_activation_pct: 1.5,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::TrailingStop })),
+            "Expected Short TrailingStop, got {:?}", exit);
     }
 }

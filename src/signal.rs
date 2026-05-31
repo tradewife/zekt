@@ -125,6 +125,9 @@ pub struct MarketExtension {
     pub liquidation_burst_detected: bool,
     /// Market symbol (e.g., "BTC", "SOL") for pending-trade deduplication.
     pub symbol: Option<String>,
+    /// Whether open interest is contracting (decreasing), indicating position unwinding.
+    /// Used by sweep-reclaim strategy as an entry gate (VAL-STRAT-SR-007).
+    pub oi_contracting: Option<bool>,
 }
 
 /// Pool utilization snapshot used by LP consumption strategies.
