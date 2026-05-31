@@ -1793,6 +1793,17 @@ pub struct LiquidationCascadeParams {
     #[serde(default = "default_lc_cooldown_after_loss_secs")]
     pub cooldown_after_loss_secs: u64,
 
+    // --- Cascade continuation exit parameters ---
+    /// Enable take-profit into the next liquidation zone in the cascade direction.
+    #[serde(default = "default_true")]
+    pub next_zone_tp_enabled: bool,
+    /// Enable zone-reclaimed stop exit (price reclaims the broken zone).
+    #[serde(default = "default_true")]
+    pub zone_reclaimed_stop_enabled: bool,
+    /// Enable time stop (max_hold_secs already defines duration).
+    #[serde(default = "default_true")]
+    pub time_stop_enabled: bool,
+
     // --- General ---
     #[serde(default = "default_lc_clip_size_usd")]
     pub clip_size_usd: f64,
@@ -1949,6 +1960,9 @@ impl Default for LiquidationCascadeParams {
             trailing_activation_pct: default_lc_trailing_activation_pct(),
             max_hold_secs: default_lc_max_hold_secs(),
             cooldown_after_loss_secs: default_lc_cooldown_after_loss_secs(),
+            next_zone_tp_enabled: true,
+            zone_reclaimed_stop_enabled: true,
+            time_stop_enabled: true,
             clip_size_usd: default_lc_clip_size_usd(),
             leverage: default_lc_leverage(),
             direction_bias: default_neutral(),
@@ -1983,6 +1997,13 @@ pub struct LiquidationCascadeHunter {
     last_loss_timestamp_ms: Option<i64>,
     /// Current timestamp (updated on each push_price).
     current_timestamp_ms: i64,
+    /// Price of the entry zone used for the most recent cascade continuation signal.
+    /// Used for zone-reclaimed stop exit.
+    entry_zone_price: Option<f64>,
+    /// Direction of the last entry signal: true = long, false = short.
+    entry_is_long: Option<bool>,
+    /// Canonical strategy name (set at construction based on alias or canonical name).
+    canonical_name: &'static str,
 }
 
 impl LiquidationCascadeHunter {
@@ -1997,7 +2018,17 @@ impl LiquidationCascadeHunter {
             pending_signals: std::collections::HashMap::new(),
             last_loss_timestamp_ms: None,
             current_timestamp_ms: 0,
+            entry_zone_price: None,
+            entry_is_long: None,
+            canonical_name: "liquidation-cascade-continuation",
         }
+    }
+
+    /// Create with the legacy name "liquidation-cascade-hunter".
+    pub fn new_legacy(params: LiquidationCascadeParams) -> Self {
+        let mut s = Self::new(params);
+        s.canonical_name = "liquidation-cascade-hunter";
+        s
     }
 
     /// Return a reference to the strategy-specific parameters.
@@ -2210,7 +2241,7 @@ impl LiquidationCascadeHunter {
 
 impl Strategy for LiquidationCascadeHunter {
     fn name(&self) -> &str {
-        "liquidation-cascade-hunter"
+        self.canonical_name
     }
 
     #[allow(clippy::collapsible_if)]
@@ -2298,9 +2329,9 @@ impl Strategy for LiquidationCascadeHunter {
         match signal {
             Some(s) => {
                 // Gate 10: Duplicate check — max one pending per symbol/side
-                let side = match &s {
-                    Signal::MomentumLong { .. } => "long",
-                    Signal::MomentumShort { .. } => "short",
+                let (side, is_long) = match &s {
+                    Signal::MomentumLong { .. } => ("long", true),
+                    Signal::MomentumShort { .. } => ("short", false),
                     _ => return Signal::NoSignal,
                 };
                 let symbol = ext.symbol.clone().unwrap_or_default();
@@ -2309,6 +2340,12 @@ impl Strategy for LiquidationCascadeHunter {
                     return Signal::NoSignal; // Already have pending signal
                 }
                 self.pending_signals.insert(key, self.current_timestamp_ms);
+                // Record entry zone and direction for cascade continuation exit logic
+                self.entry_is_long = Some(is_long);
+                // Store the nearest zone price used for the entry (for zone-reclaimed stop)
+                if let Some(zones) = &ext.liquidation_zones {
+                    self.entry_zone_price = zones.first().map(|z| z.price);
+                }
                 s
             }
             None => Signal::NoSignal,
@@ -2343,7 +2380,63 @@ impl Strategy for LiquidationCascadeHunter {
             });
         }
 
-        // Priority 2: Stop-loss
+        // Priority 2: Take-profit into next zone (cascade continuation specific)
+        if self.params.next_zone_tp_enabled
+            && let Some(zones) = _snapshot.ext.as_ref().and_then(|e| e.liquidation_zones.as_ref())
+        {
+            // Find the next zone in the cascade direction
+            let next_zone = if ctx.is_long {
+                // Long position → look for a zone above entry price
+                zones.iter()
+                    .filter(|z| z.price > entry_price)
+                    .min_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))
+            } else {
+                // Short position → look for a zone below entry price
+                zones.iter()
+                    .filter(|z| z.price < entry_price)
+                    .max_by(|a, b| a.price.partial_cmp(&b.price).unwrap_or(std::cmp::Ordering::Equal))
+            };
+            if let Some(zone) = next_zone {
+                // If price has reached the next zone, take profit
+                let reached = if ctx.is_long {
+                    current_price >= zone.price
+                } else {
+                    current_price <= zone.price
+                };
+                if reached {
+                    return Some(if ctx.is_long {
+                        Signal::ExitLong { reason: ExitReason::TakeProfit }
+                    } else {
+                        Signal::ExitShort { reason: ExitReason::TakeProfit }
+                    });
+                }
+            }
+        }
+
+        // Priority 3: Zone-reclaimed stop (cascade continuation specific)
+        if self.params.zone_reclaimed_stop_enabled
+            && let Some(entry_zone_price) = self.entry_zone_price
+            && entry_zone_price > 0.0
+        {
+            // For a long continuation entry (shorts being liquidated, price going up):
+            //   If price drops back below the entry zone → zone reclaimed → exit
+            // For a short continuation entry (longs being liquidated, price going down):
+            //   If price rises back above the entry zone → zone reclaimed → exit
+            let reclaimed = if ctx.is_long {
+                current_price < entry_zone_price
+            } else {
+                current_price > entry_zone_price
+            };
+            if reclaimed {
+                return Some(if ctx.is_long {
+                    Signal::ExitLong { reason: ExitReason::ReversalDetected }
+                } else {
+                    Signal::ExitShort { reason: ExitReason::ReversalDetected }
+                });
+            }
+        }
+
+        // Priority 4: Stop-loss
         if pnl_pct <= -ctx.stop_loss_pct {
             return Some(if ctx.is_long {
                 Signal::ExitLong { reason: ExitReason::StopLoss }
@@ -2352,7 +2445,7 @@ impl Strategy for LiquidationCascadeHunter {
             });
         }
 
-        // Priority 3: Trailing stop
+        // Priority 5: Trailing stop
         if ctx.trailing_stop_pct > 0.0 && ctx.trailing_activation_pct > 0.0 {
             let peak_profit_pct = if ctx.is_long {
                 (ctx.peak_price - entry_price) / entry_price * 100.0
@@ -2372,8 +2465,8 @@ impl Strategy for LiquidationCascadeHunter {
             }
         }
 
-        // Priority 4: Time stop
-        if ctx.hold_secs >= ctx.max_hold_secs {
+        // Priority 6: Time stop (cascade continuation specific)
+        if self.params.time_stop_enabled && ctx.hold_secs >= ctx.max_hold_secs {
             return Some(if ctx.is_long {
                 Signal::ExitLong { reason: ExitReason::TimeStop }
             } else {
@@ -2381,7 +2474,7 @@ impl Strategy for LiquidationCascadeHunter {
             });
         }
 
-        // Priority 5: Stale zone data forced exit
+        // Priority 7: Stale zone data forced exit
         if let Some(zone_ts) = _snapshot.ext.as_ref().and_then(|e| e.zone_capture_timestamp_ms) {
             let age_secs = (self.current_timestamp_ms - zone_ts).max(0) as u64 / 1000;
             if age_secs > self.params.stale_data_threshold_secs {
@@ -2442,6 +2535,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "blueprint-cluster-008",
         "blueprint-cluster-009",
         "blueprint-hft-market-maker",
+        "liquidation-cascade-continuation",
         "liquidation-cascade-hunter",
     ]
 }
@@ -2884,7 +2978,26 @@ pub fn create_strategy_from_config(
                 }
             }
         }
+        "liquidation-cascade-continuation" => {
+            let lc_params = if let Some(table) = sub_table {
+                let params: LiquidationCascadeParams = table.clone().try_into().map_err(|e| {
+                    anyhow::anyhow!(
+                        "Failed to parse [strategy.liquidation-cascade-continuation] sub-table: {}",
+                        e
+                    )
+                })?;
+                params
+            } else {
+                LiquidationCascadeParams::default()
+            };
+            if let Err(e) = lc_params.validate() {
+                anyhow::bail!("Invalid liquidation-cascade-continuation parameters: {}", e);
+            }
+            Ok(Box::new(LiquidationCascadeHunter::new(lc_params)))
+        }
         "liquidation-cascade-hunter" => {
+            // Legacy alias for liquidation-cascade-continuation
+            tracing::debug!("liquidation-cascade-hunter is a legacy alias for liquidation-cascade-continuation");
             let lc_params = if let Some(table) = sub_table {
                 let params: LiquidationCascadeParams = table.clone().try_into().map_err(|e| {
                     anyhow::anyhow!(
@@ -2899,7 +3012,7 @@ pub fn create_strategy_from_config(
             if let Err(e) = lc_params.validate() {
                 anyhow::bail!("Invalid liquidation-cascade-hunter parameters: {}", e);
             }
-            Ok(Box::new(LiquidationCascadeHunter::new(lc_params)))
+            Ok(Box::new(LiquidationCascadeHunter::new_legacy(lc_params)))
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -6865,6 +6978,9 @@ mod tests {
             trailing_activation_pct: 1.0,
             max_hold_secs: 1800,
             cooldown_after_loss_secs: 0, // no cooldown for tests
+            next_zone_tp_enabled: true,
+            zone_reclaimed_stop_enabled: true,
+            time_stop_enabled: true,
             clip_size_usd: 100.0,
             leverage: 3.0,
             direction_bias: "neutral".to_string(),
@@ -6981,6 +7097,7 @@ mod tests {
     #[test]
     fn test_lc_available_in_strategies_list() {
         assert!(available_strategies().contains(&"liquidation-cascade-hunter"));
+        assert!(available_strategies().contains(&"liquidation-cascade-continuation"));
     }
 
     // --- VAL-STRAT-002: Factory creates correct type ---
@@ -7005,6 +7122,30 @@ mod tests {
             },
         ).unwrap();
         assert_eq!(strategy.name(), "liquidation-cascade-hunter");
+    }
+
+    // --- VAL-STRAT-002b: Factory creates canonical name ---
+    #[test]
+    fn test_lc_factory_creates_canonical_name() {
+        let strategy = create_strategy_from_config(
+            "liquidation-cascade-continuation",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 1.5,
+                stop_loss_pct: 0.75,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        assert_eq!(strategy.name(), "liquidation-cascade-continuation");
     }
 
     // --- VAL-STRAT-003: Config disabled by default ---
@@ -7688,6 +7829,13 @@ mod tests {
     #[test]
     fn test_lc_name() {
         let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        assert_eq!(strategy.name(), "liquidation-cascade-continuation");
+    }
+
+    // --- Legacy alias name ---
+    #[test]
+    fn test_lc_legacy_name() {
+        let strategy = LiquidationCascadeHunter::new_legacy(lc_params_all_pass());
         assert_eq!(strategy.name(), "liquidation-cascade-hunter");
     }
 
@@ -7723,7 +7871,7 @@ mod tests {
         let any_ref = dyn_ref.as_any();
         let downcast = any_ref.downcast_ref::<LiquidationCascadeHunter>();
         assert!(downcast.is_some());
-        assert_eq!(downcast.unwrap().name(), "liquidation-cascade-hunter");
+        assert_eq!(downcast.unwrap().name(), "liquidation-cascade-continuation");
     }
 
     // --- VAL-STRAT-063: No entry without confirmation ---
@@ -7984,5 +8132,473 @@ mod tests {
         };
         let exit = strategy.detect_exit(&snap, &ctx);
         assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::TimeStop })));
+    }
+
+    // ======================================================================
+    // New Exit Conditions: Take-profit into next zone, Zone-reclaimed stop, Time stop
+    // ======================================================================
+
+    // --- VAL-STRAT-CC-015: Take-profit into next zone (long) ---
+    #[test]
+    fn test_lc_tp_into_next_zone_long() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        // Simulate entry so entry zone price is recorded
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry); // Triggers entry, records zone
+
+        // Now test exit: price has reached the next zone above (105.0)
+        let next_zone = lc_zone("short", 0.8, 105.0); // Zone above entry
+        let snap_exit = lc_snapshot(105.5, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![next_zone]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 105.5, // Above the next zone at 105.0
+            peak_price: 105.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0, // High TP so fixed TP doesn't trigger first
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TakeProfit })),
+            "Should trigger TP when price reaches next zone in cascade direction");
+    }
+
+    // --- VAL-STRAT-CC-015: Take-profit into next zone (short) ---
+    #[test]
+    fn test_lc_tp_into_next_zone_short() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_short(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        // Next zone below entry at 95.0
+        let next_zone = lc_zone("long", 0.8, 95.0);
+        let snap_exit = lc_snapshot(94.5, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![next_zone]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 94.5, // Below the next zone at 95.0
+            peak_price: 94.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::TakeProfit })),
+            "Should trigger TP when price reaches next zone below for short");
+    }
+
+    // --- VAL-STRAT-CC-015: No next zone TP when no zone in direction ---
+    #[test]
+    fn test_lc_no_next_zone_tp_when_no_zone_in_direction() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        // Only zone below entry (no zone above for long)
+        let zone_below = lc_zone("long", 0.8, 95.0);
+        let snap_exit = lc_snapshot(103.0, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![zone_below]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 103.0,
+            peak_price: 103.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0, // High TP so fixed TP doesn't trigger
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(exit.is_none(), "No next zone TP when no zone in cascade direction");
+    }
+
+    // --- VAL-STRAT-CC-015: Next zone TP disabled ---
+    #[test]
+    fn test_lc_next_zone_tp_disabled() {
+        let mut params = lc_params_all_pass();
+        params.next_zone_tp_enabled = false;
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        let next_zone = lc_zone("short", 0.8, 105.0);
+        let snap_exit = lc_snapshot(105.5, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![next_zone]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 105.5,
+            peak_price: 105.5,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(exit.is_none(), "Next zone TP should not trigger when disabled");
+    }
+
+    // --- VAL-STRAT-CC-016: Zone-reclaimed stop (long position) ---
+    #[test]
+    fn test_lc_zone_reclaimed_stop_long() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        // Entry zone is at 102.0 (shorts being liquidated → long signal, zone price = 102.0)
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        // Price drops back below the entry zone price (102.0)
+        let snap_exit = lc_snapshot(101.0, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("short", 0.7, 102.0)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.0, // Below entry zone price 102.0
+            peak_price: 103.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::ReversalDetected })),
+            "Zone reclaimed stop should trigger when price drops below entry zone for long");
+    }
+
+    // --- VAL-STRAT-CC-016: Zone-reclaimed stop (short position) ---
+    #[test]
+    fn test_lc_zone_reclaimed_stop_short() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_short(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        // Price rises back above the entry zone price (98.0)
+        let snap_exit = lc_snapshot(99.5, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("long", 0.7, 98.0)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: false,
+            entry_price: 100.0,
+            current_price: 99.5, // Above entry zone price 98.0
+            peak_price: 97.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitShort { reason: ExitReason::ReversalDetected })),
+            "Zone reclaimed stop should trigger when price rises above entry zone for short");
+    }
+
+    // --- VAL-STRAT-CC-016: Zone-reclaimed stop disabled ---
+    #[test]
+    fn test_lc_zone_reclaimed_stop_disabled() {
+        let mut params = lc_params_all_pass();
+        params.zone_reclaimed_stop_enabled = false;
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        let snap_exit = lc_snapshot(101.0, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("short", 0.7, 102.0)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 101.0,
+            peak_price: 103.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(exit.is_none(), "Zone reclaimed stop should not trigger when disabled");
+    }
+
+    // --- VAL-STRAT-CC-016: No zone reclaimed stop when price stays beyond zone ---
+    #[test]
+    fn test_lc_no_zone_reclaimed_when_price_beyond_zone() {
+        let mut params = lc_params_all_pass();
+        params.next_zone_tp_enabled = false; // Disable next-zone TP so it doesn't interfere
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        // Price is above the entry zone (102.0) → zone NOT reclaimed
+        let snap_exit = lc_snapshot(103.0, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![lc_zone("short", 0.7, 102.0)]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 103.0, // Above entry zone price 102.0
+            peak_price: 103.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        assert!(exit.is_none(), "No zone reclaimed stop when price is still beyond zone");
+    }
+
+    // --- VAL-STRAT-CC-017: Time stop enforced ---
+    #[test]
+    fn test_lc_time_stop_enforced() {
+        let strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        let snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5,
+            peak_price: 100.5,
+            hold_secs: 2000, // > max_hold_secs 1800
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TimeStop })),
+            "Time stop should trigger when hold_secs >= max_hold_secs");
+    }
+
+    // --- VAL-STRAT-CC-017: Time stop disabled ---
+    #[test]
+    fn test_lc_time_stop_disabled() {
+        let mut params = lc_params_all_pass();
+        params.time_stop_enabled = false;
+        let strategy = LiquidationCascadeHunter::new(params);
+        let snap = lc_snapshot(100.5, vec![], crate::signal::MarketExtension::default());
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 100.5,
+            peak_price: 100.5,
+            hold_secs: 2000,
+            max_hold_secs: 1800,
+            take_profit_pct: 10.0,
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap, &ctx);
+        assert!(exit.is_none(), "Time stop should not trigger when disabled");
+    }
+
+    // --- VAL-STRAT-CC-012: Cooldown enforced after loss ---
+    #[test]
+    fn test_lc_cooldown_after_loss() {
+        let mut params = lc_params_all_pass();
+        params.cooldown_after_loss_secs = 60;
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+
+        // First entry succeeds
+        let ext = lc_ext_cascade_long(100.0);
+        let snap = lc_snapshot(100.0, vec![], ext);
+        let signal1 = strategy.detect_entry(&snap);
+        assert!(matches!(signal1, Signal::MomentumLong { .. }));
+
+        // Clear pending and record loss
+        strategy.clear_pending("SOL", "long");
+        strategy.record_loss(1001000); // loss at ts=1001000ms
+
+        // Advance time only 30s (less than 60s cooldown)
+        for i in 0..5 { strategy.push_price(100.0, 1031000 + i * 1000); }
+        let signal2 = strategy.detect_entry(&snap);
+        assert!(matches!(signal2, Signal::NoSignal), "Should be in cooldown");
+
+        // Advance time 70s past loss (past 60s cooldown)
+        for i in 0..5 { strategy.push_price(100.0, 1071000 + i * 1000); }
+        let signal3 = strategy.detect_entry(&snap);
+        assert!(matches!(signal3, Signal::MomentumLong { .. }), "Should allow entry after cooldown");
+    }
+
+    // --- VAL-STRAT-CC-001: Legacy alias resolves via factory ---
+    #[test]
+    fn test_lc_legacy_alias_factory_roundtrip() {
+        // Legacy name creates a working strategy
+        let strategy = create_strategy_from_config(
+            "liquidation-cascade-hunter",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 1.5,
+                stop_loss_pct: 0.75,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        // Legacy name strategy should have the legacy name
+        assert_eq!(strategy.name(), "liquidation-cascade-hunter");
+    }
+
+    // --- VAL-STRAT-CC-001: Both names produce same behavior ---
+    #[test]
+    fn test_lc_both_names_produce_signals() {
+        let strategy_canonical = create_strategy_from_config(
+            "liquidation-cascade-continuation",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 1.5,
+                stop_loss_pct: 0.75,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        let strategy_legacy = create_strategy_from_config(
+            "liquidation-cascade-hunter",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 5,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 1.5,
+                stop_loss_pct: 0.75,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 0,
+                use_native_tp_sl: true,
+            },
+        ).unwrap();
+        assert_eq!(strategy_canonical.name(), "liquidation-cascade-continuation");
+        assert_eq!(strategy_legacy.name(), "liquidation-cascade-hunter");
+    }
+
+    // --- Default params have new exit condition flags ---
+    #[test]
+    fn test_lc_default_params_exit_conditions() {
+        let params = LiquidationCascadeParams::default();
+        assert!(params.next_zone_tp_enabled, "next_zone_tp_enabled should default to true");
+        assert!(params.zone_reclaimed_stop_enabled, "zone_reclaimed_stop_enabled should default to true");
+        assert!(params.time_stop_enabled, "time_stop_enabled should default to true");
+    }
+
+    // --- TOML config for new exit condition fields ---
+    #[test]
+    fn test_lc_config_new_exit_fields() {
+        let toml_str = r#"
+            enabled = true
+            next_zone_tp_enabled = false
+            zone_reclaimed_stop_enabled = false
+            time_stop_enabled = false
+        "#;
+        let value: toml::Value = toml_str.parse().unwrap();
+        let params: LiquidationCascadeParams = value.try_into().unwrap();
+        assert!(params.enabled);
+        assert!(!params.next_zone_tp_enabled);
+        assert!(!params.zone_reclaimed_stop_enabled);
+        assert!(!params.time_stop_enabled);
+    }
+
+    // --- Exit priority: fixed TP fires before next-zone TP ---
+    #[test]
+    fn test_lc_fixed_tp_priority_over_next_zone_tp() {
+        let mut strategy = LiquidationCascadeHunter::new(lc_params_all_pass());
+        for i in 0..5 { strategy.push_price(100.0, 1000000 + i * 1000); }
+        let ext = lc_ext_cascade_long(100.0);
+        let snap_entry = lc_snapshot(100.0, vec![], ext);
+        let _ = strategy.detect_entry(&snap_entry);
+
+        let next_zone = lc_zone("short", 0.8, 103.0);
+        let snap_exit = lc_snapshot(102.0, vec![], crate::signal::MarketExtension {
+            liquidation_zones: Some(vec![next_zone]),
+            zone_capture_timestamp_ms: Some(1000000),
+            ..Default::default()
+        });
+        let ctx = PositionContext {
+            is_long: true,
+            entry_price: 100.0,
+            current_price: 102.0, // +2.0% > TP 1.5%
+            peak_price: 102.0,
+            hold_secs: 100,
+            max_hold_secs: 1800,
+            take_profit_pct: 1.5, // Fixed TP at 1.5% → triggers at 101.5
+            stop_loss_pct: 5.0,
+            trailing_stop_pct: 0.0,
+            trailing_activation_pct: 0.0,
+        };
+        let exit = strategy.detect_exit(&snap_exit, &ctx);
+        // Fixed TP should fire (price exceeds 1.5% TP) before next-zone TP
+        assert!(matches!(exit, Some(Signal::ExitLong { reason: ExitReason::TakeProfit })),
+            "Fixed TP should take priority over next-zone TP");
     }
 }
