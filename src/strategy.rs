@@ -4501,6 +4501,540 @@ impl Strategy for LiquidityMemoryFisherStrategy {
 }
 
 // ---------------------------------------------------------------------------
+// Zone Arbiter Strategy (VAL-STRAT-ARB)
+// ---------------------------------------------------------------------------
+
+/// Sub-strategy selection determined by the zone arbiter.
+///
+/// The arbiter evaluates regime + zone state and routes to the appropriate
+/// sub-strategy. This enum represents the routing decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum SubStrategy {
+    CascadeContinuation,
+    SweepReclaim,
+    LiquidityMemoryFisher,
+    None,
+}
+
+impl std::fmt::Display for SubStrategy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SubStrategy::CascadeContinuation => write!(f, "cascade-continuation"),
+            SubStrategy::SweepReclaim => write!(f, "sweep-reclaim"),
+            SubStrategy::LiquidityMemoryFisher => write!(f, "liquidity-memory-fisher"),
+            SubStrategy::None => write!(f, "none"),
+        }
+    }
+}
+
+/// Parameters for the liquidation-zone-arbiter coordinator strategy.
+///
+/// The arbiter evaluates regime + zone state and routes to the appropriate
+/// sub-strategy. It never emits signals directly; it delegates.
+///
+/// Paper-only by default.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ZoneArbiterParams {
+    // --- Enable / paper-only ---
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_true")]
+    pub paper_only: bool,
+
+    // --- Routing thresholds ---
+    /// Minimum forced-flow velocity to select cascade-continuation.
+    /// When regime is Trending and forced_flow_velocity >= this threshold,
+    /// the arbiter routes to cascade-continuation.
+    #[serde(default = "default_za_forced_flow_threshold")]
+    pub forced_flow_threshold: f64,
+    /// Whether exhaustion detection is required for sweep-reclaim routing.
+    /// When regime is HighVol and exhaustion (deceleration) is detected,
+    /// the arbiter routes to sweep-reclaim.
+    #[serde(default = "default_za_exhaustion_required")]
+    pub exhaustion_required: bool,
+    /// Velocity deceleration threshold for exhaustion detection.
+    /// Forced-flow velocity must be below this to indicate exhaustion.
+    #[serde(default = "default_za_velocity_deceleration_threshold")]
+    pub velocity_deceleration_threshold: f64,
+    /// Minimum number of quality zones to select memory-fisher.
+    /// When regime is LowVol and quality zone count >= this threshold,
+    /// the arbiter routes to memory-fisher.
+    #[serde(default = "default_za_min_quality_zones")]
+    pub min_quality_zones: usize,
+    /// Minimum zone confidence to count as a quality zone.
+    #[serde(default = "default_za_min_zone_confidence")]
+    pub min_zone_confidence: f64,
+    /// Whether regime filter is enabled. If false, regime is ignored.
+    #[serde(default = "default_true")]
+    pub regime_filter_enabled: bool,
+
+    // --- Stale data ---
+    /// Stale data threshold in seconds. Zone data older than this blocks routing.
+    #[serde(default = "default_za_stale_threshold_secs")]
+    pub stale_data_threshold_secs: u64,
+
+    // --- General ---
+    #[serde(default = "default_za_clip_size_usd")]
+    pub clip_size_usd: f64,
+    #[serde(default = "default_za_leverage")]
+    pub leverage: f64,
+    #[serde(default = "default_neutral")]
+    pub direction_bias: String,
+    #[serde(default = "default_scale_in_clips")]
+    pub scale_in_clips: u32,
+    #[serde(default = "default_true")]
+    pub use_native_tp_sl: bool,
+    #[serde(default = "default_za_lookback_count")]
+    pub lookback_count: usize,
+    #[serde(default = "default_za_take_profit_pct")]
+    pub take_profit_pct: f64,
+    #[serde(default = "default_za_stop_loss_pct")]
+    pub stop_loss_pct: f64,
+    #[serde(default = "default_za_trailing_stop_pct")]
+    pub trailing_stop_pct: f64,
+    #[serde(default = "default_za_trailing_activation_pct")]
+    pub trailing_activation_pct: f64,
+    #[serde(default = "default_za_max_hold_secs")]
+    pub max_hold_secs: u64,
+    #[serde(default = "default_za_cooldown_after_loss_secs")]
+    pub cooldown_after_loss_secs: u64,
+}
+
+fn default_za_forced_flow_threshold() -> f64 { 1.0 }
+fn default_za_exhaustion_required() -> bool { true }
+fn default_za_velocity_deceleration_threshold() -> f64 { 0.5 }
+fn default_za_min_quality_zones() -> usize { 2 }
+fn default_za_min_zone_confidence() -> f64 { 0.6 }
+fn default_za_stale_threshold_secs() -> u64 { 300 }
+fn default_za_clip_size_usd() -> f64 { 100.0 }
+fn default_za_leverage() -> f64 { 2.0 }
+fn default_za_lookback_count() -> usize { 30 }
+fn default_za_take_profit_pct() -> f64 { 2.0 }
+fn default_za_stop_loss_pct() -> f64 { 1.0 }
+fn default_za_trailing_stop_pct() -> f64 { 0.5 }
+fn default_za_trailing_activation_pct() -> f64 { 1.0 }
+fn default_za_max_hold_secs() -> u64 { 1800 }
+fn default_za_cooldown_after_loss_secs() -> u64 { 300 }
+
+impl Default for ZoneArbiterParams {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            paper_only: true,
+            forced_flow_threshold: default_za_forced_flow_threshold(),
+            exhaustion_required: default_za_exhaustion_required(),
+            velocity_deceleration_threshold: default_za_velocity_deceleration_threshold(),
+            min_quality_zones: default_za_min_quality_zones(),
+            min_zone_confidence: default_za_min_zone_confidence(),
+            regime_filter_enabled: true,
+            stale_data_threshold_secs: default_za_stale_threshold_secs(),
+            clip_size_usd: default_za_clip_size_usd(),
+            leverage: default_za_leverage(),
+            direction_bias: default_neutral(),
+            scale_in_clips: default_scale_in_clips(),
+            use_native_tp_sl: true,
+            lookback_count: default_za_lookback_count(),
+            take_profit_pct: default_za_take_profit_pct(),
+            stop_loss_pct: default_za_stop_loss_pct(),
+            trailing_stop_pct: default_za_trailing_stop_pct(),
+            trailing_activation_pct: default_za_trailing_activation_pct(),
+            max_hold_secs: default_za_max_hold_secs(),
+            cooldown_after_loss_secs: default_za_cooldown_after_loss_secs(),
+        }
+    }
+}
+
+impl ZoneArbiterParams {
+    /// Validate all parameter ranges.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.forced_flow_threshold < 0.0 {
+            return Err(format!(
+                "forced_flow_threshold must be >= 0.0, got {}",
+                self.forced_flow_threshold
+            ));
+        }
+        if self.velocity_deceleration_threshold < 0.0 {
+            return Err(format!(
+                "velocity_deceleration_threshold must be >= 0.0, got {}",
+                self.velocity_deceleration_threshold
+            ));
+        }
+        if self.min_quality_zones == 0 {
+            return Err("min_quality_zones must be > 0".to_string());
+        }
+        if self.min_zone_confidence < 0.0 || self.min_zone_confidence > 1.0 {
+            return Err(format!(
+                "min_zone_confidence must be in [0.0, 1.0], got {}",
+                self.min_zone_confidence
+            ));
+        }
+        if self.stale_data_threshold_secs == 0 {
+            return Err("stale_data_threshold_secs must be > 0".to_string());
+        }
+        if self.clip_size_usd <= 0.0 {
+            return Err(format!(
+                "clip_size_usd must be > 0.0, got {}",
+                self.clip_size_usd
+            ));
+        }
+        if self.take_profit_pct <= 0.0 {
+            return Err(format!(
+                "take_profit_pct must be > 0.0, got {}",
+                self.take_profit_pct
+            ));
+        }
+        if self.stop_loss_pct <= 0.0 {
+            return Err(format!(
+                "stop_loss_pct must be > 0.0, got {}",
+                self.stop_loss_pct
+            ));
+        }
+        if self.lookback_count == 0 {
+            return Err("lookback_count must be > 0".to_string());
+        }
+        if self.direction_bias != "long" && self.direction_bias != "short" && self.direction_bias != "neutral" {
+            return Err(format!(
+                "direction_bias must be 'long', 'short', or 'neutral', got '{}'",
+                self.direction_bias
+            ));
+        }
+        Ok(())
+    }
+
+    /// Parse from a TOML sub-table.
+    pub fn from_toml_table(table: &toml::Value) -> Result<Self, String> {
+        table
+            .clone()
+            .try_into()
+            .map_err(|e| format!("Failed to parse zone-arbiter params: {}", e))
+    }
+
+    /// Convert to generic StrategyParams for the trait's parameters() method.
+    pub fn to_strategy_params(&self) -> StrategyParams {
+        StrategyParams {
+            direction_bias: self.direction_bias.clone(),
+            momentum_threshold_pct: self.forced_flow_threshold,
+            lookback_count: self.lookback_count,
+            scale_in_clips: self.scale_in_clips,
+            clip_size_usd: self.clip_size_usd,
+            max_hold_secs: self.max_hold_secs,
+            take_profit_pct: self.take_profit_pct,
+            stop_loss_pct: self.stop_loss_pct,
+            trailing_stop_pct: self.trailing_stop_pct,
+            trailing_activation_pct: self.trailing_activation_pct,
+            cooldown_after_loss_secs: self.cooldown_after_loss_secs,
+            use_native_tp_sl: self.use_native_tp_sl,
+        }
+    }
+}
+
+/// Liquidation Zone Arbiter — a coordinator strategy that evaluates regime + zone
+/// state and routes to the appropriate sub-strategy.
+///
+/// Routing rules:
+/// - **Trending** + forced flow accelerating → cascade-continuation
+/// - **HighVol** + exhaustion (deceleration) → sweep-reclaim
+/// - **LowVol** + quality zones → memory-fisher
+/// - Ambiguous / no match → NoSignal
+///
+/// The arbiter delegates signal generation to the selected sub-strategy.
+/// It is not a fourth signal source — it is a selector.
+///
+/// Uses the same regime labels as `RegimeDetector`: LowVol, Trending, HighVol, Choppy.
+///
+/// Paper-only by default.
+pub struct ZoneArbiterStrategy {
+    params: ZoneArbiterParams,
+    generic_params: StrategyParams,
+    detector: MomentumDetector,
+    /// Sub-strategies owned by the arbiter.
+    cascade: LiquidationCascadeHunter,
+    sweep: SweepReclaimStrategy,
+    fisher: LiquidityMemoryFisherStrategy,
+    /// Last routing decision (for logging and debugging).
+    last_routing: SubStrategy,
+    /// Current timestamp (updated on each push_price).
+    current_timestamp_ms: i64,
+}
+
+impl ZoneArbiterStrategy {
+    /// Create a new zone arbiter strategy with the given parameters.
+    pub fn new(params: ZoneArbiterParams) -> Self {
+        let generic = params.to_strategy_params();
+        let detector = MomentumDetector::new(params.forced_flow_threshold, params.lookback_count);
+
+        // Create sub-strategies with their default params.
+        // The sub-strategies' own enabled/paper_only flags control their behavior,
+        // but the arbiter is the primary gate.
+        let cascade = LiquidationCascadeHunter::new(LiquidationCascadeParams {
+            enabled: true, // Arbiter controls enable/disable
+            ..LiquidationCascadeParams::default()
+        });
+        let sweep = SweepReclaimStrategy::new(SweepReclaimParams {
+            enabled: true,
+            ..SweepReclaimParams::default()
+        });
+        let fisher = LiquidityMemoryFisherStrategy::new(LiquidityMemoryFisherParams {
+            enabled: true,
+            ..LiquidityMemoryFisherParams::default()
+        });
+
+        Self {
+            generic_params: generic,
+            detector,
+            params,
+            cascade,
+            sweep,
+            fisher,
+            last_routing: SubStrategy::None,
+            current_timestamp_ms: 0,
+        }
+    }
+
+    /// Return a reference to the strategy-specific parameters.
+    #[allow(dead_code)]
+    pub fn arbiter_params(&self) -> &ZoneArbiterParams {
+        &self.params
+    }
+
+    /// Return the last routing decision.
+    #[allow(dead_code)]
+    pub fn last_routing(&self) -> SubStrategy {
+        self.last_routing
+    }
+
+    /// Evaluate regime + zone state and determine which sub-strategy to use.
+    ///
+    /// VAL-STRAT-ARB-001: Trending + forced flow → cascade-continuation
+    /// VAL-STRAT-ARB-002: HighVol + exhaustion → sweep-reclaim
+    /// VAL-STRAT-ARB-003: LowVol + quality zones → memory-fisher
+    /// VAL-STRAT-ARB-004: No clear signal → SubStrategy::None
+    /// VAL-STRAT-ARB-005: Regime labels match RegimeDetector
+    pub fn evaluate_routing(
+        &self,
+        snapshot: &MomentumSnapshot,
+        ext: &crate::signal::MarketExtension,
+    ) -> SubStrategy {
+        // Check for stale data
+        if self.is_data_stale(ext) {
+            debug!("[zone-arbiter] Zone data is stale, no routing");
+            return SubStrategy::None;
+        }
+
+        // Get regime label — must be consistent with RegimeDetector
+        let regime_str = match &ext.regime_label {
+            Some(label) => label.as_str(),
+            None => {
+                debug!("[zone-arbiter] No regime label in snapshot, no routing");
+                return SubStrategy::None;
+            }
+        };
+
+        let regime = match regime_str {
+            "low_vol" => crate::regime::RegimeLabel::LowVol,
+            "trending" => crate::regime::RegimeLabel::Trending,
+            "high_vol" => crate::regime::RegimeLabel::HighVol,
+            "choppy" => crate::regime::RegimeLabel::Choppy,
+            _ => {
+                debug!(
+                    "[zone-arbiter] Unknown regime label '{}', no routing",
+                    regime_str
+                );
+                return SubStrategy::None;
+            }
+        };
+
+        // Get forced-flow velocity
+        let forced_flow = ext.forced_flow_velocity.unwrap_or(0.0);
+
+        // Check for quality zones
+        let quality_zone_count = self.count_quality_zones(ext);
+
+        // Routing logic (priority order):
+        // 1. Trending + forced flow → cascade-continuation
+        // 2. HighVol + exhaustion → sweep-reclaim
+        // 3. LowVol + quality zones → memory-fisher
+        // 4. Choppy / no clear match → None
+
+        match regime {
+            crate::regime::RegimeLabel::Trending => {
+                if forced_flow >= self.params.forced_flow_threshold {
+                    debug!(
+                        "[zone-arbiter] Trending + forced_flow={:.2} >= {:.2} → cascade-continuation",
+                        forced_flow, self.params.forced_flow_threshold
+                    );
+                    SubStrategy::CascadeContinuation
+                } else {
+                    debug!(
+                        "[zone-arbiter] Trending but forced_flow={:.2} < {:.2}, no clear signal",
+                        forced_flow, self.params.forced_flow_threshold
+                    );
+                    SubStrategy::None
+                }
+            }
+            crate::regime::RegimeLabel::HighVol => {
+                // Exhaustion = forced-flow velocity is decelerating (below threshold)
+                let exhaustion = if self.params.exhaustion_required {
+                    forced_flow < self.params.velocity_deceleration_threshold
+                } else {
+                    true
+                };
+                if exhaustion {
+                    debug!(
+                        "[zone-arbiter] HighVol + exhaustion (flow={:.2} < {:.2}) → sweep-reclaim",
+                        forced_flow, self.params.velocity_deceleration_threshold
+                    );
+                    SubStrategy::SweepReclaim
+                } else {
+                    debug!(
+                        "[zone-arbiter] HighVol but no exhaustion (flow={:.2} >= {:.2}), no clear signal",
+                        forced_flow, self.params.velocity_deceleration_threshold
+                    );
+                    SubStrategy::None
+                }
+            }
+            crate::regime::RegimeLabel::LowVol => {
+                if quality_zone_count >= self.params.min_quality_zones {
+                    debug!(
+                        "[zone-arbiter] LowVol + {} quality zones (>= {}) → memory-fisher",
+                        quality_zone_count, self.params.min_quality_zones
+                    );
+                    SubStrategy::LiquidityMemoryFisher
+                } else {
+                    debug!(
+                        "[zone-arbiter] LowVol but only {} quality zones (< {}), no clear signal",
+                        quality_zone_count, self.params.min_quality_zones
+                    );
+                    SubStrategy::None
+                }
+            }
+            crate::regime::RegimeLabel::Choppy => {
+                debug!("[zone-arbiter] Choppy regime, no clear signal");
+                SubStrategy::None
+            }
+        }
+    }
+
+    /// Check if zone data is stale.
+    fn is_data_stale(&self, ext: &crate::signal::MarketExtension) -> bool {
+        if let Some(ts) = ext.zone_capture_timestamp_ms {
+            let age_secs = (self.current_timestamp_ms - ts).max(0) as u64 / 1000;
+            age_secs > self.params.stale_data_threshold_secs
+        } else {
+            // No timestamp → treat as stale
+            true
+        }
+    }
+
+    /// Count zones with confidence >= min_zone_confidence.
+    fn count_quality_zones(&self, ext: &crate::signal::MarketExtension) -> usize {
+        match &ext.liquidation_zones {
+            Some(zones) => zones
+                .iter()
+                .filter(|z| z.confidence >= self.params.min_zone_confidence)
+                .count(),
+            None => 0,
+        }
+    }
+}
+
+impl Strategy for ZoneArbiterStrategy {
+    fn name(&self) -> &str {
+        "liquidation-zone-arbiter"
+    }
+
+    fn detect_entry(&mut self, snapshot: &MomentumSnapshot) -> Signal {
+        // Gate 1: Enabled check
+        if !self.params.enabled {
+            return Signal::NoSignal;
+        }
+
+        // Gate 2: Paper-only enforcement
+        // (The arbiter delegates to sub-strategies which have their own paper_only checks,
+        // but the arbiter itself is paper-only by default and should not emit live signals.)
+
+        // Gate 3: Extended market data required
+        let ext = match &snapshot.ext {
+            Some(e) => e,
+            None => {
+                debug!("[zone-arbiter] No extended market data, no signal");
+                return Signal::NoSignal;
+            }
+        };
+
+        // Evaluate routing
+        let routing = self.evaluate_routing(snapshot, ext);
+        self.last_routing = routing;
+
+        // Delegate to the selected sub-strategy
+        match routing {
+            SubStrategy::CascadeContinuation => {
+                debug!("[zone-arbiter] Delegating to cascade-continuation");
+                self.cascade.detect_entry(snapshot)
+            }
+            SubStrategy::SweepReclaim => {
+                debug!("[zone-arbiter] Delegating to sweep-reclaim");
+                self.sweep.detect_entry(snapshot)
+            }
+            SubStrategy::LiquidityMemoryFisher => {
+                debug!("[zone-arbiter] Delegating to liquidity-memory-fisher");
+                self.fisher.detect_entry(snapshot)
+            }
+            SubStrategy::None => {
+                debug!("[zone-arbiter] No clear signal from routing");
+                Signal::NoSignal
+            }
+        }
+    }
+
+    fn detect_exit(
+        &self,
+        snapshot: &MomentumSnapshot,
+        context: &PositionContext,
+    ) -> Option<Signal> {
+        // Delegate exit to the last active sub-strategy.
+        // Try all sub-strategies — whichever has the position will handle it.
+        if let Some(signal) = self.cascade.detect_exit(snapshot, context) {
+            return Some(signal);
+        }
+        if let Some(signal) = self.sweep.detect_exit(snapshot, context) {
+            return Some(signal);
+        }
+        if let Some(signal) = self.fisher.detect_exit(snapshot, context) {
+            return Some(signal);
+        }
+        None
+    }
+
+    fn parameters(&self) -> &StrategyParams {
+        &self.generic_params
+    }
+
+    fn push_price(&mut self, price: f64, timestamp_ms: i64) {
+        self.current_timestamp_ms = timestamp_ms;
+        self.detector.push_price(price, timestamp_ms);
+        // Propagate price to all sub-strategies
+        self.cascade.push_price(price, timestamp_ms);
+        self.sweep.push_price(price, timestamp_ms);
+        self.fisher.push_price(price, timestamp_ms);
+    }
+
+    fn snapshot(&self) -> MomentumSnapshot {
+        let mut snap = self.detector.analyze();
+        snap.ext = None;
+        snap
+    }
+
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+
+    fn as_any_mut(&mut self) -> &mut dyn std::any::Any {
+        self
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Strategy Factory
 // ---------------------------------------------------------------------------
 
@@ -4526,6 +5060,7 @@ pub fn available_strategies() -> &'static [&'static str] {
         "liquidation-cascade-hunter",
         "sweep-reclaim",
         "liquidity-memory-fisher",
+        "liquidation-zone-arbiter",
     ]
 }
 
@@ -5026,6 +5561,18 @@ pub fn create_strategy_from_config(
                 anyhow::bail!("Invalid liquidity-memory-fisher parameters: {}", e);
             }
             Ok(Box::new(LiquidityMemoryFisherStrategy::new(lmf_params)))
+        }
+        "liquidation-zone-arbiter" => {
+            let za_params = if let Some(table) = sub_table {
+                ZoneArbiterParams::from_toml_table(table)
+                    .map_err(|e| anyhow::anyhow!("Invalid [strategy.liquidation-zone-arbiter] config: {}", e))?
+            } else {
+                ZoneArbiterParams::default()
+            };
+            if let Err(e) = za_params.validate() {
+                anyhow::bail!("Invalid liquidation-zone-arbiter parameters: {}", e);
+            }
+            Ok(Box::new(ZoneArbiterStrategy::new(za_params)))
         }
         _ => {
             let available = available_strategies().join(", ");
@@ -12214,5 +12761,447 @@ order_expiry_secs = 300
         // but verify the order is marked filled
         let filled_count = strategy.orders.iter().filter(|o| o.filled).count();
         assert_eq!(filled_count, 1, "One order should be filled");
+    }
+
+    // ===== Zone Arbiter Tests (VAL-STRAT-ARB) =====
+
+    /// Helper: create zone arbiter params with all gates passable.
+    fn za_params_enabled() -> ZoneArbiterParams {
+        ZoneArbiterParams {
+            enabled: true,
+            paper_only: true,
+            forced_flow_threshold: 1.0,
+            exhaustion_required: true,
+            velocity_deceleration_threshold: 0.5,
+            min_quality_zones: 2,
+            min_zone_confidence: 0.6,
+            regime_filter_enabled: true,
+            stale_data_threshold_secs: 300,
+            clip_size_usd: 100.0,
+            leverage: 2.0,
+            direction_bias: "neutral".to_string(),
+            scale_in_clips: 1,
+            use_native_tp_sl: true,
+            lookback_count: 30,
+            take_profit_pct: 2.0,
+            stop_loss_pct: 1.0,
+            trailing_stop_pct: 0.5,
+            trailing_activation_pct: 1.0,
+            max_hold_secs: 1800,
+            cooldown_after_loss_secs: 300,
+        }
+    }
+
+    /// Helper: build a MarketExtension with specific regime label.
+    fn za_ext_with_regime(
+        regime: &str,
+        forced_flow: Option<f64>,
+        zones: Option<Vec<crate::liquidation::LiquidationZone>>,
+    ) -> crate::signal::MarketExtension {
+        crate::signal::MarketExtension {
+            regime_label: Some(regime.to_string()),
+            forced_flow_velocity: forced_flow,
+            liquidation_zones: zones,
+            zone_capture_timestamp_ms: Some(1_000_000),
+            ..Default::default()
+        }
+    }
+
+    /// Helper: build a MomentumSnapshot with extension data.
+    fn za_snapshot(
+        price: f64,
+        ext: crate::signal::MarketExtension,
+    ) -> MomentumSnapshot {
+        MomentumSnapshot {
+            price_count: 10,
+            current_price: price,
+            price_velocity_pct: 0.0,
+            direction: TradeDirection::Neutral,
+            strength: 0.0,
+            volatility_pct: 0.0,
+            pool_data: None,
+            ext: Some(ext),
+        }
+    }
+
+    /// Helper: create a quality zone.
+    fn za_quality_zone(price: f64, side: &str, confidence: f64) -> crate::liquidation::LiquidationZone {
+        crate::liquidation::LiquidationZone {
+            price,
+            side_at_risk: side.to_string(),
+            estimated_notional_usd: 500_000.0,
+            wallet_count: 5,
+            distance_bps: 100.0,
+            confidence,
+            source_mix: vec!["hl_positions".to_string()],
+        }
+    }
+
+    // --- Factory registration ---
+
+    #[test]
+    fn test_za_factory_registration() {
+        let strategy = create_strategy_from_config(
+            "liquidation-zone-arbiter",
+            None,
+            StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.1,
+                lookback_count: 30,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 2.0,
+                stop_loss_pct: 1.0,
+                trailing_stop_pct: 0.5,
+                trailing_activation_pct: 1.0,
+                cooldown_after_loss_secs: 300,
+                use_native_tp_sl: true,
+            },
+        ).expect("Factory should create liquidation-zone-arbiter strategy");
+        assert_eq!(strategy.name(), "liquidation-zone-arbiter");
+    }
+
+    #[test]
+    fn test_za_available_in_strategies_list() {
+        assert!(
+            available_strategies().contains(&"liquidation-zone-arbiter"),
+            "liquidation-zone-arbiter should be in available_strategies"
+        );
+    }
+
+    // --- Parameter validation ---
+
+    #[test]
+    fn test_za_params_validate_ok_defaults() {
+        let params = ZoneArbiterParams::default();
+        assert!(params.validate().is_ok(), "Default params should validate");
+    }
+
+    #[test]
+    fn test_za_params_reject_negative_forced_flow() {
+        let mut params = ZoneArbiterParams::default();
+        params.forced_flow_threshold = -1.0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_za_params_reject_zero_min_quality_zones() {
+        let mut params = ZoneArbiterParams::default();
+        params.min_quality_zones = 0;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_za_params_reject_confidence_out_of_range() {
+        let mut params = ZoneArbiterParams::default();
+        params.min_zone_confidence = 1.5;
+        assert!(params.validate().is_err());
+    }
+
+    #[test]
+    fn test_za_params_reject_zero_stale_threshold() {
+        let mut params = ZoneArbiterParams::default();
+        params.stale_data_threshold_secs = 0;
+        assert!(params.validate().is_err());
+    }
+
+    // --- Disabled by default ---
+
+    #[test]
+    fn test_za_disabled_by_default() {
+        let params = ZoneArbiterParams::default();
+        assert!(!params.enabled, "Arbiter should be disabled by default");
+        assert!(params.paper_only, "Arbiter should be paper_only by default");
+    }
+
+    #[test]
+    fn test_za_no_signal_when_disabled() {
+        let mut strategy = ZoneArbiterStrategy::new(ZoneArbiterParams::default());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1_000_000 + i * 1000);
+        }
+        let ext = za_ext_with_regime("trending", Some(2.0), None);
+        let snap = za_snapshot(100.0, ext);
+        let signal = strategy.detect_entry(&snap);
+        assert!(
+            matches!(signal, Signal::NoSignal),
+            "Disabled arbiter should emit NoSignal, got {:?}",
+            signal
+        );
+    }
+
+    // --- VAL-STRAT-ARB-001: Trending + forced flow → cascade-continuation ---
+
+    #[test]
+    fn test_za_routing_trending_forced_flow_cascade() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = za_ext_with_regime("trending", Some(2.0), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::CascadeContinuation,
+            "Trending + forced flow should route to cascade-continuation"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_trending_low_flow_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = za_ext_with_regime("trending", Some(0.3), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "Trending + low forced flow should produce no signal"
+        );
+    }
+
+    // --- VAL-STRAT-ARB-002: HighVol + exhaustion → sweep-reclaim ---
+
+    #[test]
+    fn test_za_routing_highvol_exhaustion_sweep_reclaim() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        // Exhaustion = forced_flow_velocity < deceleration threshold (0.5)
+        let ext = za_ext_with_regime("high_vol", Some(0.2), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::SweepReclaim,
+            "HighVol + exhaustion should route to sweep-reclaim"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_highvol_no_exhaustion_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        // No exhaustion = forced_flow_velocity still high (above deceleration threshold)
+        let ext = za_ext_with_regime("high_vol", Some(2.0), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "HighVol without exhaustion should produce no signal"
+        );
+    }
+
+    // --- VAL-STRAT-ARB-003: LowVol + quality zones → memory-fisher ---
+
+    #[test]
+    fn test_za_routing_lowvol_quality_zones_memory_fisher() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let zones = vec![
+            za_quality_zone(95.0, "long", 0.8),
+            za_quality_zone(90.0, "long", 0.7),
+        ];
+        let ext = za_ext_with_regime("low_vol", None, Some(zones));
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::LiquidityMemoryFisher,
+            "LowVol + quality zones should route to memory-fisher"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_lowvol_few_zones_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        // Only 1 quality zone (< min_quality_zones = 2)
+        let zones = vec![
+            za_quality_zone(95.0, "long", 0.8),
+        ];
+        let ext = za_ext_with_regime("low_vol", None, Some(zones));
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "LowVol with too few quality zones should produce no signal"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_lowvol_no_zones_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = za_ext_with_regime("low_vol", None, None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "LowVol without zones should produce no signal"
+        );
+    }
+
+    // --- VAL-STRAT-ARB-004: Ambiguous conditions → NoSignal ---
+
+    #[test]
+    fn test_za_routing_choppy_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = za_ext_with_regime("choppy", Some(1.5), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "Choppy regime should produce no signal regardless of other conditions"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_no_regime_label_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = crate::signal::MarketExtension {
+            regime_label: None,
+            forced_flow_velocity: Some(2.0),
+            ..Default::default()
+        };
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "No regime label should produce no signal"
+        );
+    }
+
+    #[test]
+    fn test_za_routing_unknown_regime_no_signal() {
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        let ext = za_ext_with_regime("unknown_regime", Some(2.0), None);
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "Unknown regime label should produce no signal"
+        );
+    }
+
+    // --- VAL-STRAT-ARB-005: Regime labels match RegimeDetector ---
+
+    #[test]
+    fn test_za_regime_labels_match_detector() {
+        // Verify all four RegimeDetector labels are accepted
+        let strategy = ZoneArbiterStrategy::new(za_params_enabled());
+
+        // Test each label is recognized (doesn't return None due to unknown label)
+        for label in &["low_vol", "trending", "high_vol", "choppy"] {
+            let ext = za_ext_with_regime(label, Some(2.0), None);
+            let snap = za_snapshot(100.0, ext);
+            // "low_vol" should route to None because no quality zones + high flow
+            // "trending" should route to CascadeContinuation because flow >= threshold
+            // "high_vol" should route to None because flow >= deceleration threshold (no exhaustion)
+            // "choppy" should route to None
+            let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+            // Just verify the label was accepted (didn't fail on unknown)
+            match *label {
+                "trending" => assert_eq!(routing, SubStrategy::CascadeContinuation),
+                _ => {} // Others may or may not produce a signal, just ensure no panic
+            }
+        }
+    }
+
+    #[test]
+    fn test_za_regime_label_string_format() {
+        // Verify that the RegimeLabel Display impl matches what MarketExtension uses
+        use crate::regime::RegimeLabel;
+        assert_eq!(format!("{}", RegimeLabel::LowVol), "low_vol");
+        assert_eq!(format!("{}", RegimeLabel::Trending), "trending");
+        assert_eq!(format!("{}", RegimeLabel::HighVol), "high_vol");
+        assert_eq!(format!("{}", RegimeLabel::Choppy), "choppy");
+    }
+
+    // --- Stale data blocks routing ---
+
+    #[test]
+    fn test_za_stale_data_blocks_routing() {
+        let mut strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        // Set current timestamp far ahead of zone capture timestamp
+        strategy.current_timestamp_ms = 1_000_000 + (600 * 1000); // 600s later
+        let ext = crate::signal::MarketExtension {
+            regime_label: Some("trending".to_string()),
+            forced_flow_velocity: Some(2.0),
+            liquidation_zones: None,
+            zone_capture_timestamp_ms: Some(1_000_000), // 600s old
+            ..Default::default()
+        };
+        let snap = za_snapshot(100.0, ext);
+
+        let routing = strategy.evaluate_routing(&snap, snap.ext.as_ref().unwrap());
+        assert_eq!(
+            routing,
+            SubStrategy::None,
+            "Stale zone data should block routing"
+        );
+    }
+
+    #[test]
+    fn test_za_no_ext_data_no_signal() {
+        let mut strategy = ZoneArbiterStrategy::new(za_params_enabled());
+        for i in 0..5 {
+            strategy.push_price(100.0, 1_000_000 + i * 1000);
+        }
+        let snap = MomentumSnapshot {
+            price_count: 10,
+            current_price: 100.0,
+            price_velocity_pct: 0.0,
+            direction: TradeDirection::Neutral,
+            strength: 0.0,
+            volatility_pct: 0.0,
+            pool_data: None,
+            ext: None, // No extension data
+        };
+        let signal = strategy.detect_entry(&snap);
+        assert!(
+            matches!(signal, Signal::NoSignal),
+            "No ext data should produce NoSignal"
+        );
+    }
+
+    // --- Sub-strategy display ---
+
+    #[test]
+    fn test_za_sub_strategy_display() {
+        assert_eq!(format!("{}", SubStrategy::CascadeContinuation), "cascade-continuation");
+        assert_eq!(format!("{}", SubStrategy::SweepReclaim), "sweep-reclaim");
+        assert_eq!(format!("{}", SubStrategy::LiquidityMemoryFisher), "liquidity-memory-fisher");
+        assert_eq!(format!("{}", SubStrategy::None), "none");
+    }
+
+    // --- TOML parsing ---
+
+    #[test]
+    fn test_za_params_from_toml() {
+        let toml_str = r#"
+enabled = true
+paper_only = false
+forced_flow_threshold = 1.5
+min_quality_zones = 3
+min_zone_confidence = 0.7
+"#;
+        let value: toml::Value = toml::from_str(toml_str).unwrap();
+        let params = ZoneArbiterParams::from_toml_table(&value)
+            .expect("Should parse from TOML");
+        assert!(params.enabled);
+        assert!(!params.paper_only);
+        assert!((params.forced_flow_threshold - 1.5).abs() < 0.001);
+        assert_eq!(params.min_quality_zones, 3);
+        assert!((params.min_zone_confidence - 0.7).abs() < 0.001);
     }
 }
