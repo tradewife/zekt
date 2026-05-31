@@ -23,6 +23,8 @@ mod paper;
 #[allow(dead_code)]
 mod pnl_tracker;
 #[allow(dead_code)]
+mod pyramiding;
+#[allow(dead_code)]
 mod replay;
 #[allow(dead_code)]
 mod regime;
