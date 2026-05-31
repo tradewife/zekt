@@ -17,7 +17,7 @@ Semi-autonomous trading system that discovers profitable strategies from Hyperli
 
 ```bash
 cargo build --release                    # Build
-cargo test                               # Run 736 Rust unit tests
+cargo test                               # Run 828 Rust unit tests
 python -m pytest analysis/tests/ -v      # Run 132 Python analysis tests
 
 # Backtest against Hyperliquid historical data
@@ -115,9 +115,42 @@ All strategies implement the `Strategy` trait (`detect_entry`, `detect_exit`, `p
 
 86 tradeable symbols across 4 Solana perps venues (Flash Trade, Phoenix, GMTrade, Jupiter).
 
+## Milestones
+
+| ID | Milestone | Status | Outcome |
+|----|-----------|--------|---------|
+| M10 | Walk-Forward Edge Hardening + Leverage-Aware Position Sizing | ✅ Complete | **REJECT ALL** — no candidate passes promotion gate |
+
+### M10: Walk-Forward Edge Hardening (2026-05-31)
+
+Tested 9 strategy-market candidates (blueprint-cluster-002/005/007/008/009 × BTC/ETH/SOL) through a three-phase validation pipeline:
+
+1. **M1 — Walk-Forward Parameter Search:** 294,081 parameter combinations across 6 dimensions × 5 values, 5 expanding windows. Best OOS Sharpe 20.57 (cluster-009:ETH) but with only 5 trades — pure noise. 100% of top-3 parameter sets flagged as overfit.
+
+2. **M2 — Leverage & Position Sizing Frontier:** Extended to 90-day backtest with 315 grid cells (7 leverage × 5 sizing modes). All candidates collapsed: M1 best Sharpe 4.05 → M2 best Sharpe 0.08. Fee-to-gross ratios 51–8,657%. More trades confirmed the signal was noise.
+
+3. **M3 — Portfolio Construction:** 3 allocation strategies (Equal Weight, Risk Parity, Sharpe Weighted) — all net-negative. Cross-candidate diversification cannot rescue negative-edge strategies.
+
+4. **Liquidation Zone Capture:** Infrastructure validated (9 zones from OI imbalance in 37s), needs dedicated 24-72h capture run.
+
+**Verdict:** Honest negative result. Reject all candidates for paper promotion. The promising short-window signals were overfit artifacts; fee dominance overwhelms any remaining edge.
+
+**Commits:** `63b62d0` → `28bd4fd` → `41ba5ae` → `b732ed3` → `429a721` → `231cc2e`
+
+## Next Steps
+
+Ranked by expected impact (from M10 root cause analysis):
+
+1. **New strategy architectures** — Explore mean-reversion, funding-capture, or regime-adaptive approaches. The current momentum-threshold blueprints appear inherently noisy for this timeframe/market.
+2. **Expand wallet pool** — Current 9 candidates come from limited HL clusters. Broader discovery (100+ wallets) could find genuinely different edges.
+3. **Reduce execution costs** — Limit-order execution, maker rebates, or cross-venue routing. Need 80%+ fee reduction (current 50% Imperial savings is insufficient).
+4. **Liquidation cascade mission** — Dedicated 24-72h capture with expanded watchlist (50-100 traders) for event-driven alpha.
+5. **Longer backtest windows** — 180-365 day validation for low-frequency strategies (90 days may still be insufficient).
+6. **Higher trade count threshold** — Require ≥50 OOS trades (not 30) before promotion to reduce small-sample noise.
+
 ## Testing
 
-**Rust:** 736 unit tests. `cargo test`
+**Rust:** 828 unit tests. `cargo test`
 **Python:** 132 analysis tests. `python -m pytest analysis/tests/ -v`
 
 ## Configuration
