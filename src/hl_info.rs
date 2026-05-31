@@ -290,6 +290,122 @@ impl HlInfoClient {
         let raw: serde_json::Value = self.post(&body, "metaAndAssetCtxs").await?;
         parse_market_contexts(&raw)
     }
+
+    /// Fetch the L2 order book for a symbol and compute derived depth metrics.
+    ///
+    /// Maps to Hyperliquid's `l2Book` endpoint. Returns a typed `L2BookResponse`
+    /// with best bid/ask, spread bps, depth tiers at 10/25/50 bps, bid/ask
+    /// imbalance, depth slope, and timestamp.
+    ///
+    /// # Rate limit handling
+    ///
+    /// If the API returns HTTP 429 (Too Many Requests), this method backs off
+    /// and retries up to `L2_MAX_RETRIES` times with exponential backoff.
+    ///
+    /// # Errors
+    ///
+    /// Returns `Err` with a descriptive message for:
+    /// - HTTP 4xx/5xx errors (other than 429 which is retried)
+    /// - Malformed JSON responses
+    /// - Network/connect errors (with DNS fallback)
+    pub async fn l2_book(&self, symbol: &str) -> Result<L2BookResponse> {
+        let body = serde_json::json!({
+            "type": "l2Book",
+            "coin": symbol
+        });
+        debug!("Fetching L2 book for symbol={}", symbol);
+        let label = format!("l2Book({})", symbol);
+
+        // Use retry-aware POST for rate limit handling
+        let raw: HlL2BookRaw = self.post_with_retry(&body, &label).await?;
+        Ok(compute_l2_metrics(raw))
+    }
+
+    /// POST with retry on HTTP 429 (rate limit).
+    ///
+    /// Retries up to `L2_MAX_RETRIES` times with exponential backoff starting
+    /// at `L2_RETRY_BASE_DELAY_MS`. The backoff doubles on each retry.
+    /// For other errors, falls through to the normal DNS-fallback retry path.
+    async fn post_with_retry<T: serde::de::DeserializeOwned>(
+        &self,
+        body: &serde_json::Value,
+        label: &str,
+    ) -> Result<T> {
+        let max_retries = 3usize;
+        let base_delay_ms: u64 = 500;
+
+        for attempt in 0..=max_retries {
+            let resp = self.client
+                .post(&self.base_url)
+                .header("Content-Type", "application/json")
+                .json(body)
+                .send()
+                .await;
+
+            match resp {
+                Ok(response) => {
+                    let status = response.status();
+
+                    if status == reqwest::StatusCode::TOO_MANY_REQUESTS {
+                        if attempt < max_retries {
+                            let delay_ms = base_delay_ms * 2u64.pow(attempt as u32);
+                            warn!(
+                                attempt = attempt + 1,
+                                max_retries,
+                                delay_ms,
+                                "HL API returned 429 for {}, backing off",
+                                label
+                            );
+                            tokio::time::sleep(Duration::from_millis(delay_ms)).await;
+                            continue;
+                        } else {
+                            anyhow::bail!(
+                                "HL API returned 429 for {} after {} retries, giving up",
+                                label,
+                                max_retries
+                            );
+                        }
+                    }
+
+                    if !status.is_success() {
+                        let text = response.text().await.unwrap_or_default();
+                        anyhow::bail!(
+                            "HL Info API returned {} for {}: {}",
+                            status,
+                            label,
+                            text
+                        );
+                    }
+
+                    let text = response.text().await.with_context(|| {
+                        format!("Failed to read response body for {}", label)
+                    })?;
+
+                    return serde_json::from_str::<T>(&text).with_context(|| {
+                        format!(
+                            "Failed to parse {} response: {}",
+                            label,
+                            &text[..text.len().min(500)]
+                        )
+                    });
+                }
+                Err(e) => {
+                    // Connect/DNS error → try fallback IPs
+                    let err: anyhow::Error = e.into();
+                    if is_connect_error(&err) {
+                        warn!(
+                            "DNS/connect error for {} ({}), trying fallback IPs",
+                            self.base_url, label
+                        );
+                        return self.post_with_fallback_ips(body, label, err).await;
+                    }
+                    return Err(err.context(format!("HL Info request failed: {}", label)));
+                }
+            }
+        }
+
+        anyhow::bail!("Unexpected retry loop exit for {}", label)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -406,6 +522,223 @@ pub struct HlLeverage {
     pub r#type: String,
     pub value: String,
     pub cross_margin_leverage: Option<String>,
+}
+
+// ---------------------------------------------------------------------------
+// Response types — l2Book
+// ---------------------------------------------------------------------------
+
+/// A single level in the L2 order book (price, size, number of orders).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HlL2Level {
+    /// Price as a string (e.g., "100000.0").
+    pub px: String,
+    /// Size (in base asset) as a string (e.g., "1.5").
+    pub sz: String,
+    /// Number of orders at this level.
+    pub n: u64,
+}
+
+impl HlL2Level {
+    /// Parse price as f64.
+    pub fn price_f64(&self) -> f64 {
+        self.px.parse().unwrap_or(0.0)
+    }
+
+    /// Parse size as f64.
+    pub fn size_f64(&self) -> f64 {
+        self.sz.parse().unwrap_or(0.0)
+    }
+
+    /// Notional value (price * size).
+    pub fn notional(&self) -> f64 {
+        self.price_f64() * self.size_f64()
+    }
+}
+
+/// Depth summary within a specific bps range from mid price.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DepthTier {
+    /// Distance from mid price in basis points (e.g., 10, 25, 50).
+    pub range_bps: f64,
+    /// Total bid-side depth in USD within this range.
+    pub bid_depth_usd: f64,
+    /// Total ask-side depth in USD within this range.
+    pub ask_depth_usd: f64,
+}
+
+/// Typed L2 order book response with computed metrics.
+///
+/// Contains the raw best bid/ask plus derived analytics:
+/// spread in bps, depth tiers at various ranges, bid/ask imbalance,
+/// depth slope, and the snapshot timestamp.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct L2BookResponse {
+    /// Market symbol (e.g., "BTC").
+    pub symbol: String,
+    /// Best bid price (0.0 if book is empty).
+    pub best_bid: f64,
+    /// Best ask price (0.0 if book is empty).
+    pub best_ask: f64,
+    /// Spread in basis points: `(ask - bid) / mid * 10000`.
+    /// 0.0 if bid or ask is zero.
+    pub spread_bps: f64,
+    /// Depth tiers at 10, 25, and 50 bps from mid.
+    pub depth_tiers: Vec<DepthTier>,
+    /// Bid/ask imbalance ratio: `bid_depth_50bps / ask_depth_50bps`.
+    /// 0.0 if both are zero. >1.0 = bid-heavy, <1.0 = ask-heavy.
+    pub imbalance: f64,
+    /// Depth slope: rate of depth decay from mid outward.
+    /// Positive = depth increases away from mid (normal), negative = depth thins.
+    /// Computed as (depth_50bps - depth_10bps) / depth_10bps.
+    pub depth_slope: f64,
+    /// Snapshot timestamp from the API (milliseconds).
+    pub timestamp_ms: i64,
+    /// Raw bid levels (sorted descending by price).
+    pub bids: Vec<HlL2Level>,
+    /// Raw ask levels (sorted ascending by price).
+    pub asks: Vec<HlL2Level>,
+}
+
+impl L2BookResponse {
+    /// Mid price: (best_bid + best_ask) / 2.
+    /// Returns 0.0 if both sides are empty.
+    pub fn mid_price(&self) -> f64 {
+        if self.best_bid > 0.0 && self.best_ask > 0.0 {
+            (self.best_bid + self.best_ask) / 2.0
+        } else if self.best_bid > 0.0 {
+            self.best_bid
+        } else {
+            self.best_ask
+        }
+    }
+
+    /// Total bid depth within `range_bps` from mid.
+    pub fn bid_depth_within(&self, range_bps: f64) -> f64 {
+        let mid = self.mid_price();
+        if mid <= 0.0 {
+            return 0.0;
+        }
+        let lower = mid * (1.0 - range_bps / 10_000.0);
+        self.bids
+            .iter()
+            .filter(|l| l.price_f64() >= lower && l.price_f64() <= mid)
+            .map(|l| l.notional())
+            .sum()
+    }
+
+    /// Total ask depth within `range_bps` from mid.
+    pub fn ask_depth_within(&self, range_bps: f64) -> f64 {
+        let mid = self.mid_price();
+        if mid <= 0.0 {
+            return 0.0;
+        }
+        let upper = mid * (1.0 + range_bps / 10_000.0);
+        self.asks
+            .iter()
+            .filter(|l| l.price_f64() >= mid && l.price_f64() <= upper)
+            .map(|l| l.notional())
+            .sum()
+    }
+}
+
+/// Raw L2 book response from the Hyperliquid API.
+/// The response is `{"coin": "BTC", "levels": [bids, asks], "time": ms}`.
+#[derive(Debug, Clone, Deserialize)]
+struct HlL2BookRaw {
+    coin: String,
+    levels: (Vec<HlL2Level>, Vec<HlL2Level>),
+    time: i64,
+}
+
+/// Compute the L2BookResponse from raw levels.
+fn compute_l2_metrics(raw: HlL2BookRaw) -> L2BookResponse {
+    let (bids, asks) = raw.levels;
+    let best_bid = bids.first().map(|l| l.price_f64()).unwrap_or(0.0);
+    let best_ask = asks.first().map(|l| l.price_f64()).unwrap_or(0.0);
+
+    let mid = if best_bid > 0.0 && best_ask > 0.0 {
+        (best_bid + best_ask) / 2.0
+    } else if best_bid > 0.0 {
+        best_bid
+    } else {
+        best_ask
+    };
+
+    let spread_bps = if best_bid > 0.0 && best_ask > 0.0 && mid > 0.0 {
+        ((best_ask - best_bid) / mid) * 10_000.0
+    } else {
+        0.0
+    };
+
+    // Compute depth tiers at 10, 25, 50 bps
+    let tier_ranges = [10.0_f64, 25.0, 50.0];
+    let depth_tiers: Vec<DepthTier> = tier_ranges
+        .iter()
+        .map(|&range_bps| {
+            let bid_lower = mid * (1.0 - range_bps / 10_000.0);
+            let ask_upper = mid * (1.0 + range_bps / 10_000.0);
+
+            let bid_depth: f64 = bids
+                .iter()
+                .filter(|l| l.price_f64() >= bid_lower && l.price_f64() <= mid)
+                .map(|l| l.notional())
+                .sum();
+
+            let ask_depth: f64 = asks
+                .iter()
+                .filter(|l| l.price_f64() >= mid && l.price_f64() <= ask_upper)
+                .map(|l| l.notional())
+                .sum();
+
+            DepthTier {
+                range_bps,
+                bid_depth_usd: bid_depth,
+                ask_depth_usd: ask_depth,
+            }
+        })
+        .collect();
+
+    // Imbalance: use 50bps tier
+    let tier_50 = depth_tiers.iter().find(|t| (t.range_bps - 50.0).abs() < 0.01);
+    let imbalance = if let Some(t) = tier_50 {
+        if t.ask_depth_usd > 0.0 {
+            t.bid_depth_usd / t.ask_depth_usd
+        } else if t.bid_depth_usd > 0.0 {
+            f64::INFINITY
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    // Depth slope: rate of depth change from 10bps to 50bps
+    let tier_10 = depth_tiers.iter().find(|t| (t.range_bps - 10.0).abs() < 0.01);
+    let depth_slope = if let (Some(t10), Some(t50)) = (tier_10, tier_50) {
+        let depth_10 = t10.bid_depth_usd + t10.ask_depth_usd;
+        let depth_50 = t50.bid_depth_usd + t50.ask_depth_usd;
+        if depth_10 > 0.0 {
+            (depth_50 - depth_10) / depth_10
+        } else {
+            0.0
+        }
+    } else {
+        0.0
+    };
+
+    L2BookResponse {
+        symbol: raw.coin,
+        best_bid,
+        best_ask,
+        spread_bps,
+        depth_tiers,
+        imbalance,
+        depth_slope,
+        timestamp_ms: raw.time,
+        bids,
+        asks,
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1308,5 +1641,419 @@ mod tests {
         );
         assert_eq!(extract_host("not-a-url"), None);
         assert_eq!(extract_host(""), None);
+    }
+
+    // =======================================================================
+    // L2 Book Response Type Tests (VAL-L2-001)
+    // =======================================================================
+
+    #[test]
+    fn test_l2_level_parse() {
+        let level = HlL2Level {
+            px: "100000.5".to_string(),
+            sz: "1.5".to_string(),
+            n: 3,
+        };
+        assert!((level.price_f64() - 100000.5).abs() < 0.01);
+        assert!((level.size_f64() - 1.5).abs() < 0.01);
+        assert!((level.notional() - 150000.75).abs() < 1.0);
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_basic() {
+        // VAL-L2-001: l2_book returns typed struct with spread, depth tiers, imbalance
+        // Using SOL at ~150 so 10bps/25bps/50bps ranges are distinct
+        let raw = HlL2BookRaw {
+            coin: "SOL".to_string(),
+            levels: (
+                vec![
+                    HlL2Level { px: "150.00".to_string(), sz: "10.0".to_string(), n: 5 },  // at mid area
+                    HlL2Level { px: "149.50".to_string(), sz: "100.0".to_string(), n: 3 }, // ~38bps below mid, in 50bps tier only
+                    HlL2Level { px: "148.00".to_string(), sz: "500.0".to_string(), n: 2 },  // far below, outside 50bps
+                ],
+                vec![
+                    HlL2Level { px: "150.15".to_string(), sz: "8.0".to_string(), n: 4 },    // ~5bps above mid
+                    HlL2Level { px: "150.50".to_string(), sz: "80.0".to_string(), n: 2 },   // ~28bps above, in 50bps only
+                ],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+
+        // Basic fields
+        assert_eq!(resp.symbol, "SOL");
+        assert!((resp.best_bid - 150.00).abs() < 0.01);
+        assert!((resp.best_ask - 150.15).abs() < 0.01);
+        assert_eq!(resp.timestamp_ms, 1_770_000_000_000_i64);
+
+        // Spread: (150.15 - 150.00) / 150.075 * 10000 ≈ 9.99 bps
+        let mid = (150.00 + 150.15) / 2.0;
+        let expected_spread = (150.15 - 150.00) / mid * 10_000.0;
+        assert!(
+            (resp.spread_bps - expected_spread).abs() < 0.1,
+            "spread_bps: expected {}, got {}",
+            expected_spread,
+            resp.spread_bps
+        );
+
+        // Depth tiers: 3 tiers at 10, 25, 50 bps
+        assert_eq!(resp.depth_tiers.len(), 3);
+        assert!((resp.depth_tiers[0].range_bps - 10.0).abs() < 0.01);
+        assert!((resp.depth_tiers[1].range_bps - 25.0).abs() < 0.01);
+        assert!((resp.depth_tiers[2].range_bps - 50.0).abs() < 0.01);
+
+        // Each tier has positive depth
+        assert!(resp.depth_tiers[0].bid_depth_usd > 0.0);
+        assert!(resp.depth_tiers[0].ask_depth_usd > 0.0);
+
+        // 50bps tier should have more depth than 10bps (the 149.50 bid is only in 50bps)
+        let tier_10 = &resp.depth_tiers[0];
+        let tier_50 = &resp.depth_tiers[2];
+        assert!(
+            tier_50.bid_depth_usd > tier_10.bid_depth_usd,
+            "50bps bid ({}) > 10bps bid ({})",
+            tier_50.bid_depth_usd,
+            tier_10.bid_depth_usd
+        );
+        assert!(
+            tier_50.ask_depth_usd > tier_10.ask_depth_usd,
+            "50bps ask ({}) > 10bps ask ({})",
+            tier_50.ask_depth_usd,
+            tier_10.ask_depth_usd
+        );
+
+        // Imbalance should be finite (bid-heavy)
+        assert!(resp.imbalance.is_finite());
+        assert!(resp.imbalance > 1.0, "bid-heavy book should have imbalance > 1.0, got {}", resp.imbalance);
+
+        // Depth slope should be positive (more depth further out)
+        assert!(resp.depth_slope > 0.0, "depth_slope should be positive: {}", resp.depth_slope);
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_empty_book() {
+        let raw = HlL2BookRaw {
+            coin: "DOGE".to_string(),
+            levels: (vec![], vec![]),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+        assert_eq!(resp.symbol, "DOGE");
+        assert!((resp.best_bid - 0.0).abs() < 0.01);
+        assert!((resp.best_ask - 0.0).abs() < 0.01);
+        assert!((resp.spread_bps - 0.0).abs() < 0.01);
+        assert!((resp.imbalance - 0.0).abs() < 0.01);
+        assert!((resp.depth_slope - 0.0).abs() < 0.01);
+        assert_eq!(resp.depth_tiers.len(), 3);
+        // All tiers should have zero depth
+        for tier in &resp.depth_tiers {
+            assert!((tier.bid_depth_usd - 0.0).abs() < 0.01);
+            assert!((tier.ask_depth_usd - 0.0).abs() < 0.01);
+        }
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_bids_only() {
+        let raw = HlL2BookRaw {
+            coin: "BTC".to_string(),
+            levels: (
+                vec![
+                    HlL2Level { px: "100000.0".to_string(), sz: "5.0".to_string(), n: 10 },
+                ],
+                vec![],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+        assert!((resp.best_bid - 100000.0).abs() < 0.01);
+        assert!((resp.best_ask - 0.0).abs() < 0.01);
+        assert!((resp.spread_bps - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_spread_calculation() {
+        // Spread = (ask - bid) / mid * 10000
+        let raw = HlL2BookRaw {
+            coin: "SOL".to_string(),
+            levels: (
+                vec![HlL2Level { px: "150.00".to_string(), sz: "100.0".to_string(), n: 5 }],
+                vec![HlL2Level { px: "150.15".to_string(), sz: "80.0".to_string(), n: 3 }],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+        let mid = (150.00 + 150.15) / 2.0;
+        let expected_spread = (150.15 - 150.00) / mid * 10_000.0;
+        assert!(
+            (resp.spread_bps - expected_spread).abs() < 0.1,
+            "spread_bps: expected {}, got {}",
+            expected_spread,
+            resp.spread_bps
+        );
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_depth_tiers_ranges() {
+        // VAL-L2-001: depth tiers computed at 10, 25, 50 bps
+        let mid_price = 100_000.0;
+
+        let raw = HlL2BookRaw {
+            coin: "BTC".to_string(),
+            levels: (
+                vec![
+                    HlL2Level { px: "100000.0".to_string(), sz: "1.0".to_string(), n: 1 }, // at mid
+                    HlL2Level { px: "99990.0".to_string(), sz: "2.0".to_string(), n: 1 }, // 10bps below mid
+                    HlL2Level { px: "99975.0".to_string(), sz: "3.0".to_string(), n: 1 }, // 25bps below
+                    HlL2Level { px: "99950.0".to_string(), sz: "4.0".to_string(), n: 1 }, // 50bps below
+                    HlL2Level { px: "99800.0".to_string(), sz: "10.0".to_string(), n: 1 }, // 200bps below → outside 50bps
+                ],
+                vec![
+                    HlL2Level { px: "100001.0".to_string(), sz: "1.0".to_string(), n: 1 }, // 0.1 bps above
+                    HlL2Level { px: "100010.0".to_string(), sz: "2.0".to_string(), n: 1 }, // 10bps above
+                    HlL2Level { px: "100025.0".to_string(), sz: "3.0".to_string(), n: 1 }, // 25bps above
+                    HlL2Level { px: "100050.0".to_string(), sz: "4.0".to_string(), n: 1 }, // 50bps above
+                    HlL2Level { px: "100200.0".to_string(), sz: "10.0".to_string(), n: 1 }, // 200bps above → outside 50bps
+                ],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+
+        // 10bps tier:
+        // Bids in [mid*0.999, mid]: 100000.0 (1.0) + 99990.0 (2.0) → $300K
+        // Asks in [mid, mid*1.001]: 100001.0 (1.0) + 100010.0 (2.0) → ~$300K
+        let tier_10 = resp.depth_tiers.iter().find(|t| (t.range_bps - 10.0).abs() < 0.01).unwrap();
+        assert!(tier_10.bid_depth_usd > 0.0);
+        assert!(tier_10.ask_depth_usd > 0.0);
+
+        // 50bps tier should have more depth than 10bps
+        let tier_50 = resp.depth_tiers.iter().find(|t| (t.range_bps - 50.0).abs() < 0.01).unwrap();
+        assert!(
+            tier_50.bid_depth_usd > tier_10.bid_depth_usd,
+            "50bps bid depth ({}) > 10bps bid depth ({})",
+            tier_50.bid_depth_usd,
+            tier_10.bid_depth_usd
+        );
+        assert!(
+            tier_50.ask_depth_usd > tier_10.ask_depth_usd,
+            "50bps ask depth ({}) > 10bps ask depth ({})",
+            tier_50.ask_depth_usd,
+            tier_10.ask_depth_usd
+        );
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_imbalance() {
+        // VAL-L2-001: imbalance = bid_depth_50bps / ask_depth_50bps
+        let raw = HlL2BookRaw {
+            coin: "SOL".to_string(),
+            levels: (
+                // Heavy bid side
+                vec![
+                    HlL2Level { px: "150.00".to_string(), sz: "10000.0".to_string(), n: 100 }, // $1.5M
+                ],
+                // Light ask side
+                vec![
+                    HlL2Level { px: "150.01".to_string(), sz: "100.0".to_string(), n: 1 }, // $15K
+                ],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+        assert!(
+            resp.imbalance > 1.0,
+            "bid-heavy book should have imbalance > 1.0, got {}",
+            resp.imbalance
+        );
+    }
+
+    #[test]
+    fn test_l2_book_response_mid_price() {
+        let resp = L2BookResponse {
+            symbol: "BTC".to_string(),
+            best_bid: 100_000.0,
+            best_ask: 100_002.0,
+            spread_bps: 0.2,
+            depth_tiers: vec![],
+            imbalance: 1.0,
+            depth_slope: 0.0,
+            timestamp_ms: 1_770_000_000_000,
+            bids: vec![],
+            asks: vec![],
+        };
+        assert!((resp.mid_price() - 100_001.0).abs() < 0.01);
+
+        // Empty book
+        let empty = L2BookResponse {
+            symbol: "BTC".to_string(),
+            best_bid: 0.0,
+            best_ask: 0.0,
+            spread_bps: 0.0,
+            depth_tiers: vec![],
+            imbalance: 0.0,
+            depth_slope: 0.0,
+            timestamp_ms: 0,
+            bids: vec![],
+            asks: vec![],
+        };
+        assert!((empty.mid_price() - 0.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_l2_book_response_depth_within() {
+        let resp = L2BookResponse {
+            symbol: "BTC".to_string(),
+            best_bid: 100_000.0,
+            best_ask: 100_001.0,
+            spread_bps: 0.1,
+            depth_tiers: vec![],
+            imbalance: 1.0,
+            depth_slope: 0.0,
+            timestamp_ms: 1_770_000_000_000,
+            bids: vec![
+                HlL2Level { px: "100000.0".to_string(), sz: "1.0".to_string(), n: 1 },
+                HlL2Level { px: "99990.0".to_string(), sz: "2.0".to_string(), n: 1 }, // ~10bps below
+            ],
+            asks: vec![
+                HlL2Level { px: "100001.0".to_string(), sz: "1.0".to_string(), n: 1 },
+                HlL2Level { px: "100010.0".to_string(), sz: "2.0".to_string(), n: 1 }, // ~10bps above
+            ],
+        };
+
+        let bid_10 = resp.bid_depth_within(10.0);
+        let ask_10 = resp.ask_depth_within(10.0);
+        assert!(bid_10 > 0.0, "should have bid depth within 10bps");
+        assert!(ask_10 > 0.0, "should have ask depth within 10bps");
+    }
+
+    // =======================================================================
+    // L2 Book API Error Handling Tests (VAL-L2-002)
+    // =======================================================================
+
+    #[test]
+    fn test_l2_raw_parse_malformed_levels() {
+        // VAL-L2-002: malformed response returns error
+        let bad_json = r#"{"coin": "BTC", "levels": "not_an_array", "time": 123}"#;
+        let result: Result<HlL2BookRaw, _> = serde_json::from_str(bad_json);
+        assert!(result.is_err(), "malformed levels should fail to parse");
+    }
+
+    #[test]
+    fn test_l2_raw_parse_missing_coin() {
+        let bad_json = r#"{"levels": [[{"px": "100", "sz": "1", "n": 1}]], "time": 123}"#;
+        let result: Result<HlL2BookRaw, _> = serde_json::from_str(bad_json);
+        assert!(result.is_err(), "missing coin should fail to parse");
+    }
+
+    #[test]
+    fn test_l2_raw_parse_valid() {
+        let valid_json = r#"{
+            "coin": "BTC",
+            "levels": [
+                [{"px": "100000.0", "sz": "1.5", "n": 3}],
+                [{"px": "100001.0", "sz": "2.0", "n": 1}]
+            ],
+            "time": 1770000000000
+        }"#;
+        let raw: HlL2BookRaw = serde_json::from_str(valid_json).unwrap();
+        assert_eq!(raw.coin, "BTC");
+        assert_eq!(raw.levels.0.len(), 1);
+        assert_eq!(raw.levels.1.len(), 1);
+        assert_eq!(raw.time, 1_770_000_000_000);
+    }
+
+    #[test]
+    fn test_l2_raw_parse_empty_levels() {
+        let valid_json = r#"{
+            "coin": "DOGE",
+            "levels": [[], []],
+            "time": 1770000000000
+        }"#;
+        let raw: HlL2BookRaw = serde_json::from_str(valid_json).unwrap();
+        assert_eq!(raw.coin, "DOGE");
+        assert!(raw.levels.0.is_empty());
+        assert!(raw.levels.1.is_empty());
+    }
+
+    // =======================================================================
+    // Rate Limit / Backoff Tests (VAL-L2-003)
+    // =======================================================================
+
+    #[test]
+    fn test_l2_book_method_exists() {
+        // VAL-L2-003: verify l2_book method compiles and is callable
+        let client = HlInfoClient::default_client();
+        // We can't call it without a server, but we verify it compiles
+        let _ = async {
+            let _ = client.l2_book("BTC").await;
+        };
+    }
+
+    #[test]
+    fn test_compute_l2_metrics_serde_roundtrip() {
+        let raw = HlL2BookRaw {
+            coin: "ETH".to_string(),
+            levels: (
+                vec![HlL2Level { px: "3000.0".to_string(), sz: "10.0".to_string(), n: 5 }],
+                vec![HlL2Level { px: "3000.5".to_string(), sz: "8.0".to_string(), n: 3 }],
+            ),
+            time: 1_770_000_000_000_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+        let json = serde_json::to_string(&resp).unwrap();
+        let parsed: L2BookResponse = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(parsed.symbol, "ETH");
+        assert!((parsed.best_bid - 3000.0).abs() < 0.01);
+        assert!((parsed.best_ask - 3000.5).abs() < 0.01);
+        assert_eq!(parsed.depth_tiers.len(), 3);
+        assert!(!parsed.bids.is_empty());
+        assert!(!parsed.asks.is_empty());
+    }
+
+    #[test]
+    fn test_l2_book_response_all_fields_populated() {
+        // VAL-L2-001: All required fields are populated and non-default
+        let raw = HlL2BookRaw {
+            coin: "SOL".to_string(),
+            levels: (
+                vec![
+                    HlL2Level { px: "150.0".to_string(), sz: "100.0".to_string(), n: 10 },
+                    HlL2Level { px: "149.5".to_string(), sz: "200.0".to_string(), n: 5 },
+                ],
+                vec![
+                    HlL2Level { px: "150.1".to_string(), sz: "80.0".to_string(), n: 8 },
+                    HlL2Level { px: "150.5".to_string(), sz: "150.0".to_string(), n: 3 },
+                ],
+            ),
+            time: 1_770_000_000_123_i64,
+        };
+
+        let resp = compute_l2_metrics(raw);
+
+        // All fields populated
+        assert!(!resp.symbol.is_empty());
+        assert!(resp.best_bid > 0.0);
+        assert!(resp.best_ask > 0.0);
+        assert!(resp.spread_bps >= 0.0);
+        assert_eq!(resp.depth_tiers.len(), 3);
+        assert!(resp.timestamp_ms > 0);
+        assert!(!resp.bids.is_empty());
+        assert!(!resp.asks.is_empty());
+
+        // Spread formula: (ask - bid) / mid * 10000
+        let mid = (150.0 + 150.1) / 2.0;
+        let expected_spread = (150.1 - 150.0) / mid * 10_000.0;
+        assert!((resp.spread_bps - expected_spread).abs() < 0.1);
+
+        // Imbalance formula: bid_depth_50bps / ask_depth_50bps
+        assert!(resp.imbalance > 0.0);
     }
 }

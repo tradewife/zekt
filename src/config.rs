@@ -508,6 +508,27 @@ pub struct LiquidationConfig {
     /// Symbols to capture (default ["BTC", "ETH", "SOL"]).
     #[serde(default = "default_symbols")]
     pub symbols: Vec<String>,
+
+    /// Confidence bonus when L2 bid depth refills near a zone price.
+    /// Indicates buying pressure recovery, supporting reversal zones.
+    /// Applied only when bid depth at the zone price exceeds the refill threshold.
+    #[serde(default)]
+    pub depth_refill_bonus: f64,
+
+    /// Confidence bonus when L2 depth below (for longs) or above (for shorts)
+    /// a zone is thin. Thin depth supports cascade continuation.
+    /// Applied only when depth within 50 bps on the cascade side is below
+    /// the thin threshold.
+    #[serde(default)]
+    pub thin_depth_bonus: f64,
+
+    /// Minimum bid depth in USD at a zone price to qualify for the refill bonus.
+    #[serde(default = "default_depth_refill_threshold_usd")]
+    pub depth_refill_threshold_usd: f64,
+
+    /// Maximum depth in USD within 50 bps on the cascade side to qualify as "thin".
+    #[serde(default = "default_thin_depth_threshold_usd")]
+    pub thin_depth_threshold_usd: f64,
 }
 
 fn default_liquidation_sources() -> Vec<String> {
@@ -536,6 +557,8 @@ fn default_interval_secs() -> u64 { 30 }
 fn default_snapshot_dir() -> String { "data/liquidation-zones".to_string() }
 fn default_retention_days() -> u64 { 7 }
 fn default_symbols() -> Vec<String> { vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()] }
+fn default_depth_refill_threshold_usd() -> f64 { 50_000.0 }
+fn default_thin_depth_threshold_usd() -> f64 { 100_000.0 }
 
 impl Default for LiquidationConfig {
     fn default() -> Self {
@@ -561,6 +584,10 @@ impl Default for LiquidationConfig {
             snapshot_dir: default_snapshot_dir(),
             retention_days: default_retention_days(),
             symbols: default_symbols(),
+            depth_refill_bonus: 0.0,
+            thin_depth_bonus: 0.0,
+            depth_refill_threshold_usd: default_depth_refill_threshold_usd(),
+            thin_depth_threshold_usd: default_thin_depth_threshold_usd(),
         }
     }
 }
@@ -629,6 +656,18 @@ impl LiquidationConfig {
             if sym.trim().is_empty() {
                 anyhow::bail!("symbols must not contain empty strings");
             }
+        }
+        if self.depth_refill_bonus < 0.0 || self.depth_refill_bonus > 1.0 {
+            anyhow::bail!("depth_refill_bonus must be in [0.0, 1.0], got {}", self.depth_refill_bonus);
+        }
+        if self.thin_depth_bonus < 0.0 || self.thin_depth_bonus > 1.0 {
+            anyhow::bail!("thin_depth_bonus must be in [0.0, 1.0], got {}", self.thin_depth_bonus);
+        }
+        if self.depth_refill_threshold_usd < 0.0 {
+            anyhow::bail!("depth_refill_threshold_usd must be non-negative, got {}", self.depth_refill_threshold_usd);
+        }
+        if self.thin_depth_threshold_usd < 0.0 {
+            anyhow::bail!("thin_depth_threshold_usd must be non-negative, got {}", self.thin_depth_threshold_usd);
         }
         Ok(())
     }

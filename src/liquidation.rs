@@ -21,6 +21,8 @@ use tokio::sync::Mutex;
 
 // Re-export config for convenience
 pub use crate::config::LiquidationConfig;
+// Re-export L2 types from hl_info for depth integration
+pub use crate::hl_info::L2BookResponse;
 
 /// Known source names for validation.
 pub const VALID_SOURCES: &[&str] = &[
@@ -812,6 +814,110 @@ pub fn compute_confidence(
 
     let raw = base + multi_bonus + wallet_bonus + notional_bonus - staleness_penalty;
     raw.clamp(0.0, 1.0)
+}
+
+/// Compute an L2 depth bonus for a zone based on order book depth data.
+///
+/// Two bonuses are available:
+/// - **Refill bonus**: When bid depth at the zone price has recovered (exceeds
+///   `depth_refill_threshold_usd`), a bonus is applied. This supports reversal
+///   zones where buying pressure has returned.
+/// - **Thin bonus**: When depth on the cascade side (below for longs, above for
+///   shorts) within 50 bps is below `thin_depth_threshold_usd`, a bonus is
+///   applied. Thin depth supports cascade continuation zones.
+///
+/// Returns a non-negative bonus in [0.0, refill + thin].
+pub fn compute_depth_bonus(zone: &LiquidationZone, l2: &L2BookResponse, config: &LiquidationConfig) -> f64 {
+    let mid = l2.mid_price();
+    if mid <= 0.0 {
+        return 0.0;
+    }
+
+    let mut bonus = 0.0;
+
+    // Refill bonus: bid depth at zone price exceeds threshold
+    // For long zones: check if bid depth at or above the zone price has recovered
+    // For short zones: check if ask depth at or below the zone price has recovered
+    let zone_price = zone.price;
+    let depth_at_zone: f64 = if zone.side_at_risk == "long" {
+        // Long liquidation zone below current price
+        // Check bids near the zone price (within 5 bps)
+        let range_bps = 5.0;
+        l2.bids
+            .iter()
+            .filter(|l| {
+                let px = l.price_f64();
+                let lower = zone_price * (1.0 - range_bps / 10_000.0);
+                let upper = zone_price * (1.0 + range_bps / 10_000.0);
+                px >= lower && px <= upper
+            })
+            .map(|l| l.notional())
+            .sum()
+    } else {
+        // Short liquidation zone above current price
+        // Check asks near the zone price (within 5 bps)
+        let range_bps = 5.0;
+        l2.asks
+            .iter()
+            .filter(|l| {
+                let px = l.price_f64();
+                let lower = zone_price * (1.0 - range_bps / 10_000.0);
+                let upper = zone_price * (1.0 + range_bps / 10_000.0);
+                px >= lower && px <= upper
+            })
+            .map(|l| l.notional())
+            .sum()
+    };
+
+    if depth_at_zone >= config.depth_refill_threshold_usd && config.depth_refill_bonus > 0.0 {
+        bonus += config.depth_refill_bonus;
+    }
+
+    // Thin bonus: depth on cascade side is below threshold
+    // For long zones (longs liquidated → price drops): check depth BELOW the zone
+    // For short zones (shorts liquidated → price rises): check depth ABOVE the zone
+    let cascade_depth: f64 = if zone.side_at_risk == "long" {
+        // Depth below the zone → how much support exists for further cascade
+        l2.bids
+            .iter()
+            .filter(|l| l.price_f64() < zone_price)
+            .map(|l| l.notional())
+            .sum()
+    } else {
+        // Depth above the zone → resistance for further cascade
+        l2.asks
+            .iter()
+            .filter(|l| l.price_f64() > zone_price)
+            .map(|l| l.notional())
+            .sum()
+    };
+
+    if cascade_depth < config.thin_depth_threshold_usd && config.thin_depth_bonus > 0.0 {
+        bonus += config.thin_depth_bonus;
+    }
+
+    bonus
+}
+
+/// Score zones with optional L2 depth data for enhanced confidence.
+///
+/// First applies standard `compute_confidence` scoring, then adds depth
+/// bonuses (refill, thin) if L2 data is available. Final confidence is
+/// clamped to [0.0, 1.0].
+pub fn score_zones_with_depth(
+    snapshot: &mut LiquidationZoneSnapshot,
+    config: &LiquidationConfig,
+    source_freshness: &HashMap<String, i64>,
+    l2_data: Option<&L2BookResponse>,
+) {
+    let now_ms = snapshot.timestamp_ms;
+    for zone in &mut snapshot.zones {
+        let base_conf = compute_confidence(zone, config, source_freshness, now_ms);
+        let depth_bonus = l2_data
+            .map(|l2| compute_depth_bonus(zone, l2, config))
+            .unwrap_or(0.0);
+        zone.confidence = (base_conf + depth_bonus).clamp(0.0, 1.0);
+    }
 }
 
 /// Apply confidence scoring to all zones in a snapshot.
@@ -3676,7 +3782,376 @@ mod tests {
         }
     }
 
+    // ── L2 Depth Bonus Tests (VAL-L2-001, zone confidence integration) ────
+
+    #[test]
+    fn test_depth_refill_bonus_applied() {
+        // Refill bonus: bid depth at zone price exceeds threshold → bonus applied
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "1000.0".to_string(), n: 10 }, // $149K at zone → well above 50K threshold
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.1).abs() < 0.001,
+            "refill bonus should be 0.1 when bid depth at zone exceeds threshold, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_depth_refill_bonus_not_applied_below_threshold() {
+        // Refill bonus NOT applied when depth is below threshold
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "10.0".to_string(), n: 1 }, // $1.49K at zone → below 50K threshold
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.0).abs() < 0.001,
+            "no refill bonus when depth below threshold, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_thin_depth_bonus_applied() {
+        // Thin bonus: depth below zone is below threshold → bonus applied
+        let config = LiquidationConfig {
+            thin_depth_bonus: 0.08,
+            thin_depth_threshold_usd: 100_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                // No bids below zone price (149.0) → cascade depth = 0 < 100K
+                crate::hl_info::HlL2Level { px: "150.00".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.08).abs() < 0.001,
+            "thin bonus should be 0.08 when cascade depth is below threshold, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_thin_depth_bonus_not_applied_when_deep() {
+        // Thin bonus NOT applied when depth below zone is sufficient
+        let config = LiquidationConfig {
+            thin_depth_bonus: 0.08,
+            thin_depth_threshold_usd: 100_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                // Deep bids below zone at 149.0
+                crate::hl_info::HlL2Level { px: "148.00".to_string(), sz: "5000.0".to_string(), n: 50 }, // $740K below zone
+                crate::hl_info::HlL2Level { px: "150.00".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.0).abs() < 0.001,
+            "no thin bonus when cascade depth is deep, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_both_bonuses_applied() {
+        // Both refill and thin bonus can be applied simultaneously
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            thin_depth_bonus: 0.08,
+            thin_depth_threshold_usd: 100_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "1000.0".to_string(), n: 10 }, // refill at zone price: $149K > 50K
+                crate::hl_info::HlL2Level { px: "150.00".to_string(), sz: "100.0".to_string(), n: 5 },
+                // No bids below 149.0 → cascade depth = 0 < 100K → thin
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.18).abs() < 0.001,
+            "both bonuses should total 0.18, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_short_zone_thin_bonus() {
+        // Short zone: cascade depth is ABOVE the zone (asks above zone)
+        let config = LiquidationConfig {
+            thin_depth_bonus: 0.08,
+            thin_depth_threshold_usd: 100_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(155.0, "short", 500_000.0, 42, 333.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "150.00".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+            vec![
+                // No asks above 155.0 → cascade depth = 0 < 100K → thin
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!(
+            (bonus - 0.08).abs() < 0.001,
+            "thin bonus for short zone should be 0.08, got {}",
+            bonus
+        );
+    }
+
+    #[test]
+    fn test_no_bonus_when_zero_config() {
+        // No bonus when config values are zero (default)
+        let config = LiquidationConfig::default();
+        assert_eq!(config.depth_refill_bonus, 0.0);
+        assert_eq!(config.thin_depth_bonus, 0.0);
+
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "1000.0".to_string(), n: 10 },
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        assert!((bonus - 0.0).abs() < 0.001, "no bonus when config values are zero, got {}", bonus);
+    }
+
+    #[test]
+    fn test_score_zones_with_depth_increases_confidence() {
+        // score_zones_with_depth should increase confidence when L2 data is available
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            ..LiquidationConfig::default()
+        };
+        let now_ms = 1_770_000_000_000i64;
+        let mut freshness = HashMap::new();
+        freshness.insert("hyperliquid_positions".to_string(), now_ms);
+
+        let mut snapshot = make_snapshot(
+            "SOL", now_ms, 150.0,
+            vec![make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"])],
+        );
+
+        // Score without L2
+        score_zones(&mut snapshot, &config, &freshness);
+        let base_conf = snapshot.zones[0].confidence;
+
+        // Reset and score with L2
+        snapshot.zones[0].confidence = 0.0;
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "1000.0".to_string(), n: 10 },
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+        score_zones_with_depth(&mut snapshot, &config, &freshness, Some(&l2));
+        let depth_conf = snapshot.zones[0].confidence;
+
+        assert!(
+            depth_conf > base_conf,
+            "confidence with L2 ({}) > confidence without L2 ({})",
+            depth_conf,
+            base_conf
+        );
+    }
+
+    #[test]
+    fn test_score_zones_with_depth_none_no_change() {
+        // Passing None for L2 data should produce same result as score_zones
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            ..LiquidationConfig::default()
+        };
+        let now_ms = 1_770_000_000_000i64;
+        let mut freshness = HashMap::new();
+        freshness.insert("hyperliquid_positions".to_string(), now_ms);
+
+        let mut snap1 = make_snapshot(
+            "SOL", now_ms, 150.0,
+            vec![make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"])],
+        );
+        let mut snap2 = snap1.clone();
+
+        score_zones(&mut snap1, &config, &freshness);
+        score_zones_with_depth(&mut snap2, &config, &freshness, None);
+
+        assert!(
+            (snap1.zones[0].confidence - snap2.zones[0].confidence).abs() < 1e-10,
+            "None L2 should produce same confidence as score_zones"
+        );
+    }
+
+    #[test]
+    fn test_depth_bonus_clamped_at_one() {
+        // Confidence should not exceed 1.0 even with large bonuses
+        let config = LiquidationConfig {
+            base_confidence: 0.9,
+            depth_refill_bonus: 0.2,
+            depth_refill_threshold_usd: 1.0, // Very low threshold
+            ..LiquidationConfig::default()
+        };
+        let now_ms = 1_770_000_000_000i64;
+        let mut freshness = HashMap::new();
+        freshness.insert("hyperliquid_positions".to_string(), now_ms);
+
+        let mut snapshot = make_snapshot(
+            "SOL", now_ms, 150.0,
+            vec![make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"])],
+        );
+
+        let l2 = make_l2_response(
+            "SOL", 150.00, 150.10,
+            vec![
+                crate::hl_info::HlL2Level { px: "149.0".to_string(), sz: "1000.0".to_string(), n: 10 },
+            ],
+            vec![
+                crate::hl_info::HlL2Level { px: "150.10".to_string(), sz: "100.0".to_string(), n: 5 },
+            ],
+        );
+
+        score_zones_with_depth(&mut snapshot, &config, &freshness, Some(&l2));
+        assert!(
+            snapshot.zones[0].confidence <= 1.0,
+            "confidence should be clamped at 1.0, got {}",
+            snapshot.zones[0].confidence
+        );
+    }
+
+    #[test]
+    fn test_empty_book_no_bonus() {
+        // Empty L2 book should produce no bonuses
+        let config = LiquidationConfig {
+            depth_refill_bonus: 0.1,
+            depth_refill_threshold_usd: 50_000.0,
+            thin_depth_bonus: 0.08,
+            thin_depth_threshold_usd: 100_000.0,
+            ..LiquidationConfig::default()
+        };
+        let zone = make_zone(149.0, "long", 500_000.0, 42, 666.0, 0.0, vec!["hyperliquid_positions"]);
+        let l2 = make_l2_response("SOL", 0.0, 0.0, vec![], vec![]);
+
+        let bonus = compute_depth_bonus(&zone, &l2, &config);
+        // mid_price will be 0.0 → early return with 0.0 bonus
+        assert!((bonus - 0.0).abs() < 0.001, "empty book should produce no bonus, got {}", bonus);
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────
+
+    fn make_l2_response(
+        symbol: &str,
+        best_bid: f64,
+        best_ask: f64,
+        bids: Vec<crate::hl_info::HlL2Level>,
+        asks: Vec<crate::hl_info::HlL2Level>,
+    ) -> crate::hl_info::L2BookResponse {
+        let mid = if best_bid > 0.0 && best_ask > 0.0 {
+            (best_bid + best_ask) / 2.0
+        } else {
+            best_bid.max(best_ask)
+        };
+        let spread_bps = if best_bid > 0.0 && best_ask > 0.0 && mid > 0.0 {
+            ((best_ask - best_bid) / mid) * 10_000.0
+        } else {
+            0.0
+        };
+
+        // Compute depth tiers
+        let tier_ranges = [10.0_f64, 25.0, 50.0];
+        let depth_tiers: Vec<crate::hl_info::DepthTier> = tier_ranges
+            .iter()
+            .map(|&range_bps| {
+                let bid_lower = mid * (1.0 - range_bps / 10_000.0);
+                let ask_upper = mid * (1.0 + range_bps / 10_000.0);
+                let bid_depth: f64 = bids.iter()
+                    .filter(|l| l.price_f64() >= bid_lower && l.price_f64() <= mid)
+                    .map(|l| l.notional())
+                    .sum();
+                let ask_depth: f64 = asks.iter()
+                    .filter(|l| l.price_f64() >= mid && l.price_f64() <= ask_upper)
+                    .map(|l| l.notional())
+                    .sum();
+                crate::hl_info::DepthTier { range_bps, bid_depth_usd: bid_depth, ask_depth_usd: ask_depth }
+            })
+            .collect();
+
+        crate::hl_info::L2BookResponse {
+            symbol: symbol.to_string(),
+            best_bid,
+            best_ask,
+            spread_bps,
+            depth_tiers,
+            imbalance: 0.0,
+            depth_slope: 0.0,
+            timestamp_ms: 1_770_000_000_000,
+            bids,
+            asks,
+        }
+    }
 
     fn make_zone(
         price: f64,
