@@ -421,6 +421,12 @@ impl Default for RouteCostConfig {
 /// snapshot_dir = "data/liquidation-zones"
 /// retention_days = 7
 /// symbols = ["BTC", "ETH", "SOL"]
+/// capture_interval_secs = 30
+/// retention_count = 1000
+/// l2_sample_interval_secs = 10
+/// funding_capture_enabled = true
+/// vwap_anchor_secs = 3600
+/// local_hl_lookback_candles = 100
 /// ```
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LiquidationConfig {
@@ -529,6 +535,39 @@ pub struct LiquidationConfig {
     /// Maximum depth in USD within 50 bps on the cascade side to qualify as "thin".
     #[serde(default = "default_thin_depth_threshold_usd")]
     pub thin_depth_threshold_usd: f64,
+
+    // --- M1 capture-refactor: new fields for extended capture ---
+
+    /// Capture polling interval in seconds. How often the capture service
+    /// polls data sources for new zone data. Defaults to 30s.
+    #[serde(default = "default_capture_interval_secs")]
+    pub capture_interval_secs: u64,
+
+    /// Maximum number of zone snapshots to retain on disk (count-based retention).
+    /// Older snapshots are pruned when this limit is exceeded.
+    /// Used alongside `retention_days` — whichever limit is hit first triggers pruning.
+    #[serde(default = "default_retention_count")]
+    pub retention_count: usize,
+
+    /// L2 order book sampling interval in seconds. How often to sample the
+    /// HL L2 book for depth metrics. Should be <= capture_interval_secs.
+    #[serde(default = "default_l2_sample_interval_secs")]
+    pub l2_sample_interval_secs: u64,
+
+    /// Whether to capture funding rates during the capture cycle.
+    /// When true, funding rate data is included in zone snapshots.
+    #[serde(default = "default_funding_capture_enabled")]
+    pub funding_capture_enabled: bool,
+
+    /// VWAP anchor window in seconds. The capture service computes anchored VWAP
+    /// over this lookback period for each symbol.
+    #[serde(default = "default_vwap_anchor_secs")]
+    pub vwap_anchor_secs: u64,
+
+    /// Number of HL candles to look back for local high/low detection.
+    /// Higher values capture longer-term extremes; lower values are more responsive.
+    #[serde(default = "default_local_hl_lookback_candles")]
+    pub local_hl_lookback_candles: usize,
 }
 
 fn default_liquidation_sources() -> Vec<String> {
@@ -559,6 +598,12 @@ fn default_retention_days() -> u64 { 7 }
 fn default_symbols() -> Vec<String> { vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()] }
 fn default_depth_refill_threshold_usd() -> f64 { 50_000.0 }
 fn default_thin_depth_threshold_usd() -> f64 { 100_000.0 }
+fn default_capture_interval_secs() -> u64 { 30 }
+fn default_retention_count() -> usize { 1000 }
+fn default_l2_sample_interval_secs() -> u64 { 10 }
+fn default_funding_capture_enabled() -> bool { true }
+fn default_vwap_anchor_secs() -> u64 { 3600 }
+fn default_local_hl_lookback_candles() -> usize { 100 }
 
 impl Default for LiquidationConfig {
     fn default() -> Self {
@@ -588,6 +633,12 @@ impl Default for LiquidationConfig {
             thin_depth_bonus: 0.0,
             depth_refill_threshold_usd: default_depth_refill_threshold_usd(),
             thin_depth_threshold_usd: default_thin_depth_threshold_usd(),
+            capture_interval_secs: default_capture_interval_secs(),
+            retention_count: default_retention_count(),
+            l2_sample_interval_secs: default_l2_sample_interval_secs(),
+            funding_capture_enabled: default_funding_capture_enabled(),
+            vwap_anchor_secs: default_vwap_anchor_secs(),
+            local_hl_lookback_candles: default_local_hl_lookback_candles(),
         }
     }
 }
@@ -668,6 +719,29 @@ impl LiquidationConfig {
         }
         if self.thin_depth_threshold_usd < 0.0 {
             anyhow::bail!("thin_depth_threshold_usd must be non-negative, got {}", self.thin_depth_threshold_usd);
+        }
+        // New M1 fields validation
+        if self.capture_interval_secs == 0 {
+            anyhow::bail!("capture_interval_secs must be > 0");
+        }
+        if self.retention_count == 0 {
+            anyhow::bail!("retention_count must be > 0");
+        }
+        if self.l2_sample_interval_secs == 0 {
+            anyhow::bail!("l2_sample_interval_secs must be > 0");
+        }
+        if self.l2_sample_interval_secs > self.capture_interval_secs {
+            anyhow::bail!(
+                "l2_sample_interval_secs ({}) must be <= capture_interval_secs ({})",
+                self.l2_sample_interval_secs,
+                self.capture_interval_secs
+            );
+        }
+        if self.vwap_anchor_secs == 0 {
+            anyhow::bail!("vwap_anchor_secs must be > 0");
+        }
+        if self.local_hl_lookback_candles == 0 {
+            anyhow::bail!("local_hl_lookback_candles must be > 0");
         }
         Ok(())
     }
@@ -930,6 +1004,9 @@ impl Config {
                 }
             }
         }
+
+        // Validate liquidation config at startup so invalid values are caught early.
+        config.liquidation.validate()?;
 
         Ok(config)
     }
@@ -1657,6 +1734,14 @@ max_drawdown_pct = 15.0
         assert!((config.liquidation.imbalance_threshold_pct - 20.0).abs() < 0.001);
         assert!((config.liquidation.base_confidence - 0.4).abs() < 0.001);
         assert_eq!(config.liquidation.staleness_threshold_secs, 60);
+
+        // New M1 fields with defaults
+        assert_eq!(config.liquidation.capture_interval_secs, 30);
+        assert_eq!(config.liquidation.retention_count, 1000);
+        assert_eq!(config.liquidation.l2_sample_interval_secs, 10);
+        assert!(config.liquidation.funding_capture_enabled);
+        assert_eq!(config.liquidation.vwap_anchor_secs, 3600);
+        assert_eq!(config.liquidation.local_hl_lookback_candles, 100);
     }
 
     #[test]
@@ -1691,6 +1776,12 @@ cluster_threshold_bps = 100.0
 merge_threshold_bps = 200.0
 min_confidence = 0.3
 base_confidence = 0.5
+capture_interval_secs = 60
+retention_count = 500
+l2_sample_interval_secs = 15
+funding_capture_enabled = false
+vwap_anchor_secs = 7200
+local_hl_lookback_candles = 200
 "#;
         let f = write_temp_toml(custom);
         let config = Config::load(f.path()).expect("config with [liquidation] should parse");
@@ -1701,6 +1792,14 @@ base_confidence = 0.5
         assert!((config.liquidation.merge_threshold_bps - 200.0).abs() < 0.001);
         assert!((config.liquidation.min_confidence - 0.3).abs() < 0.001);
         assert!((config.liquidation.base_confidence - 0.5).abs() < 0.001);
+
+        // New M1 fields
+        assert_eq!(config.liquidation.capture_interval_secs, 60);
+        assert_eq!(config.liquidation.retention_count, 500);
+        assert_eq!(config.liquidation.l2_sample_interval_secs, 15);
+        assert!(!config.liquidation.funding_capture_enabled);
+        assert_eq!(config.liquidation.vwap_anchor_secs, 7200);
+        assert_eq!(config.liquidation.local_hl_lookback_candles, 200);
     }
 
     #[test]
@@ -1738,6 +1837,333 @@ base_confidence = 0.5
     fn test_liquidation_config_validate_ok_defaults() {
         let cfg = LiquidationConfig::default();
         assert!(cfg.validate().is_ok());
+    }
+
+    // ── VAL-CONFIG-001: validate() called at config load time ────────────
+
+    #[test]
+    fn test_liquidation_config_validates_at_load_time() {
+        let bad = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[liquidation]
+cluster_threshold_bps = -10.0
+"#;
+        let f = write_temp_toml(bad);
+        let result = Config::load(f.path());
+        assert!(result.is_err(), "config with invalid liquidation section should fail to load");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("cluster_threshold_bps"),
+            "error should mention the invalid field, got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_liquidation_config_valid_at_load_time() {
+        let good = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "momentum-scalper"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[liquidation]
+enabled = true
+cluster_threshold_bps = 50.0
+"#;
+        let f = write_temp_toml(good);
+        let config = Config::load(f.path()).expect("valid liquidation config should load");
+        assert!(config.liquidation.enabled);
+    }
+
+    // ── VAL-CONFIG-005: Default values pass validation ───────────────────
+
+    #[test]
+    fn test_liquidation_config_default_impl_has_sensible_values() {
+        let cfg = LiquidationConfig::default();
+
+        // Not enabled by default
+        assert!(!cfg.enabled);
+
+        // All defaults should be valid
+        assert!(cfg.validate().is_ok());
+
+        // Specific sensible defaults
+        assert_eq!(cfg.sources.len(), 4);
+        assert_eq!(cfg.symbols, vec!["BTC", "ETH", "SOL"]);
+        assert!((cfg.cluster_threshold_bps - 50.0).abs() < 0.001);
+        assert!((cfg.base_confidence - 0.4).abs() < 0.001);
+        assert_eq!(cfg.staleness_threshold_secs, 60);
+        assert_eq!(cfg.capture_interval_secs, 30);
+        assert_eq!(cfg.retention_count, 1000);
+        assert_eq!(cfg.l2_sample_interval_secs, 10);
+        assert!(cfg.funding_capture_enabled);
+        assert_eq!(cfg.vwap_anchor_secs, 3600);
+        assert_eq!(cfg.local_hl_lookback_candles, 100);
+    }
+
+    // ── New field validation tests ────────────────────────────────────────
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_zero_capture_interval() {
+        let cfg = LiquidationConfig {
+            capture_interval_secs: 0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("capture_interval_secs"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_zero_retention_count() {
+        let cfg = LiquidationConfig {
+            retention_count: 0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("retention_count"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_zero_l2_sample_interval() {
+        let cfg = LiquidationConfig {
+            l2_sample_interval_secs: 0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("l2_sample_interval_secs"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_l2_sample_greater_than_capture() {
+        let cfg = LiquidationConfig {
+            capture_interval_secs: 10,
+            l2_sample_interval_secs: 20,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(
+            err.contains("l2_sample_interval_secs") && err.contains("capture_interval_secs"),
+            "got: {}",
+            err
+        );
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_zero_vwap_anchor() {
+        let cfg = LiquidationConfig {
+            vwap_anchor_secs: 0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("vwap_anchor_secs"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_zero_local_hl_lookback() {
+        let cfg = LiquidationConfig {
+            local_hl_lookback_candles: 0,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("local_hl_lookback_candles"), "got: {}", err);
+    }
+
+    #[test]
+    fn test_liquidation_config_validate_rejects_negative_min_confidence() {
+        let cfg = LiquidationConfig {
+            min_confidence: -0.1,
+            ..LiquidationConfig::default()
+        };
+        let err = cfg.validate().unwrap_err().to_string();
+        assert!(err.contains("min_confidence"), "got: {}", err);
+    }
+
+    // ── VAL-CONFIG-006: Strategy sub-tables for new strategies ───────────
+
+    #[test]
+    fn test_new_strategy_subtables_parse_correctly() {
+        let config_path = Path::new("config/perps.toml");
+        if !config_path.exists() {
+            eprintln!("Skipping: config/perps.toml not found");
+            return;
+        }
+        let config = Config::load(config_path).expect("real perps.toml should load");
+
+        // Verify all new strategy sub-tables exist
+        let sub_tables = &config.strategy.strategies;
+        assert!(
+            sub_tables.contains_key("cascade-continuation"),
+            "cascade-continuation sub-table missing"
+        );
+        assert!(
+            sub_tables.contains_key("sweep-reclaim"),
+            "sweep-reclaim sub-table missing"
+        );
+        assert!(
+            sub_tables.contains_key("liquidity-memory-fisher"),
+            "liquidity-memory-fisher sub-table missing"
+        );
+        assert!(
+            sub_tables.contains_key("liquidation-zone-arbiter"),
+            "liquidation-zone-arbiter sub-table missing"
+        );
+
+        // Verify cascade-continuation has expected fields
+        let cc = sub_tables.get("cascade-continuation").unwrap().as_table().unwrap();
+        assert_eq!(cc.get("enabled").unwrap().as_bool(), Some(false));
+        assert_eq!(cc.get("paper_only").unwrap().as_bool(), Some(true));
+        assert!(cc.contains_key("min_confidence"));
+        assert!(cc.contains_key("cluster_threshold_bps"));
+        assert!(cc.contains_key("max_distance_bps"));
+
+        // Verify sweep-reclaim has fishing parameters
+        let sr = sub_tables.get("sweep-reclaim").unwrap().as_table().unwrap();
+        assert_eq!(sr.get("enabled").unwrap().as_bool(), Some(false));
+        assert!(sr.contains_key("fishing_ladder_offsets_bps"));
+        assert!(sr.contains_key("fishing_tranche_usd"));
+
+        // Verify liquidity-memory-fisher has fishing parameters
+        let lmf = sub_tables.get("liquidity-memory-fisher").unwrap().as_table().unwrap();
+        assert_eq!(lmf.get("enabled").unwrap().as_bool(), Some(false));
+        assert!(lmf.contains_key("min_zone_quality"));
+        assert!(lmf.contains_key("tranche_size_usd"));
+        assert!(lmf.contains_key("order_expiry_secs"));
+
+        // Verify zone arbiter has coordination parameters
+        let arb = sub_tables.get("liquidation-zone-arbiter").unwrap().as_table().unwrap();
+        assert_eq!(arb.get("enabled").unwrap().as_bool(), Some(false));
+        assert!(arb.contains_key("forced_flow_velocity_threshold"));
+        assert!(arb.contains_key("exhaustion_deceleration_threshold"));
+    }
+
+    #[test]
+    fn test_strategy_subtables_from_temp_config() {
+        let with_new_strategies = r#"
+[agent]
+poll_interval_secs = 300
+log_level = "info"
+
+[flash]
+api_url = "https://flashapi.trade"
+rpc_url = "https://api.mainnet-beta.solana.com"
+keypair_path = "~/.config/solana/id.json"
+market = "SOL"
+input_token = "USDC"
+pool = "Crypto.1"
+leverage = 3.0
+slippage_pct = "0.5"
+
+[strategy]
+active = "cascade-continuation"
+
+[risk]
+max_position_notional_usd = 5000.0
+max_daily_loss_usd = 500.0
+max_drawdown_pct = 15.0
+
+[strategy.cascade-continuation]
+enabled = true
+paper_only = true
+clip_size_usd = 200.0
+leverage = 2.0
+min_confidence = 0.6
+
+[strategy.sweep-reclaim]
+enabled = false
+paper_only = true
+clip_size_usd = 150.0
+leverage = 1.5
+
+[strategy.liquidity-memory-fisher]
+enabled = false
+paper_only = true
+tranche_size_usd = 25.0
+
+[strategy.liquidation-zone-arbiter]
+enabled = false
+paper_only = true
+forced_flow_velocity_threshold = 2.0
+"#;
+        let f = write_temp_toml(with_new_strategies);
+        let config = Config::load(f.path()).expect("config with new strategy sub-tables should parse");
+
+        // Verify all sub-tables were extracted
+        assert!(config.strategy.strategies.contains_key("cascade-continuation"));
+        assert!(config.strategy.strategies.contains_key("sweep-reclaim"));
+        assert!(config.strategy.strategies.contains_key("liquidity-memory-fisher"));
+        assert!(config.strategy.strategies.contains_key("liquidation-zone-arbiter"));
+
+        // Verify cascade-continuation values
+        let cc = config.strategy.strategies.get("cascade-continuation").unwrap().as_table().unwrap();
+        assert_eq!(cc.get("enabled").unwrap().as_bool(), Some(true));
+        assert_eq!(cc.get("clip_size_usd").unwrap().as_float(), Some(200.0));
+        assert_eq!(cc.get("leverage").unwrap().as_float(), Some(2.0));
+        assert_eq!(cc.get("min_confidence").unwrap().as_float(), Some(0.6));
+
+        // Verify active strategy resolution
+        assert_eq!(config.strategy.active.as_deref(), Some("cascade-continuation"));
+    }
+
+    #[test]
+    fn test_existing_strategy_subtables_preserved_with_new_ones() {
+        let config_path = Path::new("config/perps.toml");
+        if !config_path.exists() {
+            eprintln!("Skipping: config/perps.toml not found");
+            return;
+        }
+        let config = Config::load(config_path).expect("real perps.toml should load");
+        let sub_tables = &config.strategy.strategies;
+
+        // Old strategies still present
+        assert!(sub_tables.contains_key("lp-consumption"), "lp-consumption missing");
+        assert!(sub_tables.contains_key("mean-reversion"), "mean-reversion missing");
+        assert!(sub_tables.contains_key("trend-follower"), "trend-follower missing");
+        assert!(sub_tables.contains_key("funding-capture"), "funding-capture missing");
+
+        // New strategies added
+        assert!(sub_tables.contains_key("cascade-continuation"), "cascade-continuation missing");
+        assert!(sub_tables.contains_key("sweep-reclaim"), "sweep-reclaim missing");
+        assert!(sub_tables.contains_key("liquidity-memory-fisher"), "liquidity-memory-fisher missing");
+        assert!(sub_tables.contains_key("liquidation-zone-arbiter"), "liquidation-zone-arbiter missing");
     }
 
     // ── Backtest Config Section tests ─────────────────────────────────────

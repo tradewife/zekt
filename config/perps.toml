@@ -435,6 +435,214 @@ stop_loss_pct = 3.0
 min_hold_before_sl_mins = 120
 
 # =============================================================================
+# LIQUIDATION ZONE STRATEGIES (M1 capture-refactor)
+# These strategies use the liquidation zone capture infrastructure.
+# All default to paper_only = true for safety.
+# =============================================================================
+
+# Cascade Continuation strategy (refactored from liquidation-cascade-hunter)
+# Enters when price breaks through a liquidation zone with accelerating forced flow.
+# Legacy alias: "liquidation-cascade-hunter" maps to this strategy.
+[strategy.cascade-continuation]
+enabled = false
+paper_only = true
+direction_bias = "neutral"
+clip_size_usd = 100.0
+leverage = 3.0
+max_hold_secs = 600
+take_profit_pct = 2.0
+stop_loss_pct = 1.0
+trailing_stop_pct = 0.5
+trailing_activation_pct = 1.0
+cooldown_after_loss_secs = 300
+use_native_tp_sl = true
+scale_in_clips = 1
+# Strategy-specific parameters
+min_confidence = 0.5
+cluster_threshold_bps = 50.0
+max_distance_bps = 200.0
+volume_zscore_min = 1.5
+max_spread_bps = 20.0
+min_depth_usd = 50_000.0
+stale_data_threshold_secs = 120
+
+# Sweep Reclaim strategy (NEW — M2)
+# Enters after a zone sweep with exhaustion signals and VWAP reclaim confirmation.
+[strategy.sweep-reclaim]
+enabled = false
+paper_only = true
+direction_bias = "neutral"
+clip_size_usd = 100.0
+leverage = 2.0
+max_hold_secs = 1800
+take_profit_pct = 3.0
+stop_loss_pct = 1.5
+trailing_stop_pct = 0.8
+trailing_activation_pct = 1.5
+cooldown_after_loss_secs = 300
+use_native_tp_sl = true
+scale_in_clips = 1
+# Strategy-specific parameters
+min_confidence = 0.6
+max_chase_distance_bps = 150.0
+forced_flow_spike_threshold = 2.0
+fishing_ladder_offsets_bps = [10.0, 20.0, 30.0]
+fishing_tranche_usd = 25.0
+fishing_expiry_secs = 300
+
+# Liquidity Memory Fisher strategy (NEW — M2)
+# Passive fishing at respected/swept memory zones with strict expiry.
+[strategy.liquidity-memory-fisher]
+enabled = false
+paper_only = true
+direction_bias = "neutral"
+clip_size_usd = 50.0
+leverage = 1.0
+max_hold_secs = 3600
+take_profit_pct = 1.5
+stop_loss_pct = 0.75
+trailing_stop_pct = 0.0
+trailing_activation_pct = 0.0
+cooldown_after_loss_secs = 300
+use_native_tp_sl = true
+scale_in_clips = 1
+# Strategy-specific parameters
+min_zone_quality = 0.5
+fishing_offsets_bps = [5.0, 10.0, 20.0]
+tranche_size_usd = 12.5
+order_expiry_secs = 600
+max_total_exposure_usd = 200.0
+decay_cancel_threshold = 0.3
+
+# Zone Arbiter coordinator strategy (NEW — M2)
+# Evaluates regime + zone state → routes to appropriate sub-strategy.
+[strategy.liquidation-zone-arbiter]
+enabled = false
+paper_only = true
+direction_bias = "neutral"
+clip_size_usd = 100.0
+leverage = 2.0
+max_hold_secs = 600
+take_profit_pct = 2.0
+stop_loss_pct = 1.0
+trailing_stop_pct = 0.5
+trailing_activation_pct = 1.0
+cooldown_after_loss_secs = 300
+use_native_tp_sl = true
+scale_in_clips = 1
+# Strategy-specific parameters
+forced_flow_velocity_threshold = 1.5
+exhaustion_deceleration_threshold = -0.5
+quality_zone_min_count = 3
+
+# =============================================================================
+# LIQUIDATION ZONE CAPTURE CONFIGURATION
+# =============================================================================
+
+[liquidation]
+# Whether the liquidation zone capture is enabled.
+# When disabled, no capture occurs and no snapshots are written.
+enabled = false
+
+# Active data sources for zone detection.
+# Valid values: "hyperliquid_positions", "hyperliquid_fills", "oi_imbalance", "depth_fragility"
+# Unknown sources will produce a validation error at startup.
+sources = ["hyperliquid_positions", "hyperliquid_fills", "oi_imbalance", "depth_fragility"]
+
+# Cluster threshold in bps for grouping HL positions with similar liquidation prices.
+cluster_threshold_bps = 50.0
+
+# Merge threshold in bps for merging zones from different sources at similar prices.
+merge_threshold_bps = 100.0
+
+# Minimum confidence for a zone to be included in persisted snapshots.
+# Valid range: [0.0, 1.0]
+min_confidence = 0.0
+
+# OI imbalance threshold percentage. Imbalances below this produce no zone.
+imbalance_threshold_pct = 20.0
+
+# Minimum depth in USD within the depth_range_bps window for fragility detection.
+depth_min_threshold_usd = 100_000.0
+
+# Range in bps from mark price to scan for depth fragility.
+depth_range_bps = 50.0
+
+# Minimum number of fills within burst_window_secs to qualify as a forced-liquidation burst.
+fills_burst_count = 10
+
+# Time window in seconds for detecting forced-liquidation bursts.
+fills_burst_window_secs = 60
+
+# Lookback duration in seconds for fill scanning.
+fills_lookback_secs = 300
+
+# Staleness threshold in seconds. Data older than this is considered stale.
+staleness_threshold_secs = 60
+
+# Base confidence for a single-source zone.
+base_confidence = 0.4
+
+# Confidence bonus for 2nd, 3rd, 4th corroborating source.
+multi_source_bonus = [0.15, 0.10, 0.10]
+
+# Confidence penalty per stale source.
+staleness_penalty = 0.10
+
+# Wallet count logarithmic bonus factor: +factor*log10(wallet_count).
+wallet_count_bonus_factor = 0.02
+
+# Notional logarithmic bonus factor: +factor*log10(notional/1_000_000).
+notional_bonus_factor = 0.01
+
+# Zone calculation interval in seconds (legacy, same as capture_interval_secs).
+interval_secs = 30
+
+# Directory for persisted snapshots.
+snapshot_dir = "data/liquidation-zones"
+
+# Snapshot retention period in days. Older files are deleted.
+retention_days = 7
+
+# Symbols to capture.
+symbols = ["BTC", "ETH", "SOL"]
+
+# --- M1 capture-refactor: extended capture fields ---
+
+# Capture polling interval in seconds. How often the capture service polls data sources.
+# Must be > 0. Should be >= l2_sample_interval_secs.
+capture_interval_secs = 30
+
+# Maximum number of zone snapshots to retain on disk (count-based retention).
+# Older snapshots are pruned when this limit is exceeded.
+retention_count = 1000
+
+# L2 order book sampling interval in seconds. Must be <= capture_interval_secs.
+l2_sample_interval_secs = 10
+
+# Whether to capture funding rates during the capture cycle.
+funding_capture_enabled = true
+
+# VWAP anchor window in seconds. The capture service computes anchored VWAP
+# over this lookback period for each symbol.
+vwap_anchor_secs = 3600
+
+# Number of HL candles to look back for local high/low detection.
+local_hl_lookback_candles = 100
+
+# Confidence bonus when L2 bid depth refills near a zone price.
+depth_refill_bonus = 0.0
+
+# Confidence bonus when L2 depth below a zone is thin (supports cascade continuation).
+thin_depth_bonus = 0.0
+
+# Minimum bid depth in USD at a zone price to qualify for the refill bonus.
+depth_refill_threshold_usd = 50_000.0
+
+# Maximum depth in USD within 50 bps on the cascade side to qualify as "thin".
+thin_depth_threshold_usd = 100_000.0
+
+# =============================================================================
 # PIPELINE — Orchestrator configuration
 # =============================================================================
 
