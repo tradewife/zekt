@@ -3434,6 +3434,248 @@ mod tests {
     // ── Capture module compiles test (VAL-LIQ-104) ───────────────────────
     // This is implicitly verified by the test compiling and running.
 
+    // ── Multi-Symbol Capture Tests (VAL-CAPTURE-003) ─────────────────────
+
+    #[test]
+    fn test_multi_symbol_capture_produces_three_valid_snapshots() {
+        // VAL-CAPTURE-003: capture service produces at least one snapshot per
+        // symbol per cycle for BTC, ETH, SOL. Each snapshot validates correctly.
+        let symbols = ["BTC", "ETH", "SOL"];
+        let now_ms = 1_770_000_000_000i64;
+        let mark_prices = [("BTC", 100_000.0), ("ETH", 3_500.0), ("SOL", 150.0)];
+
+        let mut snapshots = Vec::new();
+        for (sym, mark) in &mark_prices {
+            let snapshot = make_snapshot(
+                sym,
+                now_ms,
+                *mark,
+                vec![make_zone(
+                    *mark * 0.95,
+                    "long",
+                    500_000.0,
+                    10,
+                    500.0,
+                    0.65,
+                    vec!["hyperliquid_positions"],
+                )],
+            );
+            assert!(snapshot.validate().is_ok(), "snapshot for {} should validate", sym);
+            snapshots.push(snapshot);
+        }
+
+        // Verify we have exactly 3 snapshots, one per symbol
+        assert_eq!(snapshots.len(), 3, "should produce 3 snapshots (BTC, ETH, SOL)");
+        let snapshot_symbols: Vec<&str> = snapshots.iter().map(|s| s.symbol.as_str()).collect();
+        for sym in &symbols {
+            assert!(
+                snapshot_symbols.contains(sym),
+                "missing snapshot for symbol {}",
+                sym
+            );
+        }
+    }
+
+    #[test]
+    fn test_multi_symbol_snapshots_have_required_fields() {
+        // VAL-CAPTURE-003: each snapshot has valid symbol, timestamp_ms,
+        // mark_price, and zones array.
+        let test_cases = [
+            ("BTC", 100_000.0),
+            ("ETH", 3_500.0),
+            ("SOL", 150.0),
+        ];
+        let now_ms = 1_770_000_000_000i64;
+
+        for (sym, mark) in &test_cases {
+            // Snapshot with zones
+            let with_zones = make_snapshot(
+                sym,
+                now_ms,
+                *mark,
+                vec![
+                    make_zone(*mark * 0.95, "long", 1_000_000.0, 20, 500.0, 0.7, vec!["hyperliquid_positions"]),
+                    make_zone(*mark * 1.05, "short", 800_000.0, 15, 500.0, 0.6, vec!["hyperliquid_fills"]),
+                ],
+            );
+            assert!(with_zones.validate().is_ok());
+            assert_eq!(with_zones.symbol, *sym);
+            assert!(with_zones.timestamp_ms > 0);
+            assert!(with_zones.mark_price > 0.0);
+            assert_eq!(with_zones.zones.len(), 2);
+
+            // Snapshot with empty zones is also valid
+            let empty_zones = make_snapshot(sym, now_ms, *mark, vec![]);
+            assert!(empty_zones.validate().is_ok());
+            assert_eq!(empty_zones.zones.len(), 0);
+        }
+    }
+
+    #[test]
+    fn test_zone_validation_rejects_negative_notional() {
+        // VAL-CAPTURE-003: zone validation rejects negative notional
+        let bad_zone = make_zone(
+            95_000.0, "long", -500_000.0, 10, 500.0, 0.5, vec!["hyperliquid_positions"],
+        );
+        assert!(bad_zone.validate().is_err(), "negative notional should be rejected");
+
+        // Snapshot containing a zone with negative notional should also fail
+        let snapshot = make_snapshot("BTC", 1_770_000_000_000, 100_000.0, vec![bad_zone]);
+        assert!(snapshot.validate().is_err());
+    }
+
+    #[test]
+    fn test_zone_validation_rejects_confidence_out_of_range() {
+        // VAL-CAPTURE-003: confidence must be in [0, 1]
+        // Above 1.0
+        let high_conf = make_zone(
+            95_000.0, "long", 500_000.0, 10, 500.0, 1.5, vec!["hyperliquid_positions"],
+        );
+        assert!(high_conf.validate().is_err(), "confidence > 1.0 should be rejected");
+
+        // Below 0.0
+        let neg_conf = make_zone(
+            95_000.0, "long", 500_000.0, 10, 500.0, -0.1, vec!["hyperliquid_positions"],
+        );
+        assert!(neg_conf.validate().is_err(), "confidence < 0.0 should be rejected");
+
+        // Exactly 0.0 is valid (zero notional, zero wallets)
+        let zero_conf = make_zone(95_000.0, "long", 0.0, 0, 500.0, 0.0, vec![]);
+        assert!(zero_conf.validate().is_ok(), "confidence 0.0 should be valid");
+
+        // Exactly 1.0 is valid
+        let one_conf = make_zone(
+            95_000.0, "long", 500_000.0, 10, 500.0, 1.0, vec!["hyperliquid_positions"],
+        );
+        assert!(one_conf.validate().is_ok(), "confidence 1.0 should be valid");
+    }
+
+    #[test]
+    fn test_zone_validation_rejects_invalid_side_at_risk() {
+        // VAL-CAPTURE-003: side_at_risk must be "long" or "short"
+        let mut zone = make_zone(95_000.0, "long", 500_000.0, 10, 500.0, 0.5, vec!["hyperliquid_positions"]);
+        assert!(zone.validate().is_ok());
+
+        zone.side_at_risk = "invalid".to_string();
+        assert!(zone.validate().is_err(), "invalid side_at_risk should be rejected");
+
+        zone.side_at_risk = "".to_string();
+        assert!(zone.validate().is_err(), "empty side_at_risk should be rejected");
+
+        zone.side_at_risk = "short".to_string();
+        assert!(zone.validate().is_ok());
+    }
+
+    #[test]
+    fn test_zone_validation_rejects_zero_price() {
+        // VAL-CAPTURE-003: zone price must be > 0
+        let bad_zone = make_zone(0.0, "long", 500_000.0, 10, 500.0, 0.5, vec!["hyperliquid_positions"]);
+        assert!(bad_zone.validate().is_err(), "zero price should be rejected");
+
+        let neg_zone = make_zone(-100.0, "long", 500_000.0, 10, 500.0, 0.5, vec!["hyperliquid_positions"]);
+        assert!(neg_zone.validate().is_err(), "negative price should be rejected");
+    }
+
+    #[test]
+    fn test_multi_symbol_snapshot_independent_validation() {
+        // VAL-CAPTURE-003: each symbol's snapshot validates independently
+        let symbols_and_prices = [("BTC", 100_000.0), ("ETH", 3_500.0), ("SOL", 150.0)];
+        let now_ms = 1_770_000_000_000i64;
+
+        for (sym, mark) in &symbols_and_prices {
+            // Valid snapshot
+            let valid = make_snapshot(
+                sym, now_ms, *mark,
+                vec![make_zone(*mark * 0.95, "long", 100_000.0, 5, 500.0, 0.5, vec!["hyperliquid_positions"])],
+            );
+            assert!(valid.validate().is_ok(), "valid {} snapshot should pass", sym);
+
+            // Invalid snapshot (empty symbol)
+            let invalid = make_snapshot(
+                "", now_ms, *mark,
+                vec![make_zone(*mark * 0.95, "long", 100_000.0, 5, 500.0, 0.5, vec!["hyperliquid_positions"])],
+            );
+            assert!(invalid.validate().is_err(), "empty symbol should fail for {}", sym);
+
+            // Invalid snapshot (zero mark price)
+            let zero_mark = make_snapshot(
+                sym, now_ms, 0.0,
+                vec![make_zone(*mark * 0.95, "long", 100_000.0, 5, 500.0, 0.5, vec!["hyperliquid_positions"])],
+            );
+            assert!(zero_mark.validate().is_err(), "zero mark_price should fail for {}", sym);
+        }
+    }
+
+    #[test]
+    fn test_multi_symbol_distinct_timestamps_produce_distinct_files() {
+        // VAL-CAPTURE-003: each symbol gets its own snapshot file at the same timestamp
+        let dir = tempdir();
+        let ts = 1_770_000_000_000i64;
+        let symbols_and_prices = [("BTC", 100_000.0), ("ETH", 3_500.0), ("SOL", 150.0)];
+
+        let mut paths = Vec::new();
+        for (sym, mark) in &symbols_and_prices {
+            let snapshot = make_snapshot(*sym, ts, *mark, vec![]);
+            let path = persist_snapshot(&snapshot, dir.path().to_str().unwrap()).unwrap();
+            paths.push(path);
+        }
+
+        // Verify 3 distinct files
+        assert_eq!(paths.len(), 3);
+        for p in &paths {
+            assert!(p.exists(), "file should exist: {:?}", p);
+        }
+        // All paths should be unique
+        let unique: std::collections::HashSet<_> = paths.iter().collect();
+        assert_eq!(unique.len(), 3, "all snapshot files should be unique");
+
+        // Verify file names contain symbol
+        let file_names: Vec<String> = paths.iter()
+            .map(|p| p.file_name().unwrap().to_str().unwrap().to_string())
+            .collect();
+        assert!(file_names.iter().any(|n| n.starts_with("BTC_")));
+        assert!(file_names.iter().any(|n| n.starts_with("ETH_")));
+        assert!(file_names.iter().any(|n| n.starts_with("SOL_")));
+    }
+
+    #[tokio::test]
+    async fn test_multi_symbol_engine_cycle_validates_all_snapshots() {
+        // VAL-CAPTURE-003: engine run_capture_cycle produces valid snapshots for each symbol
+        let dir = tempdir();
+        let config = LiquidationConfig {
+            enabled: true,
+            interval_secs: 1,
+            snapshot_dir: dir.path().to_str().unwrap().to_string(),
+            symbols: vec!["BTC".to_string(), "ETH".to_string(), "SOL".to_string()],
+            ..LiquidationConfig::default()
+        };
+
+        let engine = LiquidationCaptureEngine::new(config).unwrap();
+        let results = engine.run_capture_cycle().await;
+        assert_eq!(results.len(), 3, "should produce 3 snapshot paths");
+
+        let expected_symbols = ["BTC", "ETH", "SOL"];
+
+        // Each result should be Ok (path to persisted snapshot)
+        for result in &results {
+            assert!(result.is_ok(), "each symbol should produce Ok result: {:?}", result);
+            let path = result.as_ref().unwrap();
+            assert!(path.exists(), "snapshot file should exist: {:?}", path);
+
+            // Load and validate each snapshot
+            let contents = std::fs::read_to_string(path).unwrap();
+            let snapshot: LiquidationZoneSnapshot = serde_json::from_str(&contents).unwrap();
+            assert!(
+                expected_symbols.contains(&snapshot.symbol.as_str()),
+                "symbol should be one of BTC/ETH/SOL, got {}",
+                snapshot.symbol,
+            );
+            assert!(snapshot.validate().is_ok(), "snapshot for {} should validate", snapshot.symbol);
+            assert!(snapshot.mark_price > 0.0, "mark_price should be positive for {}", snapshot.symbol);
+            assert!(snapshot.timestamp_ms > 0, "timestamp_ms should be positive for {}", snapshot.symbol);
+        }
+    }
+
     // ── Helper ────────────────────────────────────────────────────────────
 
     fn make_zone(
