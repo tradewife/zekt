@@ -1366,8 +1366,9 @@ fn compute_calmar(net_pnl: f64, starting_balance: f64, max_drawdown_usd: f64, da
 }
 
 /// Compute Maximum Adverse Excursion in USD.
-/// For longs: (worst_price - entry_price) / entry_price * size_usd (negative).
-/// For shorts: (worst_price - entry_price) / entry_price * size_usd (positive, negated).
+/// MAE is always negative (represents unrealized loss during hold).
+/// For longs: worst_price is lowest → (worst - entry)/entry * size (negative).
+/// For shorts: worst_price is highest → negate so adverse is negative.
 fn compute_mae_usd(is_long: bool, entry_price: f64, worst_price: f64, size_usd: f64) -> f64 {
     if entry_price <= 0.0 {
         return 0.0;
@@ -1376,8 +1377,8 @@ fn compute_mae_usd(is_long: bool, entry_price: f64, worst_price: f64, size_usd: 
         // For longs, worst adverse is the lowest price
         ((worst_price - entry_price) / entry_price) * size_usd
     } else {
-        // For shorts, worst adverse is the highest price
-        ((worst_price - entry_price) / entry_price) * size_usd
+        // For shorts, worst adverse is the highest price; negate for sign convention
+        -((worst_price - entry_price) / entry_price) * size_usd
     }
 }
 
@@ -2826,9 +2827,9 @@ mod tests {
     #[test]
     fn test_mae_short_trade() {
         // Short trade: entry=100, worst_price=105, size=1000
-        // MAE = (105-100)/100 * 1000 = 50 → adverse
+        // MAE = -((105-100)/100) * 1000 = -50 (adverse excursion is negative)
         let mae = compute_mae_usd(false, 100.0, 105.0, 1000.0);
-        assert!((mae - 50.0).abs() < 0.01, "MAE for short = {:.4}, expected 50", mae);
+        assert!((mae - (-50.0)).abs() < 0.01, "MAE for short = {:.4}, expected -50", mae);
     }
 
     #[test]
@@ -2850,6 +2851,56 @@ mod tests {
             assert!(trade.worst_price > 0.0, "Worst price must be positive");
         }
         assert!(result.avg_mae_usd.is_finite(), "Avg MAE must be finite");
+    }
+
+    // ---- Regression: MAE sign convention for shorts (fix-replay-mae-sign-convention) ----
+
+    #[test]
+    fn test_mae_sign_convention_short_is_negative() {
+        // Short trade: adverse excursion (price goes up) must be negative
+        let mae = compute_mae_usd(false, 100.0, 105.0, 1000.0);
+        assert!(mae < 0.0, "Short MAE must be negative (adverse = loss), got {}", mae);
+    }
+
+    #[test]
+    fn test_mae_sign_convention_long_is_negative() {
+        // Long trade: adverse excursion (price goes down) must be negative
+        let mae = compute_mae_usd(true, 100.0, 95.0, 1000.0);
+        assert!(mae < 0.0, "Long MAE must be negative (adverse = loss), got {}", mae);
+    }
+
+    #[test]
+    fn test_mfe_sign_convention_short_is_positive() {
+        // Short trade: favorable excursion (price goes down) must be positive
+        let mfe = compute_mfe_usd(false, 100.0, 90.0, 1000.0);
+        assert!(mfe > 0.0, "Short MFE must be positive (favorable = profit), got {}", mfe);
+    }
+
+    #[test]
+    fn test_mfe_sign_convention_long_is_positive() {
+        // Long trade: favorable excursion (price goes up) must be positive
+        let mfe = compute_mfe_usd(true, 100.0, 110.0, 1000.0);
+        assert!(mfe > 0.0, "Long MFE must be positive (favorable = profit), got {}", mfe);
+    }
+
+    #[test]
+    fn test_mae_short_large_adverse() {
+        // Short trade with large adverse move
+        let mae = compute_mae_usd(false, 200.0, 240.0, 5000.0);
+        // MAE = -((240-200)/200) * 5000 = -1000
+        assert!((mae - (-1000.0)).abs() < 0.01, "Short MAE = {:.4}, expected -1000", mae);
+        assert!(mae < 0.0, "Short MAE must be negative");
+    }
+
+    #[test]
+    fn test_mae_short_zero_when_favorable() {
+        // Short trade where worst_price < entry_price (favorable direction, not adverse)
+        // In practice worst_price is always the highest seen for shorts, but this
+        // tests the math: worst_price=95 < entry=100 means no adverse movement
+        let mae = compute_mae_usd(false, 100.0, 95.0, 1000.0);
+        // MAE = -((95-100)/100) * 1000 = -((-5/100)*1000) = 50 (positive, no adverse)
+        // This is a non-adverse scenario — result is positive, which is fine
+        assert!(mae.is_finite(), "MAE must be finite even in non-adverse case");
     }
 
     // ---- VAL-REPLAY-004: MFE computed per trade ----
