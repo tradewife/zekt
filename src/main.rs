@@ -3,6 +3,8 @@ mod config;
 mod engine;
 mod executor;
 mod flash_api;
+#[allow(dead_code)]
+mod fishing;
 mod funding_capture;
 #[allow(dead_code)]
 mod hl_info;
