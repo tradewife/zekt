@@ -322,6 +322,61 @@ def build_command(
 # Run execution
 # ---------------------------------------------------------------------------
 
+def _check_existing_result(
+    output_base_dir: str,
+    combo_id: str,
+    strategy: str,
+    market: str,
+    cost_mode: str,
+    params: Dict[str, Any],
+    leverage: Optional[float] = None,
+) -> Optional[RunResult]:
+    """Check if a completed result already exists for this combo.
+
+    If the run directory exists and contains a valid summary.json,
+    return a RunResult with the cached data. Otherwise return None.
+
+    Args:
+        output_base_dir: Base output directory.
+        combo_id: Unique run identifier.
+        strategy: Strategy name.
+        market: Market symbol.
+        cost_mode: Cost mode string.
+        params: Parameter overrides.
+        leverage: Optional leverage.
+
+    Returns:
+        RunResult if valid result exists, None otherwise.
+    """
+    run_dir = os.path.join(output_base_dir, "raw", combo_id)
+    summary_path = os.path.join(run_dir, "summary.json")
+
+    if not os.path.exists(summary_path):
+        return None
+
+    try:
+        with open(summary_path) as f:
+            summary = json.load(f)
+
+        # Validate it has essential fields (not a truncated/empty file)
+        if not isinstance(summary, dict) or "total_trades" not in summary:
+            return None
+
+        return RunResult(
+            combo_id=combo_id,
+            strategy=strategy,
+            market=market,
+            cost_mode=cost_mode,
+            params=params,
+            leverage=leverage,
+            success=True,
+            summary=summary,
+            elapsed_secs=0.0,
+        )
+    except (json.JSONDecodeError, IOError, OSError):
+        return None
+
+
 def run_single_combination(
     binary_path: str,
     strategy: str,
@@ -338,6 +393,9 @@ def run_single_combination(
     max_retries: int = 3,
 ) -> RunResult:
     """Run a single backtest combination with retry on rate-limit (429) errors.
+
+    Supports resume: if a valid summary.json already exists in the run directory,
+    the run is skipped and the cached result is returned immediately.
 
     Args:
         binary_path: Path to the zekt binary.
@@ -359,6 +417,14 @@ def run_single_combination(
     """
     run_dir = os.path.join(output_base_dir, "raw", combo_id)
     os.makedirs(run_dir, exist_ok=True)
+
+    # Resume support: skip if valid result already exists
+    existing = _check_existing_result(
+        output_base_dir, combo_id, strategy, market, cost_mode, params, leverage,
+    )
+    if existing is not None:
+        logger.debug("SKIP %s (existing result)", combo_id)
+        return existing
 
     cmd = build_command(
         binary_path=binary_path,
@@ -940,10 +1006,13 @@ def run_batch(
             # Progress log
             ok = sum(1 for r in results if r.success)
             fail = sum(1 for r in results if not r.success)
-            logger.info(
-                "Progress: %d/%d done (%d ok, %d failed)",
-                completed, total, ok, fail,
-            )
+            skipped = sum(1 for r in results if r.success and r.elapsed_secs == 0.0)
+            new_ok = ok - skipped
+            if completed % 100 == 0 or completed == total:
+                logger.info(
+                    "Progress: %d/%d done (%d new ok, %d resumed, %d failed)",
+                    completed, total, new_ok, skipped, fail,
+                )
 
     # Build report
     report = aggregate_results_report(results)
