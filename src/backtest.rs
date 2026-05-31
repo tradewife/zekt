@@ -97,6 +97,8 @@ impl HlCandleFetcher {
     ///
     /// If the range exceeds 5000 candles, it is automatically paginated.
     /// Returns candles sorted by time (ascending).
+    ///
+    /// Uses local file cache in data/candle-cache/ to avoid repeated API calls.
     pub async fn fetch_candles(
         &self,
         symbol: &str,
@@ -104,6 +106,25 @@ impl HlCandleFetcher {
         start_time_ms: i64,
         end_time_ms: i64,
     ) -> anyhow::Result<Vec<HlCandle>> {
+        // Check local cache first
+        let cache_dir = "data/candle-cache";
+        let cache_key = format!("{}_{}_{}_{}", symbol, interval, start_time_ms, end_time_ms);
+        let cache_path = std::path::Path::new(cache_dir).join(format!("{}.json", cache_key));
+
+        if cache_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&cache_path) {
+                if let Ok(cached) = serde_json::from_str::<Vec<HlCandle>>(&data) {
+                    if !cached.is_empty() {
+                        debug!(
+                            "Loaded {} {} candles for {} from cache",
+                            cached.len(), interval, symbol
+                        );
+                        return Ok(cached);
+                    }
+                }
+            }
+        }
+
         let interval_ms = parse_interval_ms(interval)?;
         let mut all_candles = Vec::new();
         let mut cursor = start_time_ms;
@@ -137,6 +158,20 @@ impl HlCandleFetcher {
                 .map(|t| t.format("%Y-%m-%d %H:%M").to_string())
                 .unwrap_or_default(),
         );
+
+        // Save to cache
+        if !all_candles.is_empty() {
+            if let Err(e) = std::fs::create_dir_all(cache_dir) {
+                debug!("Failed to create candle cache dir: {}", e);
+            } else if let Ok(json) = serde_json::to_string(&all_candles) {
+                let tmp_path = cache_path.with_extension("json.tmp");
+                if std::fs::write(&tmp_path, &json).is_ok() {
+                    if let Err(e) = std::fs::rename(&tmp_path, &cache_path) {
+                        debug!("Failed to rename candle cache: {}", e);
+                    }
+                }
+            }
+        }
 
         Ok(all_candles)
     }

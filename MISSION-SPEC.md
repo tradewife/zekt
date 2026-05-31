@@ -1,236 +1,214 @@
-# Mission: Imperial Route Oracle + Liquidation-Zone Alpha Validation
+# Mission: Walk-Forward Edge Hardening + Leverage-Aware Position Sizing
 
 ## Objective
 
-Move Zekt toward profitability by validating two high-impact upgrades:
+Convert Zekt from "cost-improved but still net-negative" into a strategy selection and sizing system with at least one genuinely promotable strategy-market pair.
 
-1. Replace single-venue Flash assumptions with an Imperial read-only route/cost oracle across Solana perps venues.
-2. Build a liquidation-zone intelligence layer that detects liquidation clusters, cascade risk, and post-liquidation trade setups.
+The mission must use real Hyperliquid candle data, Imperial route-oracle cost mode, walk-forward validation, and risk-of-ruin checks. The goal is not to find the highest backtest PnL. The goal is to find stable, repeatable edge that can survive paper trading.
 
-The mission succeeds only if it produces evidence that one or both upgrades improve net expectancy after realistic costs. No live trading. No Imperial JWT trading integration without explicit human approval.
+## Starting Evidence
 
-## Why This Mission
+Previous mission results:
 
-The previous Zekt mission proved:
+- Period: 2026-04-01 to 2026-05-30
+- Markets: BTC, SOL, ETH
+- Strategies: 10 blueprint strategies
+- Cost modes: Flash-only vs Imperial-route-oracle
+- Imperial reduced total fees from $651.67 to $154.24.
+- Imperial improved total net PnL from -$342.24 to -$120.35.
+- Profitable pairs improved from 5/30 to 10/30.
+- No pair reached robust Sharpe quality.
+- Best meaningful pair: `blueprint-cluster-007:BTC`, +$4.24 net, Sharpe 0.39, 13 trades.
 
-- Existing strategies are still net-negative.
-- Regime filtering reduced losses mainly by avoiding trades.
-- Current costs and venue assumptions may be suppressing edge.
-- Blueprint strategies and new alpha sources need validation.
-
-Imperial is relevant because its API exposes route recommendations, venue cost breakdowns, funding/borrow rates, mark prices, priority fees, Phoenix depth, market stats, and positions/order surfaces. Its docs also claim cheaper swap fees and pro order types. These claims must be measured, not trusted.
-
-The liquidation-hunter example is useful only as a pattern: liquidation event storage, volume thresholds, VWAP protection, pending-order de-duplication, paper mode, and protection-order checks. Do not use Aster or Aster execution.
+Conclusion: routing helped, but edge is still too weak. The next bottleneck is parameter quality, leverage/sizing, and sample robustness.
 
 ## Non-Negotiables
 
 - No live trading.
-- No Imperial JWT generation, storage, or trading calls unless separately approved.
-- No Aster integration.
-- No strategy promotion without out-of-sample or paper evidence.
-- No liquidation "knife catching" without confirmation filters.
-- Route savings must be measured after fees, borrow/funding, priority fee, slippage, and liquidation-risk cost.
-- Liquidation signals must be logged first, replayed second, paper-traded third.
+- No Imperial JWT or order placement.
+- No strategy promotion from fewer than 30 trades unless explicitly labeled "insufficient sample."
+- No leverage increase unless risk-of-ruin, max drawdown, and liquidation distance are measured.
+- No optimization on a single full-period result.
+- No strategy is promotable unless out-of-sample metrics pass.
+- All results must use `imperial-route-oracle` and also compare against `flash-only`.
 
-## Workstream 1: Imperial Read-Only Client
+## Workstream 1: Backtest Harness Upgrade
 
-Implement a read-only `ImperialClient` for public/non-signing endpoints:
+Add or verify CLI/config support for:
 
-- `/api/v1/route`
-- `/api/v1/funding-rates`
-- `/api/v1/mark-prices`
-- `/api/v1/phoenix/depth`
-- `/api/v1/phoenix/markets`
-- `/api/v1/flash/markets`
-- `/api/v1/gmtrade/markets`
-- `/api/v1/gmtrade/liquidity`
-- `/api/v1/priority-fee`
-- `/api/v1/stats/markets`
-
-Do not implement:
-
-- `/mobile/connect`
-- `/mobile/exchange`
-- `/mobile/orders`
-- `/deposit/build-tx`
-- any JWT-gated trading endpoint
+- `--cost-mode flash-only|imperial-route-oracle`
+- walk-forward enabled from config or CLI
+- slippage bps from config or CLI
+- leverage override per run
+- strategy parameter override grid
+- output path per run to avoid overwriting previous summaries
 
 Acceptance:
 
-- Typed Rust client compiles.
-- Mock tests cover response parsing.
-- Live smoke test is optional and read-only.
-- All route responses record best venue and full cost breakdown.
+- A single command can run one strategy/market/parameter/leverage combination.
+- A batch runner can execute a grid and write structured JSON/CSV/Markdown summaries.
+- Existing tests still pass.
 
-## Workstream 2: Imperial Route Cost Model
+## Workstream 2: Candidate Selection
 
-Extend Zekt's backtest/paper cost model with an `imperial-route-oracle` mode.
+Focus only on pairs that showed promise under Imperial routing:
 
-For each candidate trade, estimate:
+Primary candidates:
 
-- best venue,
-- taker/open fee,
-- close fee,
-- borrow/funding over expected hold,
-- priority fee,
-- liquidation-risk expected cost if exposed by route response,
-- excluded/sticky venue behavior,
-- max leverage constraints,
-- market support.
+- `blueprint-cluster-007:BTC`
+- `blueprint-cluster-005:ETH`
+- `blueprint-cluster-005:SOL`
+- `blueprint-cluster-008:BTC`
+- `blueprint-cluster-002:BTC`
+- `blueprint-cluster-002:SOL`
+- `blueprint-cluster-003:BTC`
+- `blueprint-cluster-009:ETH`
+- `blueprint-cluster-009:SOL`
 
-Decision rule:
+Exclude or deprioritize:
 
-- If Imperial expected cost is lower than current Flash model by a configured bps threshold, mark trade as `route_improved`.
-- If route cost exceeds expected edge budget, veto trade.
-- If route source is stale/missing, fall back to existing Flash assumptions and log degradation.
-
-Acceptance:
-
-- Before/after backtest table: Flash-only cost model vs Imperial route model.
-- Metrics: net PnL, total fees, fee bps, route-selected venue counts, veto count, Sharpe, drawdown.
-- A route improvement must be proven on blueprint strategies, not only placeholder strategies.
-
-## Workstream 3: Blueprint Strategy Revalidation
-
-Run the existing blueprint strategies through the new cost model:
-
-- `blueprint-scalper`
-- `blueprint-mean-revert`
-- `blueprint-cluster-002` through `blueprint-cluster-009`
-- `blueprint-hft-market-maker` only if cost assumptions are realistic enough
-
-Validation windows:
-
-- minimum 90 days where data exists,
-- walk-forward enabled,
-- regime filter enabled and disabled comparison,
-- multiple markets: BTC, SOL, ETH, and any high-scoring Flash/Imperial-supported markets.
+- `blueprint-hft-market-maker`
+- consistently negative mean-revert variants
+- zero-trade pairs
+- pairs with fewer than 10 trades unless being tested for signal scarcity
 
 Acceptance:
 
-- Produce ranked strategy table.
-- Promote none unless positive net expectancy after realistic costs.
-- Identify whether Imperial routing turns any near-break-even strategy positive.
+- Produce `data/candidate-strategy-set.md`.
+- Explain why each candidate is included or excluded.
 
-## Workstream 4: Liquidation-Zone Intelligence Capture
+## Workstream 3: Parameter Search
 
-Build a native Zekt liquidation intelligence layer.
+For each candidate, sweep:
 
-Data sources to evaluate:
+- entry threshold
+- lookback window
+- take profit
+- stop loss
+- max hold time
+- trailing stop enable/disable
+- regime filter on/off
+- minimum route improvement bps
+- edge budget threshold
 
-- Hyperliquid `clearinghouseState` for known wallets to aggregate liquidation prices, side, notional, and distance to mark.
-- Hyperliquid fills for liquidation-like bursts and forced-flow inference.
-- Imperial market stats for open interest imbalance and market crowding.
-- Imperial mark prices and Phoenix depth for fragility/orderbook confirmation.
-- Public liquidation feeds only if available without privileged access.
+Use conservative grids first. Do not explode the search space.
 
-Output structure:
+Validation:
 
-```json
-{
-  "symbol": "SOL",
-  "timestamp_ms": 1770000000000,
-  "mark_price": 150.25,
-  "zones": [
-    {
-      "price": 147.50,
-      "side_at_risk": "long",
-      "estimated_notional_usd": 1250000,
-      "wallet_count": 42,
-      "distance_bps": 183,
-      "confidence": 0.71,
-      "source_mix": ["hyperliquid_positions", "oi_imbalance"]
-    }
-  ]
-}
-```
+- Use walk-forward train/test split.
+- Rank by out-of-sample expectancy, Sharpe, Sortino, Calmar, max drawdown, and trade count.
+- Penalize parameter sets that only work in one market or one short window.
+- Record parameter stability, not just best PnL.
 
 Acceptance:
 
-- Persist liquidation-zone snapshots.
-- Track source freshness and confidence.
-- No trading decisions yet unless replay/paper validation exists.
+- Produce `data/walk-forward-parameter-search.md`.
+- Identify top 3 parameter sets per strategy-market.
+- Mark all overfit candidates clearly.
 
-## Workstream 5: Liquidation Strategy Prototype
+## Workstream 4: Leverage and Position Sizing Search
 
-Create a paper-only strategy:
+For only the top parameter candidates, test leverage and sizing:
 
-`liquidation-cascade-hunter`
+Leverage grid:
 
-Two setup types:
+- 1x
+- 2x
+- 3x
+- 4x
+- 5x
+- 7.5x
+- 10x
 
-1. Cascade continuation:
-   - price approaches high-confidence liquidation zone,
-   - liquidation/forced-flow proxy spikes,
-   - mark velocity confirms direction,
-   - depth thins or imbalance confirms continuation,
-   - route cost is below edge budget.
+Sizing grid:
 
-2. Exhaustion reversal:
-   - liquidation burst occurs,
-   - price reclaims VWAP or prior zone,
-   - depth refills,
-   - velocity decays,
-   - spread normalizes.
+- fixed notional
+- fixed fractional equity risk
+- volatility-adjusted sizing
+- drawdown-throttled sizing
+- route-cost-adjusted sizing
 
-Required gates:
+Metrics:
 
-- liquidation-zone confidence minimum,
-- volume/notional z-score,
-- price distance to zone,
-- VWAP filter,
-- spread/depth filter,
-- regime compatibility,
-- route-cost veto,
-- max one pending trade per symbol/side,
-- mandatory stop and take profit,
-- time stop.
+- net PnL
+- Sharpe
+- Sortino
+- Calmar
+- max drawdown
+- liquidation proximity
+- longest losing streak
+- risk of ruin estimate
+- recovery time after drawdown
+- fee-to-gross-profit ratio
 
 Acceptance:
 
-- Strategy compiles behind feature/config flag.
-- Paper-only by default.
-- Unit tests for zone scoring, entry gates, duplicate-order blocking, stale data blocking, and exit logic.
+- Produce `data/leverage-sizing-frontier.md`.
+- Identify efficient frontier: best return per unit drawdown.
+- Recommend max leverage per strategy-market.
+- If higher leverage increases PnL but creates unacceptable drawdown, reject it.
 
-## Workstream 6: Replay and Paper Validation
+## Workstream 5: Portfolio Construction
 
-Because historical liquidation data may be incomplete, validation has two stages:
+Do not evaluate strategies only in isolation. Build a portfolio view:
 
-1. Capture phase:
-   - run read-only capture for at least 24-72 hours,
-   - collect liquidation zones, route costs, mark prices, depth, OI stats.
+- combine top candidates,
+- cap correlated BTC/SOL/ETH exposure,
+- limit simultaneous positions,
+- apply daily/weekly drawdown breakers,
+- test capital allocation weights,
+- test "only trade top-ranked active signal" mode.
 
-2. Replay phase:
-   - replay captured data through `liquidation-cascade-hunter`,
-   - compare against no-trade baseline and existing strategies.
+Acceptance:
 
-Promotion threshold for paper trading:
+- Produce `data/portfolio-backtest.md`.
+- Compare single-best strategy vs portfolio.
+- Recommend one paper-trading basket, or reject all.
 
-- positive simulated net expectancy after route costs,
-- max drawdown within policy,
-- no stale-data trades,
-- no duplicate pending trades,
-- at least 30 signal events or explicitly mark insufficient sample.
+## Workstream 6: Liquidation Capture Background Run
+
+Run liquidation-zone capture in parallel for 24-72 hours if feasible.
+
+This is data gathering only.
+
+Acceptance:
+
+- Produce `data/liquidation-zone-capture-summary.md`.
+- Report signal count, confidence distribution, source freshness, and whether enough data exists for the next liquidation-specific mission.
+
+## Promotion Gate
+
+A strategy-market or portfolio is promotable to paper trading only if it satisfies:
+
+- out-of-sample net PnL positive,
+- Sharpe >= 1.0, or clearly improving toward it with strong Sortino/Calmar,
+- at least 30 trades in validation window,
+- max drawdown acceptable for a $1,000 account,
+- fee-to-gross-profit ratio below 35%,
+- stable parameters across adjacent grid values,
+- no single trade accounts for most of the profit,
+- Imperial route mode improves or preserves results,
+- risk-of-ruin acceptable under proposed leverage.
+
+If no candidate passes, the correct outcome is "no paper promotion."
 
 ## Final Deliverables
 
-- `docs/imperial-integration-gate.md`
-- `docs/liquidation-zone-methodology.md`
-- `data/imperial-route-comparison.md`
+- `data/candidate-strategy-set.md`
+- `data/walk-forward-parameter-search.md`
+- `data/leverage-sizing-frontier.md`
+- `data/portfolio-backtest.md`
 - `data/liquidation-zone-capture-summary.md`
 - updated `MISSION_REPORT.md`
-- typed read-only Imperial client
-- liquidation-zone data model
-- paper-only liquidation strategy prototype if data quality supports it
+- recommended paper-trading config, or explicit rejection of all candidates
 
-## Executive Decision Required At End
+## Executive Decision Required
 
 Choose one:
 
-- Keep Flash-only, reject Imperial for now.
-- Use Imperial as read-only route/cost oracle only.
-- Approve next mission for Imperial paper-order integration.
-- Continue liquidation data capture.
-- Promote liquidation strategy to extended paper trading.
-- Reject liquidation strategy due to no measurable edge.
+- Promote one optimized strategy-market pair to paper trading.
+- Promote a small portfolio basket to paper trading.
+- Continue parameter search with narrower candidates.
+- Continue liquidation capture for a dedicated liquidation mission.
+- Reject current blueprint suite as insufficient and return to wallet discovery.
 

@@ -39,7 +39,7 @@ where
 
 /// Route recommendation with full cost breakdown and all candidate venues.
 /// Returned by `GET /api/v1/route`.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImperialRouteResponse {
     pub venue: String,
@@ -55,7 +55,7 @@ pub struct ImperialRouteResponse {
 /// Detailed cost breakdown for a single route.
 ///
 /// Note: For filtered venue candidates, some fields may be `null` (deserialized as 0.0).
-#[derive(Debug, Clone, Deserialize, Default)]
+#[derive(Debug, Clone, Deserialize, Serialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct ImperialCostBreakdown {
     pub open_fee: f64,
@@ -74,7 +74,7 @@ pub struct ImperialCostBreakdown {
 /// A single venue candidate in a route response.
 ///
 /// Note: Filtered candidates may have `expected_cost_usd = 0.0` (null from API) and `filtered_reason` set.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImperialRouteCandidate {
     pub venue: String,

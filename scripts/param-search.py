@@ -335,8 +335,9 @@ def run_single_combination(
     combo_id: str,
     paper_balance: float = DEFAULT_PAPER_BALANCE,
     timeout_secs: int = 600,
+    max_retries: int = 3,
 ) -> RunResult:
-    """Run a single backtest combination.
+    """Run a single backtest combination with retry on rate-limit (429) errors.
 
     Args:
         binary_path: Path to the zekt binary.
@@ -351,6 +352,7 @@ def run_single_combination(
         combo_id: Unique run identifier.
         paper_balance: Starting balance.
         timeout_secs: Timeout per run in seconds.
+        max_retries: Max retries on 429 rate-limit errors.
 
     Returns:
         RunResult with success status and collected data.
@@ -374,19 +376,71 @@ def run_single_combination(
     logger.debug("Running: %s", " ".join(cmd))
     start_time = time.time()
 
-    try:
-        proc = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout_secs,
-        )
-        elapsed = time.time() - start_time
+    for attempt in range(max_retries + 1):
+        try:
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout_secs,
+                env={**os.environ, "ZEKT_FILE_CACHE": "1"},
+            )
+            elapsed = time.time() - start_time
 
-        if proc.returncode != 0:
-            stderr_tail = (proc.stderr or "")[-500:]
-            error_msg = f"Exit code {proc.returncode}: {stderr_tail}"
-            logger.warning("FAILED %s: %s", combo_id, error_msg[:200])
+            if proc.returncode != 0:
+                stderr_tail = (proc.stderr or "")[-500:]
+                error_msg = f"Exit code {proc.returncode}: {stderr_tail}"
+
+                # Retry on 429 rate-limit errors with short backoff
+                if "429" in stderr_tail and attempt < max_retries:
+                    wait_secs = 1  # 1 second fixed delay
+                    logger.debug(
+                        "RATE LIMIT %s (attempt %d/%d), retrying in %ds",
+                        combo_id, attempt + 1, max_retries, wait_secs,
+                    )
+                    time.sleep(wait_secs)
+                    continue
+
+                logger.warning("FAILED %s: %s", combo_id, error_msg[:200])
+                return RunResult(
+                    combo_id=combo_id,
+                    strategy=strategy,
+                    market=market,
+                    cost_mode=cost_mode,
+                    params=params,
+                    leverage=leverage,
+                    success=False,
+                    error=error_msg,
+                    elapsed_secs=elapsed,
+                )
+
+            # Collect results
+            result = collect_run_result(
+                run_dir=run_dir,
+                combo_id=combo_id,
+                strategy=strategy,
+                market=market,
+                cost_mode=cost_mode,
+                params=params,
+                leverage=leverage,
+            )
+            result.elapsed_secs = elapsed
+
+            if result.success:
+                trade_count = 0
+                if result.summary:
+                    trade_count = result.summary.get("total_trades", 0)
+                logger.info(
+                    "OK %s: %d trades, %.1fs", combo_id, trade_count, elapsed
+                )
+            else:
+                logger.warning("COLLECT FAILED %s: %s", combo_id, result.error)
+
+            return result
+
+        except subprocess.TimeoutExpired:
+            elapsed = time.time() - start_time
+            logger.error("TIMEOUT %s after %ds", combo_id, timeout_secs)
             return RunResult(
                 combo_id=combo_id,
                 strategy=strategy,
@@ -395,62 +449,37 @@ def run_single_combination(
                 params=params,
                 leverage=leverage,
                 success=False,
-                error=error_msg,
+                error=f"Timeout after {timeout_secs}s",
+                elapsed_secs=elapsed,
+            )
+        except Exception as e:
+            elapsed = time.time() - start_time
+            logger.error("ERROR %s: %s", combo_id, str(e))
+            return RunResult(
+                combo_id=combo_id,
+                strategy=strategy,
+                market=market,
+                cost_mode=cost_mode,
+                params=params,
+                leverage=leverage,
+                success=False,
+                error=str(e),
                 elapsed_secs=elapsed,
             )
 
-        # Collect results
-        result = collect_run_result(
-            run_dir=run_dir,
-            combo_id=combo_id,
-            strategy=strategy,
-            market=market,
-            cost_mode=cost_mode,
-            params=params,
-            leverage=leverage,
-        )
-        result.elapsed_secs = elapsed
-
-        if result.success:
-            trade_count = 0
-            if result.summary:
-                trade_count = result.summary.get("total_trades", 0)
-            logger.info(
-                "OK %s: %d trades, %.1fs", combo_id, trade_count, elapsed
-            )
-        else:
-            logger.warning("COLLECT FAILED %s: %s", combo_id, result.error)
-
-        return result
-
-    except subprocess.TimeoutExpired:
-        elapsed = time.time() - start_time
-        logger.error("TIMEOUT %s after %ds", combo_id, timeout_secs)
-        return RunResult(
-            combo_id=combo_id,
-            strategy=strategy,
-            market=market,
-            cost_mode=cost_mode,
-            params=params,
-            leverage=leverage,
-            success=False,
-            error=f"Timeout after {timeout_secs}s",
-            elapsed_secs=elapsed,
-        )
-    except Exception as e:
-        elapsed = time.time() - start_time
-        logger.error("ERROR %s: %s", combo_id, str(e))
-        return RunResult(
-            combo_id=combo_id,
-            strategy=strategy,
-            market=market,
-            cost_mode=cost_mode,
-            params=params,
-            leverage=leverage,
-            success=False,
-            error=str(e),
-            elapsed_secs=elapsed,
-        )
+    # Should not reach here, but just in case
+    elapsed = time.time() - start_time
+    return RunResult(
+        combo_id=combo_id,
+        strategy=strategy,
+        market=market,
+        cost_mode=cost_mode,
+        params=params,
+        leverage=leverage,
+        success=False,
+        error="Exhausted all retries",
+        elapsed_secs=elapsed,
+    )
 
 
 # ---------------------------------------------------------------------------

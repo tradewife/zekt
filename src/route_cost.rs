@@ -354,6 +354,30 @@ impl RouteCostOracle {
             );
         }
 
+        // Try file-based cache for cross-run persistence (only in backtest mode with cache dir)
+        let bucket = self.cache_bucket(size_usd);
+        let file_cache_dir = "data/route-cache";
+        let file_cache_key = format!("{}_{}_{}_{}", market, side, bucket, leverage as u64);
+        let file_cache_path = std::path::Path::new(file_cache_dir)
+            .join(format!("{}.json", file_cache_key));
+        if self.config.enabled && std::env::var("ZEKT_FILE_CACHE").is_ok() && file_cache_path.exists() {
+            if let Ok(data) = std::fs::read_to_string(&file_cache_path) {
+                if let Ok(cached) = serde_json::from_str::<crate::imperial::ImperialRouteResponse>(&data) {
+                    // Store in memory cache too for subsequent lookups
+                    self.cache_put(market, side, size_usd, &cached);
+                    return self.process_route_response(
+                        &cached,
+                        market,
+                        side,
+                        size_usd,
+                        leverage,
+                        flash_cost_usd,
+                        expected_edge_usd,
+                    );
+                }
+            }
+        }
+
         // Make Imperial API call
         self.api_call_count.fetch_add(1, Ordering::Relaxed);
 
@@ -366,6 +390,15 @@ impl RouteCostOracle {
 
                 // Cache the response
                 self.cache_put(market, side, size_usd, &response);
+
+                // Save to file cache for cross-run persistence
+                if let Ok(json) = serde_json::to_string(&response) {
+                    let _ = std::fs::create_dir_all("data/route-cache");
+                    let tmp_path = file_cache_path.with_extension("json.tmp");
+                    if std::fs::write(&tmp_path, &json).is_ok() {
+                        let _ = std::fs::rename(&tmp_path, &file_cache_path);
+                    }
+                }
 
                 debug!(
                     "Imperial route for {} {} ${:.0}: venue={}, cost=${:.4}",
