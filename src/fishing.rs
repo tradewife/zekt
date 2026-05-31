@@ -698,6 +698,7 @@ impl FishingSimulator {
                             fill_price * (1.0 - self.config.tp_offset_bps / 10_000.0)
                         };
                         order.compute_pnl(tp_price, self.is_long);
+                        order.adverse_selected = true;
                         self.result.tp_hit_count += 1;
                         sl_tp_results.push((i, SlTpResult::TakeProfitHit));
                     }
@@ -707,8 +708,10 @@ impl FishingSimulator {
         }
 
         // 7. Track missed fills — check if price passed through order levels
-        // that were not active (cancelled/expired)
-        for order in &self.orders {
+        // that were not active (cancelled/expired). After recording, change
+        // status to OrderStatus::Missed to prevent double-counting on
+        // subsequent ticks.
+        for order in self.orders.iter_mut() {
             if order.status == OrderStatus::CancelledCascade
                 || order.status == OrderStatus::CancelledDecay
                 || order.status == OrderStatus::Expired
@@ -734,6 +737,8 @@ impl FishingSimulator {
                     } else {
                         self.result.missed_losers += 1;
                     }
+                    // Mark as Missed to prevent re-counting on future ticks
+                    order.status = OrderStatus::Missed;
                 }
             }
         }
@@ -2188,5 +2193,214 @@ mod tests {
         assert_eq!(result.filled_orders, 3);
         assert!(result.sl_hit_count > 0);
         assert!(result.total_net_pnl_usd < 0.0, "Should have negative net PnL on SL");
+    }
+
+    // =======================================================================
+    // Regression: TP re-counting bug fix
+    // =======================================================================
+
+    #[test]
+    fn test_tp_hit_not_recounted_on_subsequent_ticks() {
+        // BUG: adverse_selected not set after TP hit, causing duplicate TP
+        // counts on subsequent ticks. Fix: set adverse_selected = true in
+        // TakeProfitHit branch to prevent re-evaluation.
+        let config = test_config();
+        let zone = test_zone(100.0);
+        let mut sim = FishingSimulator::new(config.clone(), true);
+        sim.place_ladder(&zone, 0, 101.0, 1_700_000_000_000);
+
+        // Fill ONLY order 0 by setting low between order 0 and order 1 prices
+        let fill_price_0 = sim.orders()[0].price;
+        let fill_price_1 = sim.orders()[1].price;
+        let fill_market = MarketConditions {
+            price: 100.5,
+            high: 101.0,
+            low: (fill_price_0 + fill_price_1) / 2.0, // between order 0 and 1
+            timestamp_ms: 1_700_000_000_100,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&fill_market);
+        assert!(sim.orders()[0].has_fill());
+        assert!(!sim.orders()[1].has_fill(), "Only order 0 should be filled");
+        assert!(!sim.orders()[2].has_fill(), "Only order 0 should be filled");
+
+        // Tick 1: push price to TP level for order 0
+        let tp_price = fill_price_0 * (1.0 + config.tp_offset_bps / 10_000.0);
+        let tp_market = MarketConditions {
+            price: tp_price + 0.5,
+            high: tp_price + 1.0,
+            low: fill_price_0,
+            timestamp_ms: 1_700_000_000_200,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        let results = sim.tick(&tp_market);
+        assert!(results.iter().any(|(_, r)| *r == SlTpResult::TakeProfitHit),
+            "First tick at TP should trigger TakeProfitHit");
+
+        // Tick 2: price still above TP — should NOT trigger another TP count
+        let tp_market2 = MarketConditions {
+            price: tp_price + 1.0,
+            high: tp_price + 2.0,
+            low: tp_price + 0.5,
+            timestamp_ms: 1_700_000_000_300,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        let results2 = sim.tick(&tp_market2);
+        assert!(results2.is_empty(),
+            "Subsequent tick at TP should NOT trigger another TP hit");
+
+        // Tick 3: yet another tick at TP — still should not re-trigger
+        let tp_market3 = MarketConditions {
+            price: tp_price + 2.0,
+            high: tp_price + 3.0,
+            low: tp_price + 1.0,
+            timestamp_ms: 1_700_000_000_400,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        let results3 = sim.tick(&tp_market3);
+        assert!(results3.is_empty(),
+            "Third tick at TP should NOT trigger another TP hit");
+
+        // Verify the order is marked as adversely selected (preventing re-evaluation)
+        assert!(sim.orders()[0].adverse_selected,
+            "Order should have adverse_selected=true after TP hit to prevent re-evaluation");
+
+        let result = sim.finalize();
+        assert_eq!(result.tp_hit_count, 1,
+            "TP should be counted exactly once, got {}", result.tp_hit_count);
+    }
+
+    // =======================================================================
+    // Regression: Missed fills double-counting bug fix
+    // =======================================================================
+
+    #[test]
+    fn test_missed_fill_recorded_once_not_on_every_tick() {
+        // BUG: cancelled/expired orders checked for missed fills on every tick
+        // without deduplication. Fix: after recording a missed fill, change
+        // order status to OrderStatus::Missed to prevent re-counting.
+        let config = test_config();
+        let zone = test_zone(100.0);
+        let mut sim = FishingSimulator::new(config, true);
+        sim.place_ladder(&zone, 0, 101.0, 1_700_000_000_000);
+
+        // Cancel orders via cascade
+        let cancel_market = MarketConditions {
+            price: 101.0,
+            high: 101.5,
+            low: 100.5,
+            timestamp_ms: 1_700_000_000_000,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: true,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&cancel_market);
+
+        // Verify all orders are cancelled
+        for order in sim.orders() {
+            assert_eq!(order.status, OrderStatus::CancelledCascade);
+        }
+
+        let order_price = sim.orders()[0].price;
+
+        // Tick 1: price drops below cancelled order and recovers → missed winner
+        let missed_market1 = MarketConditions {
+            price: 101.0, // recovered above order price → would have been profitable
+            high: 101.5,
+            low: order_price - 0.5, // price went below cancelled order
+            timestamp_ms: 1_700_000_000_100,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&missed_market1);
+
+        // After the first tick recording the missed fill, order status should change
+        assert_eq!(sim.orders()[0].status, OrderStatus::Missed,
+            "Order status should change to Missed after recording missed fill");
+
+        // Tick 2: same conditions — should NOT double-count
+        let missed_market2 = MarketConditions {
+            price: 101.5,
+            high: 102.0,
+            low: order_price - 1.0,
+            timestamp_ms: 1_700_000_000_200,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&missed_market2);
+
+        // Tick 3: same conditions again — still should NOT triple-count
+        let missed_market3 = MarketConditions {
+            price: 102.0,
+            high: 102.5,
+            low: order_price - 1.5,
+            timestamp_ms: 1_700_000_000_300,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&missed_market3);
+
+        let result = sim.finalize();
+
+        // Each cancelled order should contribute at most 1 missed fill
+        // With 3 cancelled orders, missed_winners should be exactly 3 (one per order)
+        // NOT 9 (3 orders × 3 ticks)
+        assert_eq!(result.missed_winners, 3,
+            "Each order should be counted as missed winner exactly once, got {}",
+            result.missed_winners);
+    }
+
+    #[test]
+    fn test_missed_fill_status_prevents_recount() {
+        // Direct test: an order with status Missed should not be re-evaluated
+        // for missed fills on subsequent ticks.
+        let config = test_config();
+        let zone = test_zone(100.0);
+        let mut sim = FishingSimulator::new(config, true);
+        sim.place_ladder(&zone, 0, 101.0, 1_700_000_000_000);
+
+        // Manually set an order to Missed status
+        sim.orders_mut()[0].status = OrderStatus::Missed;
+        sim.orders_mut()[0].cancel_reason = Some("test_missed".to_string());
+
+        let order_price = sim.orders()[0].price;
+
+        // Tick with price passing through the missed order's level
+        let market = MarketConditions {
+            price: 101.0,
+            high: 101.5,
+            low: order_price - 0.5,
+            timestamp_ms: 1_700_000_000_100,
+            spread_pct: 0.05,
+            depth_usd: 50_000.0,
+            cascade_detected: false,
+            zone_decay_scores: vec![],
+        };
+        sim.tick(&market);
+
+        let result = sim.finalize();
+        // The manually-set Missed order should NOT be counted again
+        // (only the other 2 active orders might contribute if they get cancelled)
+        assert_eq!(result.missed_winners, 0,
+            "Already-Missed order should not be counted again");
     }
 }
