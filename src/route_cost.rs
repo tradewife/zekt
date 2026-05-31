@@ -360,22 +360,21 @@ impl RouteCostOracle {
         let file_cache_key = format!("{}_{}_{}_{}", market, side, bucket, leverage as u64);
         let file_cache_path = std::path::Path::new(file_cache_dir)
             .join(format!("{}.json", file_cache_key));
-        if self.config.enabled && std::env::var("ZEKT_FILE_CACHE").is_ok() && file_cache_path.exists() {
-            if let Ok(data) = std::fs::read_to_string(&file_cache_path) {
-                if let Ok(cached) = serde_json::from_str::<crate::imperial::ImperialRouteResponse>(&data) {
-                    // Store in memory cache too for subsequent lookups
-                    self.cache_put(market, side, size_usd, &cached);
-                    return self.process_route_response(
-                        &cached,
-                        market,
-                        side,
-                        size_usd,
-                        leverage,
-                        flash_cost_usd,
-                        expected_edge_usd,
-                    );
-                }
-            }
+        if self.config.enabled && std::env::var("ZEKT_FILE_CACHE").is_ok() && file_cache_path.exists()
+            && let Ok(data) = std::fs::read_to_string(&file_cache_path)
+            && let Ok(cached) = serde_json::from_str::<crate::imperial::ImperialRouteResponse>(&data)
+        {
+            // Store in memory cache too for subsequent lookups
+            self.cache_put(market, side, size_usd, &cached);
+            return self.process_route_response(
+                &cached,
+                market,
+                side,
+                size_usd,
+                leverage,
+                flash_cost_usd,
+                expected_edge_usd,
+            );
         }
 
         // Make Imperial API call
