@@ -4409,7 +4409,7 @@ impl Strategy for LiquidityMemoryFisherStrategy {
 
     fn detect_exit(
         &self,
-        snapshot: &MomentumSnapshot,
+        _snapshot: &MomentumSnapshot,
         ctx: &PositionContext,
     ) -> Option<Signal> {
         let current_price = ctx.current_price;
@@ -4812,7 +4812,7 @@ impl ZoneArbiterStrategy {
     /// VAL-STRAT-ARB-005: Regime labels match RegimeDetector
     pub fn evaluate_routing(
         &self,
-        snapshot: &MomentumSnapshot,
+        _snapshot: &MomentumSnapshot,
         ext: &crate::signal::MarketExtension,
     ) -> SubStrategy {
         // Check for stale data
