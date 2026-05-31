@@ -9,6 +9,8 @@ mod hl_info;
 #[allow(dead_code)]
 mod liquidation;
 #[allow(dead_code)]
+mod liquidity_memory;
+#[allow(dead_code)]
 mod hl_paper;
 #[allow(dead_code)]
 mod imperial;
