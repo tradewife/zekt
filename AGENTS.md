@@ -1,13 +1,14 @@
-<coding_guidelines>
-<coding_guidelines>
-# Zekt -- Coding Guidelines
+# Zekt — Coding Guidelines for AI Agents
 
 ## What This Is
-An **autonomous strategy poaching system** that discovers profitable Hyperliquid wallets, reverse-engineers their strategies from fill-level data (the Bulk.Trade methodology), and replicates them on Flash Trade (Solana perps). Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence. Single Rust crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
 
-**Pipeline:** Research on Hyperliquid (rich data via QuickNode HyperCore API) → Execute on Flash Trade (Solana perps). Semi-autonomous: poach, analyze, and paper trade automatically; require human approval before live execution.
+A **strategy research and validation platform** for Solana perpetual futures (Flash Trade). The system discovers profitable trading patterns from Hyperliquid wallets, reverse-engineers them from fill-level data (the Bulk.Trade methodology), and validates whether those patterns hold under rigorous testing before any execution. Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence. Single Rust crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
+
+**Pipeline:** Research on Hyperliquid (rich data via QuickNode HyperCore API) → Validate rigorously → Execute on Flash Trade (Solana perps). Semi-automated: discovery, analysis, and backtesting run without human intervention; paper trading and live execution require human approval.
 
 **16 strategies:** momentum-scalper, lp-consumption, mean-reversion, trend-follower, funding-capture, blueprint-scalper, blueprint-mean-revert, blueprint-cluster-002 through 009, blueprint-hft-market-maker, liquidation-cascade-hunter. All implement the `Strategy` trait in `strategy.rs`. Strategy blueprints are generated from fill-level analysis of profitable HL wallets (see `analysis/` directory).
+
+**Validation status (M10):** After exhaustive 90-day walk-forward validation — 294K parameter combinations, 315 leverage/sizing grid cells, 3 portfolio allocation strategies — **no current blueprint strategy passes the six-criterion promotion gate**. All promising short-window signals were overfit artifacts. Fee dominance (fee-to-gross >100%) overwhelms any remaining edge. The correct outcome is "reject all candidates." No strategy has been promoted to paper or live trading.
 
 ## Recommended Pipeline
 ```
@@ -15,14 +16,15 @@ An **autonomous strategy poaching system** that discovers profitable Hyperliquid
 2. Analyze   → Python pipeline: position clustering → metrics → classification → blueprints
 3. Implement → Rust Strategy trait with parameters from blueprint JSON
 4. Backtest  → Validate on HL historical candles (must pass Sharpe ≥ 1.0 threshold)
-5. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
-6. Live      → Execute with real capital (requires human approval)
+5. Validate  → Walk-forward parameter search → leverage/sizing frontier (90-day OOS)
+6. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
+7. Live      → Execute with real capital (requires human approval)
 ```
 
 ## Build & Run
 ```bash
 cargo build --release                          # Build Rust binary
-cargo test                                     # Run 736 Rust unit tests
+cargo test                                     # Run 828 Rust unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v            # Run 132 Python analysis module tests
@@ -36,6 +38,11 @@ cargo run --bin pipeline -- --help              # All options
 # Backtest against Hyperliquid historical data
 ./target/release/zekt --backtest --strategies momentum-scalper --markets BTC,SOL \
   --backtest-start 2026-05-15 --backtest-interval 5m --paper-balance 1000
+
+# Backtest with Imperial route oracle cost mode
+./target/release/zekt --backtest --strategies momentum-scalper --markets SOL \
+  --backtest-start 2026-05-15 --backtest-interval 5m \
+  --cost-mode imperial-route-oracle
 
 # Multi-strategy multi-market paper trading
 ./target/release/zekt --paper --strategies momentum-scalper,lp-consumption \
@@ -239,14 +246,14 @@ Base URL: `https://api.hyperliquid.xyz/info`
 TOML with 4 main sections: `[agent]`, `[flash]`, `[strategy]`, `[risk]`
 Additional sections: `[alpha-scanner]`, `[copy-trader]`, `[whale-watcher]`, `[hypurrscan]`, `[pipeline]`, `[backtest]`, `[imperial]`, `[route-oracle]`, `[liquidation]`
 Strategy sub-tables: `[strategy.lp-consumption]`, `[strategy.mean-reversion]`, `[strategy.trend-follower]`, `[strategy.funding-capture]`
-Backtest config includes: `walk_forward_enabled`, `slippage_bps`, `regime_filter`
+Backtest config includes: `walk_forward_enabled`, `slippage_bps`, `regime_filter`, `cost_mode`
 QuickNode configuration: `QUICKNODE_HL_URL` env var or `--quicknode-url` CLI flag (not in TOML, gitignored)
 See `config/perps.toml` for the full schema with defaults.
 
 ## Testing
 
 ### Rust Tests
-736 unit tests across all modules. Run with `cargo test`.
+828 unit tests across all modules. Run with `cargo test`.
 - `strategy.rs`: 194 tests (entry/exit for each strategy, parameter validation, factory)
 - `liquidation.rs`: 101 tests (zone capture, multi-source fusion, confidence scoring, snapshot persistence, retention)
 - `imperial.rs`: 53 tests (ImperialClient, venue comparison, fee parsing, endpoint coverage)
@@ -274,5 +281,3 @@ Run with `python -m pytest analysis/tests/ -v`. 132 tests total.
 - Use synthetic fill data for unit tests (no API calls required)
 - Edge cases: <10 trades, empty fills, single-market wallets
 - At least 3 tests per module covering happy path + edge cases
-</coding_guidelines>
-</coding_guidelines>

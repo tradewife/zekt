@@ -1,0 +1,48 @@
+[2m2026-05-22T14:38:29.154547Z[0m [32m INFO[0m [blueprint-cluster-002] Auto-scaling velocity: 2.122% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.155408Z[0m [32m INFO[0m [blueprint-cluster-002] Auto-scaling velocity: 2.122% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.156471Z[0m [32m INFO[0m [blueprint-cluster-002] Auto-scaling velocity: 2.122% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.157337Z[0m [32m INFO[0m [blueprint-cluster-003] Auto-scaling velocity: 5.397% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.158194Z[0m [32m INFO[0m [blueprint-cluster-003] Auto-scaling velocity: 5.397% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.159184Z[0m [32m INFO[0m [blueprint-cluster-003] Auto-scaling velocity: 5.397% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.162972Z[0m [32m INFO[0m [blueprint-cluster-006] Auto-scaling velocity: 8.708% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.163752Z[0m [32m INFO[0m [blueprint-cluster-006] Auto-scaling velocity: 8.708% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.164711Z[0m [32m INFO[0m [blueprint-cluster-006] Auto-scaling velocity: 8.708% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.165539Z[0m [32m INFO[0m [blueprint-cluster-007] Auto-scaling velocity: 11.993% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.166209Z[0m [32m INFO[0m [blueprint-cluster-007] Auto-scaling velocity: 11.993% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.167046Z[0m [32m INFO[0m [blueprint-cluster-007] Auto-scaling velocity: 11.993% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.167783Z[0m [32m INFO[0m [blueprint-cluster-008] Auto-scaling velocity: 3.024% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.168721Z[0m [32m INFO[0m [blueprint-cluster-008] Auto-scaling velocity: 3.024% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.169801Z[0m [32m INFO[0m [blueprint-cluster-008] Auto-scaling velocity: 3.024% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.170869Z[0m [32m INFO[0m [blueprint-cluster-009] Auto-scaling velocity: 1.737% → 0.499% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.171777Z[0m [32m INFO[0m [blueprint-cluster-009] Auto-scaling velocity: 1.737% → 0.514% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.172674Z[0m [32m INFO[0m [blueprint-cluster-009] Auto-scaling velocity: 1.737% → 0.513% (p90 of 30 velocities, original at p0)
+[2m2026-05-22T14:38:29.176906Z[0m [32m INFO[0m ║ Starting Balance: $1000.00  →  Final: $728.56
+[2m2026-05-22T14:38:29.176909Z[0m [32m INFO[0m ║ Total Net PnL: $-271.44  |  Total Fees: $434.73  |  Total Trades: 2683
+[2m2026-05-22T14:38:29.176916Z[0m [32m INFO[0m ║ blueprint-scalper    BTC      356    -1.56    45.72   -24.61  11.0%  -1.08    NO
+[2m2026-05-22T14:38:29.176920Z[0m [32m INFO[0m ║ blueprint-scalper    SOL      517    -3.84    66.39   -37.31  19.1%  -0.72    NO
+[2m2026-05-22T14:38:29.176923Z[0m [32m INFO[0m ║ blueprint-scalper    ETH      420    -1.53    53.94   -28.72  17.1%  -0.70    NO
+[2m2026-05-22T14:38:29.176926Z[0m [32m INFO[0m ║ blueprint-mean-revert BTC        6    -0.85     1.46    -1.61  50.0%  -0.60    NO
+[2m2026-05-22T14:38:29.176929Z[0m [32m INFO[0m ║ blueprint-mean-revert SOL       36    -2.45     8.81    -7.06  41.7%  -0.45    NO
+[2m2026-05-22T14:38:29.176932Z[0m [32m INFO[0m ║ blueprint-mean-revert ETH       20    -2.26     5.00    -4.92  35.0%  -0.60    NO
+[2m2026-05-22T14:38:29.176935Z[0m [32m INFO[0m ║ blueprint-cluster-002 BTC       56     0.45     5.22    -2.31  57.1%  -0.27    NO
+[2m2026-05-22T14:38:29.176938Z[0m [32m INFO[0m ║ blueprint-cluster-002 SOL      145     1.38    13.43    -5.68  56.6%  -0.19    NO
+[2m2026-05-22T14:38:29.176941Z[0m [32m INFO[0m ║ blueprint-cluster-002 ETH       92    -1.92     8.57    -6.46  47.8%  -0.36    NO
+[2m2026-05-22T14:38:29.176943Z[0m [32m INFO[0m ║ blueprint-cluster-003 BTC       45    -1.46     4.99    -4.51  26.7%  -0.48    NO
+[2m2026-05-22T14:38:29.176946Z[0m [32m INFO[0m ║ blueprint-cluster-003 SOL       88    -1.08     8.62    -5.89  33.0%  -0.29    NO
+[2m2026-05-22T14:38:29.176949Z[0m [32m INFO[0m ║ blueprint-cluster-003 ETH       53    -0.82     5.47    -4.01  30.2%  -0.35    NO
+[2m2026-05-22T14:38:29.176952Z[0m [32m INFO[0m ║ blueprint-cluster-005 BTC       37    -2.36    21.46   -13.87  35.1%  -0.38    NO
+[2m2026-05-22T14:38:29.176954Z[0m [32m INFO[0m ║ blueprint-cluster-005 SOL       82    -8.87    46.97   -33.79  37.8%  -0.34    NO
+[2m2026-05-22T14:38:29.176957Z[0m [32m INFO[0m ║ blueprint-cluster-005 ETH       62     6.28    35.96   -13.01  38.7%  -0.15    NO
+[2m2026-05-22T14:38:29.176960Z[0m [32m INFO[0m ║ blueprint-cluster-006 BTC       36    -0.84     2.14    -2.27  19.4%  -0.56    NO
+[2m2026-05-22T14:38:29.176963Z[0m [32m INFO[0m ║ blueprint-cluster-006 SOL       78    -1.08     3.68    -3.20  25.6%  -0.32    NO
+[2m2026-05-22T14:38:29.176965Z[0m [32m INFO[0m ║ blueprint-cluster-006 ETH       44    -0.94     2.37    -2.43  18.2%  -0.49    NO
+[2m2026-05-22T14:38:29.176968Z[0m [32m INFO[0m ║ blueprint-cluster-007 BTC       37    -0.16    12.39    -9.23  29.7%  -0.34    NO
+[2m2026-05-22T14:38:29.176971Z[0m [32m INFO[0m ║ blueprint-cluster-007 SOL       83    -1.38    20.25   -14.20  34.9%  -0.18    NO
+[2m2026-05-22T14:38:29.176973Z[0m [32m INFO[0m ║ blueprint-cluster-007 ETH       56    -7.08    15.35   -17.40  26.8%  -0.35    NO
+[2m2026-05-22T14:38:29.176976Z[0m [32m INFO[0m ║ blueprint-cluster-008 BTC       49     0.29     6.03    -3.28  32.7%  -0.24    NO
+[2m2026-05-22T14:38:29.176979Z[0m [32m INFO[0m ║ blueprint-cluster-008 SOL       75    -0.64     8.77    -5.64  37.3%  -0.22    NO
+[2m2026-05-22T14:38:29.176982Z[0m [32m INFO[0m ║ blueprint-cluster-008 ETH       64     0.47     7.61    -3.93  34.4%  -0.21    NO
+[2m2026-05-22T14:38:29.176986Z[0m [32m INFO[0m ║ blueprint-cluster-009 BTC       37    -1.67     6.53    -5.89  35.1%  -0.32    NO
+[2m2026-05-22T14:38:29.176988Z[0m [32m INFO[0m ║ blueprint-cluster-009 SOL       60     0.52     9.59    -5.32  33.3%  -0.17    NO
+[2m2026-05-22T14:38:29.177000Z[0m [32m INFO[0m ║ blueprint-cluster-009 ETH       49     0.06     8.02    -4.91  30.6%  -0.18    NO
+[2m2026-05-22T14:38:29.177005Z[0m [33m WARN[0m ║ BELOW Sharpe ≥ 1.0: blueprint-scalper:BTC, blueprint-scalper:SOL, blueprint-scalper:ETH, blueprint-mean-revert:BTC, blueprint-mean-revert:SOL, blueprint-mean-revert:ETH, blueprint-cluster-002:BTC, blueprint-cluster-002:SOL, blueprint-cluster-002:ETH, blueprint-cluster-003:BTC, blueprint-cluster-003:SOL, blueprint-cluster-003:ETH, blueprint-cluster-005:BTC, blueprint-cluster-005:SOL, blueprint-cluster-005:ETH, blueprint-cluster-006:BTC, blueprint-cluster-006:SOL, blueprint-cluster-006:ETH, blueprint-cluster-007:BTC, blueprint-cluster-007:SOL, blueprint-cluster-007:ETH, blueprint-cluster-008:BTC, blueprint-cluster-008:SOL, blueprint-cluster-008:ETH, blueprint-cluster-009:BTC, blueprint-cluster-009:SOL, blueprint-cluster-009:ETH

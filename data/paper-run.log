@@ -1,0 +1,104 @@
+[2m2026-05-16T01:40:59.443685Z[0m [32m INFO[0m === Zekt Momentum Scalper v0.3 (Flash Trade) ===
+[2m2026-05-16T01:40:59.443741Z[0m [32m INFO[0m Config: config/perps.toml
+[2m2026-05-16T01:40:59.443748Z[0m [32m INFO[0m Market: SOL
+[2m2026-05-16T01:40:59.443751Z[0m [32m INFO[0m Strategy: momentum-scalper
+[2m2026-05-16T01:40:59.443772Z[0m [33m WARN[0m PAPER TRADING (MULTI) -- multi-strategy multi-market mode
+[2m2026-05-16T01:40:59.443874Z[0m [32m INFO[0m Multi-Paper Engine: 3 strategies × 3 markets = 9 cells
+[2m2026-05-16T01:40:59.443881Z[0m [32m INFO[0m Strategies: momentum-scalper, lp-consumption, mean-reversion
+[2m2026-05-16T01:40:59.443884Z[0m [32m INFO[0m Markets: SOL, BTC, ETH
+[2m2026-05-16T01:40:59.443887Z[0m [32m INFO[0m Simulated balance: $1000.00
+[2m2026-05-16T01:40:59.443937Z[0m [32m INFO[0m === Zekt MULTI-PAPER Trading Mode ===
+[2m2026-05-16T01:40:59.443942Z[0m [32m INFO[0m Fee estimation: live API preview (entry + exit) + 0.01%/hr borrow
+[2m2026-05-16T01:40:59.443945Z[0m [33m WARN[0m MULTI-PAPER MODE -- no real transactions will be signed
+[2m2026-05-16T01:40:59.589502Z[0m [32m INFO[0m [SOL] Initial price: $88.95
+[2m2026-05-16T01:40:59.703807Z[0m [32m INFO[0m [BTC] Initial price: $78989.24
+[2m2026-05-16T01:40:59.816847Z[0m [32m INFO[0m [ETH] Initial price: $2223.55
+[2m2026-05-16T01:46:17.565980Z[0m [32m INFO[0m LONG signal: velocity=0.158%, strength=53
+[2m2026-05-16T01:46:17.684935Z[0m [32m INFO[0m >>> [momentum-scalper:SOL] OPENING LONG $100 x 10x @ $89.09 | liq=$80.27 | entry_fee=$0.5000 (0.500%) | strength=53 velocity=0.158%
+[2m2026-05-16T01:46:39.110998Z[0m [32m INFO[0m LONG signal: velocity=0.158%, strength=54
+[2m2026-05-16T01:46:39.233280Z[0m [32m INFO[0m >>> [momentum-scalper:ETH] OPENING LONG $100 x 10x @ $2226.51 | liq=$2006.08 | entry_fee=$0.5000 (0.500%) | strength=54 velocity=0.158%
+[2m2026-05-16T01:51:29.844621Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING LONG SOL | $89.09 -> $89.09 | reason=MomentumLost | hold=5.2min
+[2m2026-05-16T01:51:29.844678Z[0m [32m INFO[0m     gross_pnl=$0.05 | entry_fee=$0.5000 exit_fee=$1.0000 borrow_fee=$0.0081 | total_fees=$1.5081 (0.151%) | net=$-0.96
+[2m2026-05-16T01:51:29.844694Z[0m [32m INFO[0m TRADE CLOSED: LONG SOL-USD @ $89.09 -> $89.09 | PnL: $-0.96 (LOSS) | fees: $1.51 | hold: 312s
+[2m2026-05-16T01:51:29.845007Z[0m [32m INFO[0m Loss recorded: $-0.96, daily PnL: $-0.96
+[2m2026-05-16T01:51:29.845027Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $998.04
+[2m2026-05-16T01:51:35.205894Z[0m [33m WARN[0m STOP LOSS: pnl=-inf%, threshold=-1.00%
+[2m2026-05-16T01:51:35.327357Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT  | $0.00 -> $89.09 | reason=StopLoss | hold=0.1min
+[2m2026-05-16T01:51:35.327428Z[0m [32m INFO[0m     gross_pnl=$0.00 | entry_fee=$0.0000 exit_fee=$0.0000 borrow_fee=$0.0000 | total_fees=$0.0000 (NaN%) | net=$0.00
+[2m2026-05-16T01:51:35.327466Z[0m [32m INFO[0m TRADE CLOSED: SHORT  @ $0.00 -> $89.09 | PnL: $0.00 (LOSS) | fees: $0.00 | hold: 5s
+[2m2026-05-16T01:51:35.328118Z[0m [32m INFO[0m Win recorded: $0.00, daily PnL: $-0.96
+[2m2026-05-16T01:51:35.328154Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $998.04
+[2m2026-05-16T01:54:00.361340Z[0m [32m INFO[0m <<< [momentum-scalper:ETH] CLOSING LONG ETH | $2226.51 -> $2227.58 | reason=MomentumLost | hold=7.3min
+[2m2026-05-16T01:54:00.361447Z[0m [32m INFO[0m     gross_pnl=$0.48 | entry_fee=$0.5000 exit_fee=$1.0000 borrow_fee=$0.0114 | total_fees=$1.5114 (0.151%) | net=$-0.53
+[2m2026-05-16T01:54:00.361470Z[0m [32m INFO[0m TRADE CLOSED: LONG ETH-USD @ $2226.51 -> $2227.58 | PnL: $-0.53 (LOSS) | fees: $1.51 | hold: 441s
+[2m2026-05-16T01:54:00.362009Z[0m [32m INFO[0m Loss recorded: $-0.53, daily PnL: $-1.49
+[2m2026-05-16T01:54:00.362030Z[0m [32m INFO[0m [momentum-scalper:ETH] Simulated balance: $997.51
+[2m2026-05-16T01:54:05.745974Z[0m [33m WARN[0m STOP LOSS: pnl=-inf%, threshold=-1.00%
+[2m2026-05-16T01:54:05.864507Z[0m [32m INFO[0m <<< [momentum-scalper:ETH] CLOSING SHORT  | $0.00 -> $2227.62 | reason=StopLoss | hold=0.1min
+[2m2026-05-16T01:54:05.864595Z[0m [32m INFO[0m     gross_pnl=$0.00 | entry_fee=$0.0000 exit_fee=$0.0000 borrow_fee=$0.0000 | total_fees=$0.0000 (NaN%) | net=$0.00
+[2m2026-05-16T01:54:05.864611Z[0m [32m INFO[0m TRADE CLOSED: SHORT  @ $0.00 -> $2227.62 | PnL: $0.00 (LOSS) | fees: $0.00 | hold: 5s
+[2m2026-05-16T01:54:05.865201Z[0m [32m INFO[0m Win recorded: $0.00, daily PnL: $-1.49
+[2m2026-05-16T01:54:05.865226Z[0m [32m INFO[0m [momentum-scalper:ETH] Simulated balance: $997.51
+[2m2026-05-16T01:56:57.640016Z[0m [32m INFO[0m LONG signal: velocity=0.159%, strength=52
+[2m2026-05-16T01:56:57.851524Z[0m [32m INFO[0m >>> [momentum-scalper:SOL] OPENING LONG $100 x 10x @ $89.23 | liq=$80.40 | entry_fee=$0.5000 (0.500%) | strength=52 velocity=0.159%
+[2m2026-05-16T02:02:04.178808Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING LONG SOL | $89.23 -> $89.26 | reason=MomentumLost | hold=5.1min
+[2m2026-05-16T02:02:04.178846Z[0m [32m INFO[0m     gross_pnl=$0.30 | entry_fee=$0.5000 exit_fee=$1.0000 borrow_fee=$0.0079 | total_fees=$1.5079 (0.151%) | net=$-0.71
+[2m2026-05-16T02:02:04.178856Z[0m [32m INFO[0m TRADE CLOSED: LONG SOL-USD @ $89.23 -> $89.26 | PnL: $-0.71 (LOSS) | fees: $1.51 | hold: 306s
+[2m2026-05-16T02:02:04.179051Z[0m [32m INFO[0m Loss recorded: $-0.71, daily PnL: $-2.19
+[2m2026-05-16T02:02:04.179062Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $996.31
+[2m2026-05-16T02:02:09.525824Z[0m [33m WARN[0m STOP LOSS: pnl=-inf%, threshold=-1.00%
+[2m2026-05-16T02:02:09.647367Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT  | $0.00 -> $89.26 | reason=StopLoss | hold=0.1min
+[2m2026-05-16T02:02:09.647399Z[0m [32m INFO[0m     gross_pnl=$0.00 | entry_fee=$0.0000 exit_fee=$0.0000 borrow_fee=$0.0000 | total_fees=$0.0000 (NaN%) | net=$0.00
+[2m2026-05-16T02:02:09.647405Z[0m [32m INFO[0m TRADE CLOSED: SHORT  @ $0.00 -> $89.26 | PnL: $0.00 (LOSS) | fees: $0.00 | hold: 5s
+[2m2026-05-16T02:02:09.648457Z[0m [32m INFO[0m Win recorded: $0.00, daily PnL: $-2.19
+[2m2026-05-16T02:02:09.648466Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $996.31
+[2m2026-05-16T02:04:18.092110Z[0m [32m INFO[0m SHORT signal: velocity=0.160%, strength=54
+[2m2026-05-16T02:04:18.205995Z[0m [32m INFO[0m >>> [momentum-scalper:SOL] OPENING SHORT $100 x 10x @ $89.14 | liq=$97.97 | entry_fee=$0.5000 (0.500%) | strength=54 velocity=0.160%
+[2m2026-05-16T02:26:46.349293Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT SOL | $89.14 -> $89.13 | reason=MomentumLost | hold=22.5min
+[2m2026-05-16T02:26:46.349340Z[0m [32m INFO[0m     gross_pnl=$0.07 | entry_fee=$0.5000 exit_fee=$1.0000 borrow_fee=$0.0349 | total_fees=$1.5349 (0.153%) | net=$-0.97
+[2m2026-05-16T02:26:46.349356Z[0m [32m INFO[0m TRADE CLOSED: SHORT SOL-USD @ $89.14 -> $89.13 | PnL: $-0.97 (LOSS) | fees: $1.53 | hold: 1348s
+[2m2026-05-16T02:26:46.349608Z[0m [32m INFO[0m Loss recorded: $-0.97, daily PnL: $-3.16
+[2m2026-05-16T02:26:46.349627Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $994.84
+[2m2026-05-16T02:26:51.704017Z[0m [33m WARN[0m STOP LOSS: pnl=-inf%, threshold=-1.00%
+[2m2026-05-16T02:26:51.820097Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT  | $0.00 -> $89.13 | reason=StopLoss | hold=0.1min
+[2m2026-05-16T02:26:51.820150Z[0m [32m INFO[0m     gross_pnl=$0.00 | entry_fee=$0.0000 exit_fee=$0.0000 borrow_fee=$0.0000 | total_fees=$0.0000 (NaN%) | net=$0.00
+[2m2026-05-16T02:26:51.820172Z[0m [32m INFO[0m TRADE CLOSED: SHORT  @ $0.00 -> $89.13 | PnL: $0.00 (LOSS) | fees: $0.00 | hold: 5s
+[2m2026-05-16T02:26:51.820546Z[0m [32m INFO[0m Win recorded: $0.00, daily PnL: $-3.16
+[2m2026-05-16T02:26:51.820567Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $994.84
+[2m2026-05-16T02:30:15.889569Z[0m [32m INFO[0m SHORT signal: velocity=0.173%, strength=55
+[2m2026-05-16T02:30:16.005878Z[0m [32m INFO[0m >>> [momentum-scalper:SOL] OPENING SHORT $100 x 10x @ $88.98 | liq=$97.79 | entry_fee=$0.5000 (0.500%) | strength=55 velocity=0.173%
+[2m2026-05-16T02:40:59.693997Z[0m [32m INFO[0m === Hourly Status (01h00m elapsed) ===
+[2m2026-05-16T02:40:59.695114Z[0m [32m INFO[0m Balance: $994.34 | Open positions: 1 | Total trades: 8
+[2m2026-05-16T02:40:59.695130Z[0m [32m INFO[0m   [momentum-scalper] trades=8 | net_pnl=$-3.16 | fees=$6.06
+[2m2026-05-16T02:40:59.695137Z[0m [32m INFO[0m   [lp-consumption] trades=0 | net_pnl=$0.00 | fees=$0.00
+[2m2026-05-16T02:40:59.695142Z[0m [32m INFO[0m   [mean-reversion] trades=0 | net_pnl=$0.00 | fees=$0.00
+[2m2026-05-16T02:41:26.627976Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT SOL | $88.98 -> $88.98 | reason=MomentumLost | hold=11.2min
+[2m2026-05-16T02:41:26.628028Z[0m [32m INFO[0m     gross_pnl=$0.05 | entry_fee=$0.5000 exit_fee=$1.0000 borrow_fee=$0.0174 | total_fees=$1.5174 (0.152%) | net=$-0.97
+[2m2026-05-16T02:41:26.628042Z[0m [32m INFO[0m TRADE CLOSED: SHORT SOL-USD @ $88.98 -> $88.98 | PnL: $-0.97 (LOSS) | fees: $1.52 | hold: 670s
+[2m2026-05-16T02:41:26.628279Z[0m [32m INFO[0m Loss recorded: $-0.97, daily PnL: $-4.13
+[2m2026-05-16T02:41:26.628288Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $993.37
+[2m2026-05-16T02:41:31.989064Z[0m [33m WARN[0m STOP LOSS: pnl=-inf%, threshold=-1.00%
+[2m2026-05-16T02:41:32.104014Z[0m [32m INFO[0m <<< [momentum-scalper:SOL] CLOSING SHORT  | $0.00 -> $88.98 | reason=StopLoss | hold=0.1min
+[2m2026-05-16T02:41:32.104060Z[0m [32m INFO[0m     gross_pnl=$0.00 | entry_fee=$0.0000 exit_fee=$0.0000 borrow_fee=$0.0000 | total_fees=$0.0000 (NaN%) | net=$0.00
+[2m2026-05-16T02:41:32.104077Z[0m [32m INFO[0m TRADE CLOSED: SHORT  @ $0.00 -> $88.98 | PnL: $0.00 (LOSS) | fees: $0.00 | hold: 5s
+[2m2026-05-16T02:41:32.104394Z[0m [32m INFO[0m Win recorded: $0.00, daily PnL: $-4.13
+[2m2026-05-16T02:41:32.104408Z[0m [32m INFO[0m [momentum-scalper:SOL] Simulated balance: $993.37
+[2m2026-05-16T03:37:26.013700Z[0m [32m INFO[0m Received shutdown signal, finishing current tick...
+[2m2026-05-16T03:37:26.860205Z[0m [32m INFO[0m Shutdown signal received
+[2m2026-05-16T03:37:26.860601Z[0m [32m INFO[0m === Multi-Paper Trading Final Stats ===
+[2m2026-05-16T03:37:26.860616Z[0m [32m INFO[0m Trades: 10 | Win rate: 0.0%
+[2m2026-05-16T03:37:26.861388Z[0m [32m INFO[0m Gross PnL: $-4.13 | Fees: $7.58 | Net PnL: $-11.71
+[2m2026-05-16T03:37:26.861401Z[0m [32m INFO[0m Simulated balance: $993.37
+[2m2026-05-16T03:37:26.861405Z[0m [32m INFO[0m Duration: 116.5 minutes
+[2m2026-05-16T03:37:26.861786Z[0m [32m INFO[0m === Strategy × Market Comparison (sorted by net PnL) ===
+[2m2026-05-16T03:37:26.861800Z[0m [32m INFO[0m Strategy:Market               Gross$      Fees$       Net$ Trades
+[2m2026-05-16T03:37:26.862627Z[0m [32m INFO[0m momentum-scalper:BTC            0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863426Z[0m [32m INFO[0m lp-consumption:SOL              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863431Z[0m [32m INFO[0m lp-consumption:BTC              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863436Z[0m [32m INFO[0m lp-consumption:ETH              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863440Z[0m [32m INFO[0m mean-reversion:SOL              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863444Z[0m [32m INFO[0m mean-reversion:BTC              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863448Z[0m [32m INFO[0m mean-reversion:ETH              0.00       0.00       0.00      0
+[2m2026-05-16T03:37:26.863452Z[0m [32m INFO[0m momentum-scalper:ETH            0.98       1.51      -0.53      2
+[2m2026-05-16T03:37:26.863456Z[0m [32m INFO[0m momentum-scalper:SOL            2.47       6.07      -3.60      8
+[2m2026-05-16T03:37:26.866708Z[0m [32m INFO[0m Summary written to data/paper-results/summary.json

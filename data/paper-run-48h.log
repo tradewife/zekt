@@ -1,0 +1,222 @@
+[2m2026-05-28T09:32:00.357981Z[0m [32m INFO[0m === Zekt Momentum Scalper v0.3 (Flash Trade) ===
+[2m2026-05-28T09:32:00.358020Z[0m [32m INFO[0m Config: config/perps.toml
+[2m2026-05-28T09:32:00.358028Z[0m [32m INFO[0m Market: SOL
+[2m2026-05-28T09:32:00.358034Z[0m [32m INFO[0m Strategy: momentum-scalper
+[2m2026-05-28T09:32:00.358060Z[0m [33m WARN[0m HL PAPER TRADING -- Hyperliquid fee model, live HL prices
+[2m2026-05-28T09:32:00.358201Z[0m [32m INFO[0m === HL Paper Trading Engine === balance=$100.00 markets=SYRUP,DYDX,APE,CFX,SNX,ZRO,LTC,BTC,ETH,SOL strategies=funding-capture
+[2m2026-05-28T09:32:00.987685Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T09:37:02.029761Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T09:37:02.030180Z[0m [32m INFO[0m [funding-capture] ENTRY SHORT signal: annualized_rate=10.95% (threshold=10.00%), consecutive=2, strength=60
+[2m2026-05-28T09:37:02.030199Z[0m [32m INFO[0m >>> [hl-paper] [funding-capture:SYRUP] OPEN SHORT $50 x 1.0x @ $0.17 | fee=$0.0175 | strength=60 vel=10.950%
+[2m2026-05-28T09:37:02.030214Z[0m [32m INFO[0m [funding-capture] ENTRY SHORT signal: annualized_rate=10.95% (threshold=10.00%), consecutive=2, strength=60
+[2m2026-05-28T09:37:02.030224Z[0m [32m INFO[0m >>> [hl-paper] [funding-capture:DYDX] OPEN SHORT $50 x 1.0x @ $0.15 | fee=$0.0175 | strength=60 vel=10.950%
+[2m2026-05-28T09:42:03.118314Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T09:47:04.190395Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T09:52:06.408810Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T09:57:07.877961Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:02:09.039376Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:07:15.094217Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:12:16.164137Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:17:23.242412Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:22:24.355846Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:27:25.611150Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:32:27.090466Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:37:28.064736Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:42:28.924007Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:47:29.982396Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:52:31.100925Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T10:57:31.983829Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:02:33.045517Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:07:34.082362Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:12:35.276137Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:17:36.292720Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:22:37.354497Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:27:38.438505Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:32:40.047883Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:37:41.128591Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:42:42.581805Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:47:43.712941Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:52:44.826489Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T11:57:45.908597Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:02:47.093407Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:07:48.163024Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:12:49.383800Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:17:50.450238Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:22:51.698982Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:27:53.392767Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:32:54.460853Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:37:55.579572Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:42:56.717257Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:47:57.770663Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:52:59.374735Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T12:58:00.646609Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:03:01.785353Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:08:02.943485Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:13:03.962949Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:18:04.889424Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:23:05.977584Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:28:07.102335Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:33:08.193172Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:38:09.278717Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:43:10.816874Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:48:11.890874Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:53:12.983293Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T13:58:13.963475Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:03:15.177312Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:08:16.410945Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:13:17.533982Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:18:18.533386Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:23:19.549810Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:28:20.624537Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:33:21.657767Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:38:22.793517Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:43:23.772935Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:48:25.366546Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:53:26.532431Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T14:58:27.400193Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:03:28.423381Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:08:29.485274Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:13:31.139114Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:18:33.376615Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:23:34.458725Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:28:35.601540Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:33:36.733017Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:38:37.747553Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:43:38.925213Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:48:40.595255Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:53:41.967772Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T15:58:43.063224Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:03:49.327663Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:08:50.652559Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:13:51.705773Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:18:52.881343Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:23:54.053858Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:28:55.759612Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:33:57.081183Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:38:58.563227Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:44:00.322553Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:49:01.402876Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:54:02.977260Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T16:59:03.891521Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:04:05.240185Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:09:06.302428Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:14:07.520380Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:19:08.690522Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:24:09.745918Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:29:10.842925Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:34:12.015492Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:39:13.076704Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:44:13.927638Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:44:13.928031Z[0m [32m INFO[0m <<< [hl-paper] [funding-capture:DYDX] CLOSE SHORT DYDX | $0.15 -> $0.16 | reason=StopLoss | hold=487.2min
+[2m2026-05-28T17:44:13.928047Z[0m [32m INFO[0m     gross=$-1.66 entry_fee=$0.0175 exit_fee=$0.0175 borrow_fee=$0.0404 | net=$-1.72
+[2m2026-05-28T17:44:13.928068Z[0m [32m INFO[0m [hl-paper] [funding-capture:DYDX] Balance: $48.28
+[2m2026-05-28T17:49:15.012886Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:54:16.072433Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T17:59:17.164879Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:04:18.274559Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:09:19.471924Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:14:20.693257Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:19:21.733742Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:24:22.766009Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:29:23.825262Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:34:25.159884Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:39:26.694728Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:44:27.807146Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:49:28.828280Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:54:30.011833Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T18:59:31.105259Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:04:32.164746Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:09:33.252539Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:14:34.535246Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:19:35.622081Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:24:36.853556Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:29:38.045215Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:34:39.090671Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:39:40.124150Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:44:41.193116Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:49:43.137934Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:54:44.203254Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T19:59:45.342843Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:04:46.410604Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:09:47.417322Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:14:48.431215Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:19:49.550716Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:24:50.781873Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:29:51.802667Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:34:52.900848Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:39:54.073634Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:44:56.043543Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:49:57.015627Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T20:54:58.215054Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:00:00.400343Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:05:01.824416Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:10:02.608524Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:15:03.651818Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:20:04.973836Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:25:05.692267Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:30:06.646346Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:35:07.737811Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:40:08.682877Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:45:09.572384Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:50:10.577593Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T21:55:12.037414Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:00:13.296112Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:05:14.299189Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:10:15.320246Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:15:16.487219Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:20:17.405235Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:25:18.315310Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:30:19.440604Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:35:20.300410Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:40:21.230926Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:45:22.248527Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:50:23.133863Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T22:55:24.187654Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:00:27.347094Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:05:28.433198Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:10:51.483762Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:15:52.894621Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:20:53.893653Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-28T23:25:54.350311Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.351308Z[0m [33m WARN[0m [hl-paper] DYDX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.352015Z[0m [33m WARN[0m [hl-paper] APE price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.352620Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.353185Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.353649Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.354101Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.354508Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.354897Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:25:54.355343Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.765723Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.766537Z[0m [33m WARN[0m [hl-paper] DYDX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.767097Z[0m [33m WARN[0m [hl-paper] APE price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.767594Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.768461Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.769051Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.769509Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.770012Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.770637Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:30:54.771152Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.189399Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.190118Z[0m [33m WARN[0m [hl-paper] DYDX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.190676Z[0m [33m WARN[0m [hl-paper] APE price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.191129Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.191555Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.191987Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.192438Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.192908Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.193358Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:35:55.193775Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.613634Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.614224Z[0m [33m WARN[0m [hl-paper] DYDX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.614778Z[0m [33m WARN[0m [hl-paper] APE price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.615345Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.616352Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.616954Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.617654Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.618226Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.618758Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:40:55.619230Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-28T23:45:40.017893Z[0m [32m INFO[0m Received SIGTERM, finishing current tick...
+[2m2026-05-28T23:45:40.025350Z[0m [32m INFO[0m [hl-paper] Report written to data/paper-results/hl-paper-summary.json
+[2m2026-05-28T23:45:40.025423Z[0m [32m INFO[0m [hl-paper] Final: 1 trades | balance $48.28 (started $100.00)

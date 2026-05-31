@@ -1,0 +1,444 @@
+[2m2026-05-29T05:43:36.284486Z[0m [32m INFO[0m === Zekt Momentum Scalper v0.3 (Flash Trade) ===
+[2m2026-05-29T05:43:36.284519Z[0m [32m INFO[0m Config: config/perps.toml
+[2m2026-05-29T05:43:36.284524Z[0m [32m INFO[0m Market: SOL
+[2m2026-05-29T05:43:36.284527Z[0m [32m INFO[0m Strategy: momentum-scalper
+[2m2026-05-29T05:43:36.284538Z[0m [33m WARN[0m HL PAPER TRADING -- Hyperliquid fee model, live HL prices
+[2m2026-05-29T05:43:36.284667Z[0m [32m INFO[0m === HL Paper Trading Engine === balance=$100.00 markets=BTC,ETH,SOL,SYRUP,ZRO,LTC,CFX,SNX strategies=funding-capture
+[2m2026-05-29T05:43:36.790670Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:48:37.886174Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:53:38.233273Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.233609Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.233913Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.234247Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.234604Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.234956Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.235314Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:53:38.235632Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.597917Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.598948Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.599671Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.600276Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.600791Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.601334Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.601892Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T05:58:38.602382Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.996826Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.997375Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.997808Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.998255Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.998685Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.999136Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:38.999596Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:03:39.000140Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.410414Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.411098Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.412029Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.412849Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.413464Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.414006Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.414537Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:08:39.415021Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.815320Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.816090Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.816703Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.817243Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.817818Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.818373Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.818869Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:13:39.819312Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.213693Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.214364Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.214855Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.215273Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.215659Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.216060Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.216450Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:18:40.216827Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.629437Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.630018Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.630581Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.631091Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.631595Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.632021Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.632478Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:23:40.632906Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.026636Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.027229Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.027759Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.028267Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.028711Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.029200Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.029670Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:28:41.030148Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.417772Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.418377Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.418821Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.419269Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.419741Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.420280Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.420762Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:33:41.421212Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.809290Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.809871Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.810386Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.810831Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.811298Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.811744Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.812220Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:38:41.812873Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.189921Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.190515Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.191153Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.191746Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.192378Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.192926Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.193435Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:43:42.193886Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.588475Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.589124Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.589721Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.590260Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.590753Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.591262Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.591735Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:48:42.592256Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.004501Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.005505Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.029302Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.030218Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.030891Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.031568Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.032299Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:53:43.032781Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T06:58:44.144242Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:03:45.033178Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:08:48.060954Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:13:54.252383Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:18:55.314196Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:23:55.385223Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:28:56.335077Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:33:57.421278Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:38:59.270175Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:44:00.149353Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:49:01.258602Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:54:07.733182Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T07:59:08.691161Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:04:09.738571Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:09:11.111331Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:14:12.085520Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:19:13.091287Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:24:14.273086Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:29:15.300871Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:34:16.329699Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:39:17.080470Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:44:18.036301Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:49:18.970676Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:54:20.153329Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T08:59:21.378730Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:04:22.364953Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:09:23.240210Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:14:24.698163Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:19:25.585693Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:24:26.642609Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:29:29.117705Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:34:30.356772Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:39:31.728569Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:44:33.392911Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:49:34.865179Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:54:36.023077Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T09:59:36.964185Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:04:38.058003Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:09:39.537032Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:14:40.728475Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:19:41.914959Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:24:44.686040Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:29:45.975963Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:34:46.900409Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:39:47.840524Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:44:48.757035Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:49:50.165718Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:54:51.122062Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T10:59:52.122909Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:04:53.162803Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:09:54.091525Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:15:00.383398Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:20:02.110108Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:25:03.028127Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:30:04.047734Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:35:05.025863Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:40:06.002602Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:45:07.822479Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:50:08.807147Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T11:55:09.787247Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:00:10.774760Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:05:12.016812Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:10:13.118892Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:15:14.044777Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:20:14.814515Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:25:15.745566Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:30:17.023007Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:35:18.280061Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:40:19.238852Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:45:20.206224Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:50:21.184020Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T12:55:22.222254Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:00:28.105879Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:05:29.140106Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:10:30.111419Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:15:31.098170Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:20:32.251176Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:25:33.423760Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:30:34.263719Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:35:35.205401Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:40:36.335441Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:45:37.309862Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:50:38.498872Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T13:55:39.455776Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:00:40.314157Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:05:41.176214Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:10:42.042398Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:15:43.088716Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:20:44.033284Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:25:44.908220Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:30:45.966680Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:35:46.916122Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:40:47.898433Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:45:53.892332Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:50:55.028449Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T14:55:56.239347Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:54.657766Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:55.448755Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:56.221095Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:56.908562Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:57.394562Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:57.917688Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:58.469517Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:01:59.318581Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:07:00.171988Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:12:01.105130Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:44.705101Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:48.238988Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:50.734566Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:52.361386Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:53.052647Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:53.705572Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:54.442531Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:17:54.830550Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:22:56.673816Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:27:58.245679Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:32:59.333482Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:38:00.768891Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:43:01.864639Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:48:03.015442Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:53:03.894999Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T15:58:05.566982Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:03:06.457880Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:08:07.341309Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:13:08.579405Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:19:06.707892Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:19:09.813727Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:19:39.815410Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T16:19:39.816521Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:19:39.817295Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:19:39.817675Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:19:39.818201Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:19:39.818727Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:25:05.783111Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:25:07.658170Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:25:11.668969Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:25:26.829018Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:25:28.695703Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:25:32.746755Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:26:02.748682Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T16:26:02.749971Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:31:43.129454Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:03.149797Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.167129Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.167897Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.168280Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.168550Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.168811Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:32:23.169092Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:37:24.132172Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:42:24.492399Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.492664Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.492905Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.493144Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.493388Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.493624Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.493858Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:42:24.494097Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.873248Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.873582Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.873851Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.874140Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.874454Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.874731Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.874987Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:47:44.875233Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:53:05.561611Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T16:58:25.953544Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.954046Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.954446Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.954833Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.955204Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.955607Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.955972Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T16:58:25.956387Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T17:03:28.205550Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:08:29.961022Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:05.884633Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:07.557280Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:09.081133Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:11.166816Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:13.114429Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:18.393054Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:30.158005Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:14:32.506563Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:19:33.677843Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:24:35.199507Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:29:36.049320Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:34:36.866513Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:39:37.733145Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:44:38.554985Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:49:39.448417Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:54:40.308436Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T17:59:41.142780Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:04:42.017526Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:10:42.400416Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: Failed to read response body for metaAndAssetCtxs: error decoding response body: request or response body error: operation timed out
+[2m2026-05-29T18:11:12.401709Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T18:11:42.403160Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T18:12:12.404257Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T18:12:42.405144Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T18:13:12.406212Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T18:13:16.173378Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:13:18.133646Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:18:19.158230Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:23:20.084235Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:28:20.934066Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:33:21.916613Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:38:22.849138Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:43:23.831587Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:48:25.033968Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T18:54:25.378543Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: Failed to read response body for metaAndAssetCtxs: error decoding response body: request or response body error: operation timed out
+[2m2026-05-29T18:54:45.399364Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:10.419369Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:20.429640Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:20.430382Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:20.430938Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:20.431369Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T18:55:20.431776Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T19:00:39.450920Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:05:40.393967Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:10:41.367644Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:15:42.322634Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:20:43.331775Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:25:44.276755Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:30:46.051599Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:35:47.302480Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:40:48.213522Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:45:49.166411Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:50:52.216573Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T19:55:53.702036Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:00:54.768532Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:05:55.729021Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:10:56.732806Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:15:57.613505Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:20:59.177572Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:26:00.193012Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:31:01.077881Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:36:02.472773Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:41:03.378176Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:47:03.740029Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T20:47:31.514511Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:48:00.933651Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:48:05.302958Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:48:35.304203Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T20:48:45.312673Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T20:48:45.313488Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T20:48:45.314019Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T20:53:46.139565Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T20:58:46.998007Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:03:47.876043Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:08:49.779965Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:13:50.838464Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:18:51.814243Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:23:53.262578Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:28:54.136231Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:33:55.061559Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:38:55.925761Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:44:06.301911Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.302268Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.302601Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.302870Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.303089Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.303318Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.303553Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:44:06.303785Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.645439Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.645831Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.646158Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.646500Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.646837Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.647181Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.647532Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:49:06.647853Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T21:54:07.726483Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T21:59:10.037388Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:04:11.468660Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:32.692455Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:33.138511Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:33.748075Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:34.141597Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:34.623804Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:35.016048Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:35.434011Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:09:35.826683Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:14:37.049141Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:19:37.983652Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:24:38.887154Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:29:39.800719Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:34:40.689886Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:39:41.506666Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:44:45.567107Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T22:49:45.907311Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.907745Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.908075Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.908477Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.908854Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.909195Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.909564Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:49:45.909840Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.241123Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.241792Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.242304Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.242700Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.243078Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.243554Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.243917Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T22:54:46.244312Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:00:24.223909Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:00:38.046769Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:00:49.584815Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:01:19.586476Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): operation timed out
+[2m2026-05-29T23:01:19.587666Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:01:19.587964Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:01:19.588185Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:01:19.588414Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:06:45.940676Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:12:08.586440Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:17:08.906426Z[0m [33m WARN[0m [hl-paper] BTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.907023Z[0m [33m WARN[0m [hl-paper] ETH price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.907354Z[0m [33m WARN[0m [hl-paper] SOL price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.907678Z[0m [33m WARN[0m [hl-paper] SYRUP price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.908033Z[0m [33m WARN[0m [hl-paper] ZRO price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.908464Z[0m [33m WARN[0m [hl-paper] LTC price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.908858Z[0m [33m WARN[0m [hl-paper] CFX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:17:08.909222Z[0m [33m WARN[0m [hl-paper] SNX price fetch error: HL Info request failed: metaAndAssetCtxs: error sending request for url (https://api.hyperliquid.xyz/info): client error (Connect): dns error: failed to lookup address information: Temporary failure in name resolution
+[2m2026-05-29T23:22:10.022423Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:27:10.841585Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:32:11.972953Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:37:12.939393Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T23:40:43.293864Z[0m [32m INFO[0m Received SIGTERM, finishing current tick...
+[2m2026-05-29T23:40:44.167875Z[0m [32m INFO[0m [hl-paper] Report written to data/paper-results/hl-paper-summary.json
+[2m2026-05-29T23:40:44.167899Z[0m [32m INFO[0m [hl-paper] Final: 0 trades | balance $100.00 (started $100.00)

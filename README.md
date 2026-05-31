@@ -1,6 +1,8 @@
-# Zekt — Autonomous Strategy Poaching System
+# Zekt — Strategy Research & Validation Platform
 
-Semi-autonomous trading system that discovers profitable strategies from Hyperliquid wallets, reverse-engineers them from fill-level data, and replicates them on Solana perps. Multi-venue route comparison across Flash Trade, Phoenix, GMTrade, and Jupiter via the Imperial aggregator. Liquidation zone intelligence with 4-source fusion. Research on Hyperliquid (rich data) → Execute on Flash Trade (Solana perps).
+A research tool for discovering, analyzing, and validating perpetual futures trading strategies. Research happens on Hyperliquid (rich fill-level data via QuickNode HyperCore API) and validated strategies execute on Flash Trade (Solana perps). Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence.
+
+**Current status:** After rigorous 90-day walk-forward validation (294K parameter combinations, 315 leverage/sizing cells), no blueprint strategy candidate passes the promotion gate. All promising short-window signals were overfit artifacts. The platform correctly identified and rejected these candidates — an honest negative result. No live trading has ever occurred.
 
 ## Pipeline
 
@@ -8,10 +10,13 @@ Semi-autonomous trading system that discovers profitable strategies from Hyperli
 1. Discover   → Scrape Hyperliquid leaderboards via QuickNode for profitable wallets
 2. Analyze    → Extract fill-level data, classify strategies, generate blueprints (Python)
 3. Implement  → Build data-driven strategies in Rust from blueprint parameters
-4. Backtest   → Validate against Hyperliquid historical candles (Sharpe ≥ 1.0)
-5. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
-6. Live       → Execute with real capital (requires human approval)
+4. Backtest   → Walk-forward validation against Hyperliquid historical candles (Sharpe ≥ 1.0)
+5. Validate   → Leverage/sizing frontier analysis (90-day out-of-sample)
+6. Paper Trade → Confirm against live Flash Trade prices with real fee estimates (24h+)
+7. Live       → Execute with real capital (requires human approval)
 ```
+
+Steps 1–4 run semi-automatically. Steps 5–7 require increasing human oversight. No strategy has ever reached step 7.
 
 ## Quick Start
 
@@ -24,15 +29,17 @@ python -m pytest analysis/tests/ -v      # Run 132 Python analysis tests
 ./target/release/zekt --backtest --strategies momentum-scalper --markets BTC,SOL \
   --backtest-start 2026-05-01 --backtest-interval 5m --paper-balance 1000
 
+# Backtest with Imperial route oracle (multi-venue cost estimation)
+./target/release/zekt --backtest --strategies momentum-scalper --markets SOL \
+  --backtest-start 2026-05-15 --backtest-interval 5m \
+  --cost-mode imperial-route-oracle
+
 # Multi-strategy paper trading
 ./target/release/zekt --paper --strategies momentum-scalper,lp-consumption \
   --markets SOL,BTC,ETH --paper-balance 1000
 
 # Dry run (single API preview, then exit)
 ./target/release/zekt --dry-run
-
-# Live (requires funded Solana wallet with USDC)
-./target/release/zekt --keypair ~/.config/solana/id.json --market SOL
 
 # Wallet discovery
 QUICKNODE_HL_URL=https://your-endpoint.quiknode.pro/... \
@@ -51,22 +58,22 @@ cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
 src/
   main.rs              CLI (clap) + graceful shutdown
   config.rs            TOML config parser
-  strategy.rs          Strategy trait + 16 implementations + factory
+  strategy.rs          Strategy trait + 16 implementations + factory (194 tests)
   signal.rs            MomentumDetector, Signal/ExitReason types
-  backtest.rs          BacktestEngine (walk-forward, slippage, regime filter)
+  backtest.rs          BacktestEngine (walk-forward, slippage, regime filter) (42 tests)
   flash_api.rs         Flash Trade REST client
   hl_info.rs           Hyperliquid Info API client
-  imperial.rs          Imperial Solana perps aggregator client (read-only)
-  route_cost.rs        Multi-venue route cost oracle (Flash vs Imperial)
-  liquidation.rs       Liquidation zone data model, 4-source fusion, persistence
-  replay.rs            Replay validation pipeline with promotion gate
-  regime.rs            Market regime detector (LowVol/Trending/HighVol/Choppy)
-  funding_capture.rs   Funding rate capture strategy
+  imperial.rs          Imperial Solana perps aggregator client (53 tests)
+  route_cost.rs        Multi-venue route cost oracle (27 tests)
+  liquidation.rs       Liquidation zone data model, 4-source fusion, persistence (101 tests)
+  replay.rs            Replay validation pipeline with promotion gate (45 tests)
+  regime.rs            Market regime detector (LowVol/Trending/HighVol/Choppy) (20 tests)
+  funding_capture.rs   Funding rate capture strategy (40 tests)
   pnl_tracker.rs       Combined PnL tracking
   executor.rs          Solana keypair loading + tx sign/submit
-  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, ATR sizing)
+  risk.rs              Risk manager (SL/TP/trailing, circuit breaker, ATR sizing) (28 tests)
   engine.rs            Live trading loop
-  paper.rs             Paper trading engine
+  paper.rs             Paper trading engine (24 tests)
   src/bin/             CLI binaries (pipeline, alpha-scanner, copy-trader, whale-watcher, etc.)
 analysis/              Python analysis pipeline (clustering, metrics, classification, blueprints)
 ```
@@ -115,38 +122,28 @@ All strategies implement the `Strategy` trait (`detect_entry`, `detect_exit`, `p
 
 86 tradeable symbols across 4 Solana perps venues (Flash Trade, Phoenix, GMTrade, Jupiter).
 
-## Milestones
+## Validation Results (M10)
 
-| ID | Milestone | Status | Outcome |
-|----|-----------|--------|---------|
-| M10 | Walk-Forward Edge Hardening + Leverage-Aware Position Sizing | ✅ Complete | **REJECT ALL** — no candidate passes promotion gate |
+The most recent validation mission tested 9 strategy-market candidates through a three-phase pipeline:
 
-### M10: Walk-Forward Edge Hardening (2026-05-31)
+1. **Walk-Forward Parameter Search:** 294,081 parameter combinations across 6 dimensions × 5 values, 5 expanding windows. Best out-of-sample Sharpe 20.57 (cluster-009:ETH) — but with only 5 trades, pure noise. 100% of top-3 parameter sets flagged as overfit.
 
-Tested 9 strategy-market candidates (blueprint-cluster-002/005/007/008/009 × BTC/ETH/SOL) through a three-phase validation pipeline:
+2. **Leverage & Position Sizing Frontier:** Extended to 90-day backtest with 315 grid cells (7 leverage × 5 sizing modes). All candidates collapsed: best Sharpe went from 4.05 (17-day) to 0.08 (90-day). Fee-to-gross ratios 51–8,657%.
 
-1. **M1 — Walk-Forward Parameter Search:** 294,081 parameter combinations across 6 dimensions × 5 values, 5 expanding windows. Best OOS Sharpe 20.57 (cluster-009:ETH) but with only 5 trades — pure noise. 100% of top-3 parameter sets flagged as overfit.
+3. **Portfolio Construction:** 3 allocation strategies (Equal Weight, Risk Parity, Sharpe Weighted) — all net-negative. Diversification cannot rescue negative-edge strategies.
 
-2. **M2 — Leverage & Position Sizing Frontier:** Extended to 90-day backtest with 315 grid cells (7 leverage × 5 sizing modes). All candidates collapsed: M1 best Sharpe 4.05 → M2 best Sharpe 0.08. Fee-to-gross ratios 51–8,657%. More trades confirmed the signal was noise.
-
-3. **M3 — Portfolio Construction:** 3 allocation strategies (Equal Weight, Risk Parity, Sharpe Weighted) — all net-negative. Cross-candidate diversification cannot rescue negative-edge strategies.
-
-4. **Liquidation Zone Capture:** Infrastructure validated (9 zones from OI imbalance in 37s), needs dedicated 24-72h capture run.
-
-**Verdict:** Honest negative result. Reject all candidates for paper promotion. The promising short-window signals were overfit artifacts; fee dominance overwhelms any remaining edge.
-
-**Commits:** `63b62d0` → `28bd4fd` → `41ba5ae` → `b732ed3` → `429a721` → `231cc2e`
+**Verdict:** Reject all candidates. The promising short-window signals were overfit artifacts. The platform's validation pipeline worked correctly by catching this before any capital was deployed.
 
 ## Next Steps
 
 Ranked by expected impact (from M10 root cause analysis):
 
-1. **New strategy architectures** — Explore mean-reversion, funding-capture, or regime-adaptive approaches. The current momentum-threshold blueprints appear inherently noisy for this timeframe/market.
-2. **Expand wallet pool** — Current 9 candidates come from limited HL clusters. Broader discovery (100+ wallets) could find genuinely different edges.
-3. **Reduce execution costs** — Limit-order execution, maker rebates, or cross-venue routing. Need 80%+ fee reduction (current 50% Imperial savings is insufficient).
-4. **Liquidation cascade mission** — Dedicated 24-72h capture with expanded watchlist (50-100 traders) for event-driven alpha.
-5. **Longer backtest windows** — 180-365 day validation for low-frequency strategies (90 days may still be insufficient).
-6. **Higher trade count threshold** — Require ≥50 OOS trades (not 30) before promotion to reduce small-sample noise.
+1. **New strategy architectures** — Mean-reversion, funding-capture, or regime-adaptive approaches. Current momentum-threshold blueprints appear inherently noisy.
+2. **Expand wallet pool** — 100+ wallets for broader discovery of genuinely different edges.
+3. **Reduce execution costs** — Limit-order execution, maker rebates, or cross-venue routing (need 80%+ fee reduction).
+4. **Liquidation cascade mission** — Dedicated 24-72h capture with expanded watchlist for event-driven alpha.
+5. **Longer backtest windows** — 180-365 day validation for low-frequency strategies.
+6. **Higher trade count threshold** — Require ≥50 OOS trades (not 30) before promotion.
 
 ## Testing
 
@@ -162,10 +159,10 @@ Config is in `config/perps.toml`. Key sections:
 [flash]          # Market, leverage, slippage
 [strategy]       # Active strategy, clip size, per-strategy overrides
 [risk]           # Loss limits, circuit breaker, correlated exposure, ATR sizing
-[backtest]       # Walk-forward, slippage model, regime filter
+[backtest]       # Walk-forward, slippage model, regime filter, cost mode
 [imperial]       # Imperial API base URL, timeout, enabled flag
-[route-oracle]   # Cost mode (flash/imperial), slippage BPS
-[liquidation]    # Enabled, snapshot dir, retention, confidence threshold
+[route-oracle]   # Cost mode (flash/imperial), min improvement BPS
+[liquidation]    # Sources, snapshot dir, retention, confidence threshold
 [alpha-scanner]  # Wallet discovery settings
 [copy-trader]    # Position mirroring settings
 [whale-watcher]  # WebSocket alert settings

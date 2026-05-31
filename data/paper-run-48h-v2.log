@@ -1,0 +1,82 @@
+[2m2026-05-28T23:57:42.539820Z[0m [32m INFO[0m === Zekt Momentum Scalper v0.3 (Flash Trade) ===
+[2m2026-05-28T23:57:42.539863Z[0m [32m INFO[0m Config: config/perps.toml
+[2m2026-05-28T23:57:42.539868Z[0m [32m INFO[0m Market: SOL
+[2m2026-05-28T23:57:42.539871Z[0m [32m INFO[0m Strategy: momentum-scalper
+[2m2026-05-28T23:57:42.539882Z[0m [33m WARN[0m HL PAPER TRADING -- Hyperliquid fee model, live HL prices
+[2m2026-05-28T23:57:42.540043Z[0m [32m INFO[0m === HL Paper Trading Engine === balance=$100.00 markets=BTC,ETH,SOL,SYRUP,DYDX,APE,CFX,SNX,ZRO,LTC,GMX,TRB,BANANA strategies=funding-capture
+[2m2026-05-28T23:57:43.561705Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:02:45.243811Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:07:46.465679Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:12:48.481916Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:17:50.314245Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:22:51.256064Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:27:52.127380Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:32:53.055368Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:37:53.991096Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:42:54.905684Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:47:55.823882Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:52:56.766819Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T00:57:57.626495Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:02:58.525528Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:07:59.446333Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:13:01.308705Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:18:02.341147Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:23:03.164903Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:28:04.033021Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:33:04.929560Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:38:05.826695Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:43:06.847927Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:43:06.850516Z[0m [32m INFO[0m [funding-capture] ENTRY SHORT signal: annualized_rate=26.78% (threshold=15.00%), consecutive=2, strength=60
+[2m2026-05-29T01:43:06.850556Z[0m [32m INFO[0m >>> [hl-paper] [funding-capture:DYDX] OPEN SHORT $100 x 1.0x @ $0.16 | fee=$0.0350 | strength=60 vel=26.783%
+[2m2026-05-29T01:48:07.994390Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:53:08.925250Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T01:58:09.767696Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:03:11.563998Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:08:12.392291Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:13:13.817030Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:13:13.817331Z[0m [32m INFO[0m <<< [hl-paper] [funding-capture:DYDX] CLOSE SHORT DYDX | $0.16 -> $0.17 | reason=StopLoss | hold=30.1min
+[2m2026-05-29T02:13:13.819659Z[0m [32m INFO[0m     gross=$-2.57 entry_fee=$0.0350 exit_fee=$0.0350 borrow_fee=$0.0050 | net=$-2.61
+[2m2026-05-29T02:13:13.821671Z[0m [32m INFO[0m [hl-paper] [funding-capture:DYDX] Balance: $97.39
+[2m2026-05-29T02:18:16.486809Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:23:17.385517Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:28:23.227204Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:33:24.227438Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:38:25.018770Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:43:25.841237Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:48:26.728668Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:53:27.585244Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T02:58:28.483335Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:03:29.353265Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:08:30.243732Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:13:31.356620Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:18:32.455817Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:23:35.014421Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:28:35.710724Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:33:37.707303Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:38:38.847693Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:43:39.702155Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:48:41.476315Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:53:42.527886Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T03:58:44.589550Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:03:45.870250Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:08:51.848993Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:13:57.774360Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:18:58.996795Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:23:59.864353Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:29:01.289443Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:34:02.223474Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:39:02.934486Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:44:05.738848Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:49:06.665812Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:54:07.536017Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T04:59:08.413783Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:04:09.359158Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:09:10.309569Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:14:11.310425Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:19:12.130414Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:24:13.112242Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:29:14.050032Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:34:22.418165Z[0m [32m INFO[0m Parsed 230 funding rate entries from metaAndAssetCtxs
+[2m2026-05-29T05:34:50.429533Z[0m [32m INFO[0m Received SIGTERM, finishing current tick...
+[2m2026-05-29T05:34:50.453754Z[0m [32m INFO[0m [hl-paper] Report written to data/paper-results/hl-paper-summary.json
+[2m2026-05-29T05:34:50.453774Z[0m [32m INFO[0m [hl-paper] Final: 1 trades | balance $97.39 (started $100.00)

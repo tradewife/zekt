@@ -1,9 +1,11 @@
 # Zekt — Session Context
 
 ## What This Is
-Zekt is an **autonomous strategy poaching system** that discovers profitable Hyperliquid wallets, reverse-engineers their strategies from fill-level data, and replicates them on Flash Trade (Solana perps). Originally a momentum scalper reverse-engineered from Bulk.Trade's $229K devnet competition winners, evolved via the Alpha Hunter mission into a multi-strategy platform, now fully rearchitected as a poaching pipeline: **Research on Hyperliquid → Execute on Flash Trade**.
+Zekt is a **strategy research and validation platform** for Solana perpetual futures. It discovers profitable trading patterns from Hyperliquid wallets, reverse-engineers them from fill-level data, and rigorously validates whether those patterns hold under testing before any capital is deployed. Originally a momentum scalper reverse-engineered from Bulk.Trade's $229K devnet competition winners, evolved via multiple missions into a multi-strategy research platform. **Research on Hyperliquid → Validate rigorously → Execute on Flash Trade**.
 
-**Autonomy level:** Semi-autonomous. Wallet discovery, analysis, backtesting, and paper trading run automatically. Live trading requires human approval.
+**Current validation status (M10):** After exhaustive 90-day walk-forward validation — 294K parameter combinations, 315 leverage/sizing grid cells, 3 portfolio allocation strategies — **no blueprint strategy passes the promotion gate**. All promising short-window signals were overfit artifacts. Fee dominance overwhelms any remaining edge. The platform correctly rejected all candidates. No live trading has ever occurred.
+
+**Automation level:** Semi-automated. Wallet discovery, analysis, backtesting run without human intervention. Paper trading and live execution require human approval.
 
 ## Architecture: Intelligence Layer ↔ Routing Layer ↔ Execution Layer
 
@@ -126,16 +128,17 @@ Zekt is an **autonomous strategy poaching system** that discovers profitable Hyp
 3. Implement → Rust Strategy trait with data-driven parameters
 4. Backtest  → Validate on HL historical candles (Sharpe ≥ 1.0)
                Optional: cost_mode=imperial-route-oracle for multi-venue cost estimation
-5. Replay    → ReplayPipeline validates new strategies with promotion gate
-6. Paper     → Confirm against live Flash Trade prices (24h+ run)
-7. Live      → Execute with real capital (human approval required)
+5. Validate → Walk-forward parameter search → leverage/sizing frontier (90-day OOS)
+6. Replay   → ReplayPipeline validates new strategies with promotion gate
+7. Paper    → Confirm against live Flash Trade prices (24h+ run)
+8. Live     → Execute with real capital (human approval required)
 ```
 
 ## Commands
 ```bash
 # Build and test
 cargo build --release
-cargo test    # 736 unit tests
+cargo test    # 828 unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v    # 132 tests
@@ -359,7 +362,7 @@ QuickNode HL API → userFills → data/fills/{address}.json
                              │
                     Rust: strategy.rs ← load blueprint params
                              │
-                    Backtest → Paper → (Human Approval) → Live
+                    Backtest → Validate → Replay → Paper → (Human Approval) → Live
 ```
 
 ### Imperial Route Oracle Flow
@@ -458,8 +461,16 @@ kill -9 <pid>   # Emergency
 - **M3 Liquidation Capture** — LiquidationZoneCapture in `liquidation.rs`, multi-source fusion (imperial + hl + flash), confidence scoring, snapshot persistence with retention cleanup. `[liquidation]` config section. 101 tests.
 - **M4 Liquidation Strategy + Replay** — LiquidationCascadeHunter strategy (two setup types) + ReplayPipeline in `replay.rs` with promotion gate. 194 strategy tests (includes liquidation-cascade-hunter). 45 replay tests.
 
+**M10 (Completed): Walk-Forward Edge Hardening + Leverage-Aware Position Sizing — REJECT ALL** — Tested 9 strategy-market candidates through a three-phase validation pipeline:
+- **M1 — Walk-Forward Parameter Search:** 294,081 parameter combinations across 6 dimensions × 5 values, 5 expanding windows. Best OOS Sharpe 20.57 (cluster-009:ETH) but with only 5 trades — pure noise. 100% of top-3 parameter sets flagged as overfit.
+- **M2 — Leverage & Position Sizing Frontier:** Extended to 90-day backtest with 315 grid cells (7 leverage × 5 sizing modes). All candidates collapsed: M1 best Sharpe 4.05 → M2 best Sharpe 0.08. Fee-to-gross ratios 51–8,657%. More trades confirmed the signal was noise.
+- **M3 — Portfolio Construction:** 3 allocation strategies (Equal Weight, Risk Parity, Sharpe Weighted) — all net-negative. Cross-candidate diversification cannot rescue negative-edge strategies.
+- **Liquidation Zone Capture:** Infrastructure validated (9 zones from OI imbalance in 37s), needs dedicated 24-72h capture run.
+- **Verdict:** Honest negative result. Reject all candidates for paper promotion. The promising short-window signals were overfit artifacts; fee dominance overwhelms any remaining edge.
+- **+92 Rust tests** (walk-forward, leverage/sizing grid, portfolio construction, replay validation).
+
 ## Testing
-**Rust:** 736 unit tests total across 21 source modules and 8 binary modules. Run with `cargo test`.
+**Rust:** 828 unit tests total across 21 source modules and 8 binary modules. Run with `cargo test`.
 - strategy.rs: 194 tests (16 strategies including liquidation-cascade-hunter)
 - liquidation.rs: 101 tests (zone capture, fusion, confidence, persistence)
 - imperial.rs: 53 tests (ImperialClient, all 10 endpoints)
@@ -483,10 +494,13 @@ kill -9 <pid>   # Emergency
 **Python:** 132 tests. Run with `python -m pytest analysis/tests/ -v`.
 
 ## TODO / Next Steps
-- [ ] **Strategy parameter optimization** — Walk-forward parameter sweep to find profitable configs (Mission A)
-- [ ] **Blueprint strategy validation** — Test data-driven strategies with regime filter, fee model, and route oracle (Mission B)
-- [ ] **Self-tuning parameters** — Adaptive thresholds based on recent trade performance (Mission C, inspired by Senpi Lynx)
-- [ ] **Liquidation strategy live validation** — Promote liquidation-cascade-hunter from paper to live after replay gate passes
+- [ ] **New strategy architectures** — Explore mean-reversion, funding-capture, or regime-adaptive approaches instead of momentum-threshold blueprints (ranked #1 by M10 root cause analysis)
+- [ ] **Expand wallet pool** — Broader discovery (100+ wallets) could find strategies with genuinely different edges (ranked #2)
+- [ ] **Reduce execution costs** — Limit-order execution, maker rebates, or cross-venue routing. Need 80%+ fee reduction (ranked #3)
+- [ ] **Liquidation cascade mission** — Dedicated 24-72h capture with expanded wallet watchlist (50-100 traders) for event-driven alpha (ranked #4)
+- [ ] **Longer backtest windows** — 180-365 day validation for low-frequency strategies (ranked #5)
+- [ ] **Higher trade count threshold** — Require ≥50 OOS trades (not 30) before promotion to reduce small-sample noise (ranked #6)
+- [ ] **Self-tuning parameters** — Adaptive thresholds based on recent trade performance
 - [ ] **Route oracle live integration** — Use RouteCostOracle for real-time venue selection in live trading
 - [ ] WebSocket streaming for real-time price updates (instead of polling)
 - [ ] Monitoring loop with periodic re-scanning for new strategies
@@ -497,7 +511,7 @@ kill -9 <pid>   # Emergency
 - [x] ~~Backtesting engine against historical prices~~ (done: Hyperliquid candleSnapshot)
 - [x] ~~LP detection~~ (done: lp-consumption strategy)
 - [x] ~~LP consumption rate signal~~ (done: lp-consumption strategy, pool data populated)
-- [x] ~~Unit tests~~ (done: 736 tests)
+- [x] ~~Unit tests~~ (done: 828 tests)
 - [x] ~~Fee-awareness~~ (done: per-trade fee tracking in paper + backtest engines)
 - [x] ~~P0 bug fixes~~ (done: borrow accrual, cross-cell limits, pool data)
 - [x] ~~Alpha scanner binary~~ (done: Dextrabot + Hypurrscan + HL enrichment, 64 tests)
@@ -514,3 +528,6 @@ kill -9 <pid>   # Emergency
 - [x] ~~**Liquidation zone intelligence** — Multi-source fusion + confidence scoring~~ (done: M9)
 - [x] ~~**Liquidation cascade hunter** — Two setup types with replay validation~~ (done: M9)
 - [x] ~~**Replay validation pipeline** — Promotion gate for new strategies~~ (done: M9)
+- [x] ~~**Walk-forward edge hardening** — 90-day validation, 294K parameter grid~~ (done: M10, REJECT ALL)
+- [x] ~~**Leverage/sizing frontier** — 315 grid cells across 9 candidates~~ (done: M10, REJECT ALL)
+- [x] ~~**Portfolio construction** — 3 allocation strategies~~ (done: M10, all net-negative)
