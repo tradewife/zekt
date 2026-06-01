@@ -726,12 +726,19 @@ def extract_funding_rates_from_meta(meta: dict) -> Dict[str, float]:
 
 
 def fetch_imperial_funding(symbols: List[str]) -> Dict[str, float]:
-    """Fetch funding rates from Imperial API."""
+    """Fetch funding rates from Imperial API.
+
+    Handles nested venue structure: rows contain venue sub-objects
+    (phoenix, flash, gmtrade) each with funding rate fields.
+    """
     data = imperial_get_with_retry("/api/v1/funding-rates")
     if not data:
         return {}
 
     rates = {}
+    # Venue priority order for funding rates
+    venue_priority = ["phoenix", "flash", "gmtrade"]
+
     # Handle various response formats
     items = data if isinstance(data, list) else data.get("rates", data.get("rows", []))
     for item in items:
@@ -740,11 +747,34 @@ def fetch_imperial_funding(symbols: List[str]) -> Dict[str, float]:
         base_sym = sym.replace("-PERP", "").replace("_PERP", "")
         if base_sym not in symbols:
             continue
-        rate_str = item.get("fundingRate", item.get("rate", "0"))
-        try:
-            rates[base_sym] = float(rate_str)
-        except (ValueError, TypeError):
-            continue
+
+        # Try top-level rate fields first (legacy format)
+        rate_str = item.get("fundingRate", item.get("rate", None))
+        if rate_str is not None:
+            try:
+                rates[base_sym] = float(rate_str)
+                continue
+            except (ValueError, TypeError):
+                pass
+
+        # Try nested venue sub-objects (current API format)
+        for venue in venue_priority:
+            venue_data = item.get(venue)
+            if not venue_data or not isinstance(venue_data, dict):
+                continue
+            # Try various funding rate field names
+            for field in ["longFundingRatePerHourPercent", "fundingRate", "rate"]:
+                venue_rate = venue_data.get(field, None)
+                if venue_rate is not None:
+                    try:
+                        val = float(venue_rate)
+                        if val != 0 or field == "longFundingRatePerHourPercent":
+                            rates[base_sym] = val
+                            break
+                    except (ValueError, TypeError):
+                        continue
+            if base_sym in rates:
+                break  # Found rate from a venue
     return rates
 
 
@@ -878,18 +908,43 @@ def fetch_imperial_mark_prices(symbols: List[str]) -> Dict[str, float]:
 
 
 def parse_imperial_mark_prices(items: list) -> Dict[str, float]:
-    """Parse Imperial mark price response."""
+    """Parse Imperial mark price response.
+
+    Handles nested venue structure: rows contain venue sub-objects
+    (phoenix, flash, gmtrade) each with a 'price' field.
+    """
     prices = {}
+    # Venue priority order for mark prices
+    venue_priority = ["phoenix", "flash", "gmtrade"]
     for item in items:
         sym = item.get("symbol", "")
         base_sym = sym.replace("-PERP", "").replace("_PERP", "")
-        price_str = item.get("markPrice", item.get("price", "0"))
-        try:
-            price = float(price_str)
-            if price > 0:
-                prices[base_sym] = price
-        except (ValueError, TypeError):
-            continue
+
+        # Try top-level price fields first (legacy format)
+        price_str = item.get("markPrice", item.get("price", None))
+        if price_str is not None:
+            try:
+                price = float(price_str)
+                if price > 0:
+                    prices[base_sym] = price
+                    continue
+            except (ValueError, TypeError):
+                pass
+
+        # Try nested venue sub-objects (current API format)
+        for venue in venue_priority:
+            venue_data = item.get(venue)
+            if not venue_data or not isinstance(venue_data, dict):
+                continue
+            venue_price = venue_data.get("price", None)
+            if venue_price is not None:
+                try:
+                    price = float(venue_price)
+                    if price > 0:
+                        prices[base_sym] = price
+                        break  # Use highest-priority venue
+                except (ValueError, TypeError):
+                    continue
     return prices
 
 
