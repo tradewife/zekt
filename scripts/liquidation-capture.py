@@ -727,7 +727,7 @@ def extract_funding_rates_from_meta(meta: dict) -> Dict[str, float]:
 
 def fetch_imperial_funding(symbols: List[str]) -> Dict[str, float]:
     """Fetch funding rates from Imperial API."""
-    data = imperial_get_with_retry("/api/v1/funding/rates")
+    data = imperial_get_with_retry("/api/v1/funding-rates")
     if not data:
         return {}
 
@@ -868,7 +868,7 @@ def compute_anchored_vwap(candles: List[dict]) -> Optional[float]:
 
 def fetch_imperial_mark_prices(symbols: List[str]) -> Dict[str, float]:
     """Fetch mark prices from Imperial API."""
-    data = imperial_get_with_retry("/api/v1/mark/prices")
+    data = imperial_get_with_retry("/api/v1/mark-prices")
     if not data:
         return {}
 
