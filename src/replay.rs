@@ -1085,11 +1085,584 @@ impl ReplayPipeline {
         result
     }
 
+    /// Run the replay pipeline with a generic strategy implementing the Strategy trait.
+    ///
+    /// This is the same replay logic as `run_with_balance` but accepts any strategy
+    /// via the `Strategy` trait instead of creating a `LiquidationCascadeHunter` internally.
+    /// Used by the `--liquidation-replay` CLI mode to replay through sweep-reclaim,
+    /// liquidity-memory-fisher, and liquidation-zone-arbiter strategies.
+    pub fn run_with_generic_strategy(
+        &self,
+        strategy: &mut dyn Strategy,
+        data_points: &[ReplayDataPoint],
+        starting_balance: f64,
+        stale_data_threshold_secs: u64,
+    ) -> ReplayResult {
+        let mut balance = starting_balance;
+        let mut peak_balance = starting_balance;
+        let mut max_drawdown_usd = 0.0_f64;
+
+        // Active position tracking
+        let mut open_position: Option<OpenPosition> = None;
+
+        // Trade log
+        let mut trades: Vec<ReplayTrade> = Vec::new();
+        let mut stale_trade_count = 0_usize;
+        let mut duplicate_pending_count = 0_usize;
+        let mut signal_events = 0_usize;
+
+        // Per-trade returns for Sharpe calculation
+        let mut trade_returns: Vec<f64> = Vec::new();
+
+        // Track previous signals for duplicate detection
+        let mut last_signal_key: Option<(String, String)> = None;
+
+        let fee_rate = self.gate_config.fee_rate;
+
+        // Get strategy params for position sizing and exit rules
+        let params = strategy.parameters();
+        let clip_size_usd = params.clip_size_usd;
+        let max_hold_secs = params.max_hold_secs;
+        let take_profit_pct = params.take_profit_pct;
+        let stop_loss_pct = params.stop_loss_pct;
+        let trailing_stop_pct = params.trailing_stop_pct;
+        let trailing_activation_pct = params.trailing_activation_pct;
+
+        for (i, point) in data_points.iter().enumerate() {
+            // Push price to strategy
+            strategy.push_price(point.price, point.timestamp_ms);
+
+            // Compute velocity from price history
+            let snap = strategy.snapshot();
+            let velocity = snap.price_velocity_pct;
+            let price_count = snap.price_count;
+
+            // Build the full snapshot with market extension
+            let snapshot = self.build_snapshot(point, price_count, velocity);
+
+            // Check if zone data is stale at current timestamp
+            let zone_stale = point.zone_capture_timestamp_ms.is_none_or(|ts| {
+                let age_secs = (point.timestamp_ms - ts).max(0) as u64 / 1000;
+                age_secs > stale_data_threshold_secs
+            });
+
+            if let Some(ref mut pos) = open_position {
+                // Check exit conditions
+                let ctx = PositionContext {
+                    is_long: pos.is_long,
+                    entry_price: pos.entry_price,
+                    current_price: point.price,
+                    peak_price: pos.peak_price,
+                    hold_secs: ((point.timestamp_ms - pos.entry_timestamp_ms).max(0) as u64) / 1000,
+                    max_hold_secs,
+                    take_profit_pct,
+                    stop_loss_pct,
+                    trailing_stop_pct,
+                    trailing_activation_pct,
+                };
+
+                let exit_signal = strategy.detect_exit(&snapshot, &ctx);
+
+                if let Some(exit) = exit_signal {
+                    let (exit_reason, is_exit_long) = match &exit {
+                        Signal::ExitLong { reason } => (reason.clone(), true),
+                        Signal::ExitShort { reason } => (reason.clone(), false),
+                        _ => {
+                            debug!("Unexpected non-exit signal during exit check");
+                            continue;
+                        }
+                    };
+
+                    // Only close if the direction matches
+                    if pos.is_long == is_exit_long {
+                        let pnl_pct = if pos.is_long {
+                            (point.price - pos.entry_price) / pos.entry_price * 100.0
+                        } else {
+                            (pos.entry_price - point.price) / pos.entry_price * 100.0
+                        };
+                        let gross_pnl = pos.size_usd * pnl_pct / 100.0;
+                        let entry_fee = pos.size_usd * fee_rate;
+                        let exit_fee = pos.size_usd * fee_rate;
+                        let route_cost_usd = pos.route_cost_usd;
+                        let net_pnl = gross_pnl - entry_fee - exit_fee - route_cost_usd;
+
+                        balance += net_pnl;
+                        if balance > peak_balance {
+                            peak_balance = balance;
+                        }
+                        let dd = peak_balance - balance;
+                        if dd > max_drawdown_usd {
+                            max_drawdown_usd = dd;
+                        }
+
+                        let hold_secs =
+                            ((point.timestamp_ms - pos.entry_timestamp_ms).max(0) as u64) / 1000;
+
+                        let exit_stale = zone_stale;
+
+                        if pos.entry_stale || exit_stale {
+                            stale_trade_count += 1;
+                        }
+
+                        trades.push(ReplayTrade {
+                            symbol: point.symbol.clone(),
+                            side: if pos.is_long {
+                                "long".to_string()
+                            } else {
+                                "short".to_string()
+                            },
+                            entry_price: pos.entry_price,
+                            exit_price: point.price,
+                            size_usd: pos.size_usd,
+                            gross_pnl,
+                            entry_fee,
+                            exit_fee,
+                            route_cost_usd,
+                            net_pnl,
+                            hold_secs,
+                            exit_reason: format!("{:?}", exit_reason),
+                            entry_timestamp_ms: pos.entry_timestamp_ms,
+                            exit_timestamp_ms: point.timestamp_ms,
+                            entry_stale: pos.entry_stale,
+                            exit_stale,
+                            peak_price: pos.peak_price,
+                            mae_usd: compute_mae_usd(pos.is_long, pos.entry_price, pos.worst_price, pos.size_usd),
+                            mfe_usd: compute_mfe_usd(pos.is_long, pos.entry_price, pos.best_price, pos.size_usd),
+                            worst_price: pos.worst_price,
+                            best_price: pos.best_price,
+                            is_zone_touch: pos.is_zone_touch,
+                            post_liquidation_drift_usd: 0.0,
+                            time_to_reversal_secs: 0.0,
+                            time_to_next_zone_secs: 0.0,
+                            stop_efficiency: compute_stop_efficiency(net_pnl, pos.is_long, pos.entry_price, pos.best_price, pos.size_usd),
+                        });
+
+                        trade_returns.push(net_pnl);
+                        open_position = None;
+                        last_signal_key = None;
+                    }
+                } else {
+                    // Update peak, worst, best prices
+                    if pos.is_long && point.price > pos.peak_price {
+                        pos.peak_price = point.price;
+                    }
+                    if !pos.is_long && point.price < pos.peak_price {
+                        pos.peak_price = point.price;
+                    }
+                    if pos.is_long && point.price < pos.worst_price {
+                        pos.worst_price = point.price;
+                    }
+                    if !pos.is_long && point.price > pos.worst_price {
+                        pos.worst_price = point.price;
+                    }
+                    if pos.is_long && point.price > pos.best_price {
+                        pos.best_price = point.price;
+                    }
+                    if !pos.is_long && point.price < pos.best_price {
+                        pos.best_price = point.price;
+                    }
+                    if let Some(high) = point.high {
+                        if pos.is_long && high > pos.best_price {
+                            pos.best_price = high;
+                        }
+                        if !pos.is_long && high > pos.worst_price {
+                            pos.worst_price = high;
+                        }
+                    }
+                    if let Some(low) = point.low {
+                        if pos.is_long && low < pos.worst_price {
+                            pos.worst_price = low;
+                        }
+                        if !pos.is_long && low < pos.best_price {
+                            pos.best_price = low;
+                        }
+                    }
+                }
+            }
+
+            // Check for new entry signals only if no open position
+            if open_position.is_none() {
+                let entry_signal = strategy.detect_entry(&snapshot);
+
+                if let Signal::MomentumLong { .. } | Signal::MomentumShort { .. } =
+                    &entry_signal
+                {
+                    let is_long = matches!(entry_signal, Signal::MomentumLong { .. });
+                    let side = if is_long { "long" } else { "short" };
+                    let key = (point.symbol.clone(), side.to_string());
+
+                    // Check for duplicate pending
+                    if last_signal_key.as_ref() == Some(&key) {
+                        duplicate_pending_count += 1;
+                    } else {
+                        signal_events += 1;
+
+                        let size_usd = clip_size_usd;
+                        let entry_fee = size_usd * fee_rate;
+                        let route_cost_usd = size_usd * point.route_cost_bps.unwrap_or(0.0) / 10000.0;
+
+                        if balance > size_usd + entry_fee + route_cost_usd {
+                            balance -= entry_fee + route_cost_usd;
+
+                            open_position = Some(OpenPosition {
+                                is_long,
+                                entry_price: point.price,
+                                size_usd,
+                                entry_timestamp_ms: point.timestamp_ms,
+                                peak_price: point.price,
+                                entry_stale: zone_stale,
+                                route_cost_usd,
+                                worst_price: point.price,
+                                best_price: point.price,
+                                is_zone_touch: point.is_zone_touch.unwrap_or(false),
+                            });
+
+                            last_signal_key = Some(key);
+
+                            debug!(
+                                "[{}] {} entry at {:.2}, size=${:.0}, stale={}",
+                                i, side, point.price, size_usd, zone_stale
+                            );
+                        }
+                    }
+                }
+            }
+
+            debug!(
+                "[{}] price={:.2}, velocity={:.3}, trades={}, balance={:.2}",
+                i,
+                point.price,
+                velocity,
+                trades.len(),
+                balance
+            );
+        }
+
+        // Force-close any remaining open position
+        if let Some(pos) = open_position.take() {
+            let last_price = data_points
+                .last()
+                .map(|p| p.price)
+                .unwrap_or(pos.entry_price);
+            let pnl_pct = if pos.is_long {
+                (last_price - pos.entry_price) / pos.entry_price * 100.0
+            } else {
+                (pos.entry_price - last_price) / pos.entry_price * 100.0
+            };
+            let gross_pnl = pos.size_usd * pnl_pct / 100.0;
+            let entry_fee = pos.size_usd * fee_rate;
+            let exit_fee = pos.size_usd * fee_rate;
+            let net_pnl = gross_pnl - entry_fee - exit_fee - pos.route_cost_usd;
+
+            balance += net_pnl;
+
+            trades.push(ReplayTrade {
+                symbol: data_points
+                    .last()
+                    .map(|p| p.symbol.clone())
+                    .unwrap_or_default(),
+                side: if pos.is_long {
+                    "long".to_string()
+                } else {
+                    "short".to_string()
+                },
+                entry_price: pos.entry_price,
+                exit_price: last_price,
+                size_usd: pos.size_usd,
+                gross_pnl,
+                entry_fee,
+                exit_fee,
+                route_cost_usd: pos.route_cost_usd,
+                net_pnl,
+                hold_secs: 0,
+                exit_reason: "ForceClose".to_string(),
+                entry_timestamp_ms: pos.entry_timestamp_ms,
+                exit_timestamp_ms: data_points.last().map(|p| p.timestamp_ms).unwrap_or(0),
+                entry_stale: pos.entry_stale,
+                exit_stale: false,
+                peak_price: pos.peak_price,
+                mae_usd: compute_mae_usd(pos.is_long, pos.entry_price, pos.worst_price, pos.size_usd),
+                mfe_usd: compute_mfe_usd(pos.is_long, pos.entry_price, pos.best_price, pos.size_usd),
+                worst_price: pos.worst_price,
+                best_price: pos.best_price,
+                is_zone_touch: pos.is_zone_touch,
+                post_liquidation_drift_usd: 0.0,
+                time_to_reversal_secs: 0.0,
+                time_to_next_zone_secs: 0.0,
+                stop_efficiency: compute_stop_efficiency(net_pnl, pos.is_long, pos.entry_price, pos.best_price, pos.size_usd),
+            });
+
+            trade_returns.push(net_pnl);
+            stale_trade_count += if pos.entry_stale { 1 } else { 0 };
+        }
+
+        // Compute aggregate metrics (same as run_with_balance)
+        let win_count = trades.iter().filter(|t| t.net_pnl > 0.0).count();
+        let loss_count = trades.iter().filter(|t| t.net_pnl <= 0.0).count();
+        let gross_pnl: f64 = trades.iter().map(|t| t.gross_pnl).sum();
+        let total_fees: f64 = trades.iter().map(|t| t.entry_fee + t.exit_fee + t.route_cost_usd).sum();
+        let net_pnl = gross_pnl - total_fees;
+        let win_rate_pct = if !trades.is_empty() {
+            win_count as f64 / trades.len() as f64 * 100.0
+        } else {
+            0.0
+        };
+        let avg_hold_secs = if !trades.is_empty() {
+            trades.iter().map(|t| t.hold_secs as f64).sum::<f64>() / trades.len() as f64
+        } else {
+            0.0
+        };
+
+        let sharpe_ratio = compute_sharpe(&trade_returns);
+        let sortino_ratio = compute_sortino(&trade_returns);
+        let calmar_ratio = compute_calmar(net_pnl, starting_balance, max_drawdown_usd, data_points.len());
+        let net_expectancy = compute_net_expectancy(&trades);
+        let max_drawdown_pct = if starting_balance > 0.0 {
+            max_drawdown_usd / starting_balance * 100.0
+        } else {
+            0.0
+        };
+
+        let avg_mae_usd = if !trades.is_empty() {
+            trades.iter().map(|t| t.mae_usd).sum::<f64>() / trades.len() as f64
+        } else {
+            0.0
+        };
+        let avg_mfe_usd = if !trades.is_empty() {
+            trades.iter().map(|t| t.mfe_usd).sum::<f64>() / trades.len() as f64
+        } else {
+            0.0
+        };
+
+        let zone_touch_trades: Vec<&ReplayTrade> = trades.iter().filter(|t| t.is_zone_touch).collect();
+        let zone_touch_trade_count = zone_touch_trades.len();
+        let zone_touch_win_count = zone_touch_trades.iter().filter(|t| t.net_pnl > 0.0).count();
+        let zone_touch_win_rate_pct = if zone_touch_trade_count > 0 {
+            zone_touch_win_count as f64 / zone_touch_trade_count as f64 * 100.0
+        } else {
+            0.0
+        };
+
+        let avg_post_liquidation_drift_usd = if !trades.is_empty() {
+            trades.iter().map(|t| t.post_liquidation_drift_usd).sum::<f64>() / trades.len() as f64
+        } else {
+            0.0
+        };
+        let trades_with_reversal: Vec<&ReplayTrade> = trades.iter().filter(|t| t.time_to_reversal_secs > 0.0).collect();
+        let avg_time_to_reversal_secs = if !trades_with_reversal.is_empty() {
+            trades_with_reversal.iter().map(|t| t.time_to_reversal_secs).sum::<f64>() / trades_with_reversal.len() as f64
+        } else {
+            0.0
+        };
+        let trades_with_next_zone: Vec<&ReplayTrade> = trades.iter().filter(|t| t.time_to_next_zone_secs > 0.0).collect();
+        let avg_time_to_next_zone_secs = if !trades_with_next_zone.is_empty() {
+            trades_with_next_zone.iter().map(|t| t.time_to_next_zone_secs).sum::<f64>() / trades_with_next_zone.len() as f64
+        } else {
+            0.0
+        };
+
+        let avg_stop_efficiency = if !trades.is_empty() {
+            trades.iter().map(|t| t.stop_efficiency).sum::<f64>() / trades.len() as f64
+        } else {
+            0.0
+        };
+
+        let single_trade_dependency_flagged = check_single_trade_dependency(&trades);
+        let dominant_trade_index = find_dominant_trade(&trades);
+        let min_zone_distance_bps = compute_min_zone_distance(data_points);
+
+        let strategy_name = strategy.name().to_string();
+
+        // Evaluate 12-criterion promotion gate
+        let criteria = evaluate_promotion_criteria(
+            &trades,
+            net_expectancy,
+            max_drawdown_pct,
+            stale_trade_count,
+            duplicate_pending_count,
+            signal_events,
+            sharpe_ratio,
+            None,   // fishing_result: not composed in base run
+            None,   // pyramid_result: not composed in base run
+            min_zone_distance_bps,
+            &self.gate_config,
+        );
+
+        let all_passed = criteria.iter().all(|c| c.passed);
+        let verdict = if all_passed {
+            PromotionVerdict::Approved
+        } else {
+            PromotionVerdict::Denied
+        };
+
+        ReplayResult {
+            strategy_name,
+            start_balance: starting_balance,
+            final_balance: balance,
+            trade_count: trades.len(),
+            win_count,
+            loss_count,
+            gross_pnl,
+            total_fees,
+            net_pnl,
+            win_rate_pct,
+            sharpe_ratio,
+            max_drawdown_usd,
+            max_drawdown_pct,
+            stale_trade_count,
+            duplicate_pending_count,
+            signal_events,
+            avg_hold_secs,
+            data_points_replayed: data_points.len(),
+            trades,
+            baseline_balance: starting_balance,
+            baseline_net_pnl: 0.0,
+            net_expectancy,
+            pnl_vs_baseline: net_pnl,
+            promotion_criteria: criteria,
+            promotion_verdict: verdict,
+            sortino_ratio,
+            calmar_ratio,
+            avg_mae_usd,
+            avg_mfe_usd,
+            fishing_fill_rate: 0.0,
+            zone_touch_win_rate_pct,
+            zone_touch_trade_count,
+            zone_touch_win_count,
+            avg_post_liquidation_drift_usd,
+            avg_time_to_reversal_secs,
+            avg_time_to_next_zone_secs,
+            avg_stop_efficiency,
+            single_trade_dependency_flagged,
+            dominant_trade_index,
+            fishing_result: None,
+            pyramid_result: None,
+        }
+    }
+
+    /// Run the replay pipeline with a generic strategy, fishing, and pyramiding.
+    ///
+    /// This composes the generic strategy replay with fishing simulation and
+    /// pyramiding, then re-evaluates the 12-criterion promotion gate.
+    pub fn run_generic_with_fishing_and_pyramiding(
+        &self,
+        strategy: &mut dyn Strategy,
+        data_points: &[ReplayDataPoint],
+        starting_balance: f64,
+        stale_data_threshold_secs: u64,
+        fishing_config: &FishingLadderConfig,
+        pyramid_config: &PyramidConfig,
+    ) -> ReplayResult {
+        let mut result = self.run_with_generic_strategy(
+            strategy,
+            data_points,
+            starting_balance,
+            stale_data_threshold_secs,
+        );
+
+        // Run fishing simulation if we have zone data
+        if let Some(first_point) = data_points.first()
+            && let Some(zone) = first_point.liquidation_zones.as_ref().and_then(|z| z.first())
+        {
+            let memory_zone = crate::liquidity_memory::MemoryZone::from_liquidation_zone(
+                zone,
+                first_point.timestamp_ms,
+                50.0,
+            );
+            let candles: Vec<MarketConditions> = data_points
+                .iter()
+                .map(|p| MarketConditions {
+                    price: p.price,
+                    high: p.high.unwrap_or(p.price * 1.001),
+                    low: p.low.unwrap_or(p.price * 0.999),
+                    timestamp_ms: p.timestamp_ms,
+                    spread_pct: p.spread_pct.unwrap_or(0.1),
+                    depth_usd: p.depth_usd.unwrap_or(50_000.0),
+                    cascade_detected: false,
+                    zone_decay_scores: vec![],
+                })
+                .collect();
+
+            let fishing_result = crate::fishing::run_fishing_simulation(
+                &memory_zone,
+                true,
+                &candles,
+                fishing_config,
+            );
+            result.fishing_fill_rate = fishing_result.fill_rate;
+            result.fishing_result = Some(fishing_result);
+        }
+
+        // Run pyramiding simulation if we have enough data
+        if !data_points.is_empty() {
+            let first_point = data_points.first().unwrap();
+            let is_long = true;
+            let pyramid_contexts: Vec<AddTrancheContext> = data_points
+                .iter()
+                .map(|p| AddTrancheContext {
+                    current_price: p.price,
+                    timestamp_ms: p.timestamp_ms,
+                    data_timestamp_ms: p.zone_capture_timestamp_ms.unwrap_or(p.timestamp_ms),
+                    reclaim_detected: false,
+                    higher_low_detected: false,
+                    retest_successful: false,
+                    current_atr: 0.0,
+                    correlated_exposure_usd: 0.0,
+                })
+                .collect();
+            let stop_prices: Vec<f64> = data_points
+                .iter()
+                .map(|p| {
+                    if is_long {
+                        p.price * 0.99
+                    } else {
+                        p.price * 1.01
+                    }
+                })
+                .collect();
+
+            let pyramid_result = crate::pyramiding::run_pyramid_simulation(
+                &first_point.symbol,
+                is_long,
+                pyramid_config.clone(),
+                &pyramid_contexts,
+                &stop_prices,
+            );
+            result.pyramid_result = Some(pyramid_result);
+        }
+
+        // Re-evaluate promotion criteria with fishing + pyramid results
+        let min_zone_dist = compute_min_zone_distance(data_points);
+        result.promotion_criteria = evaluate_promotion_criteria(
+            &result.trades,
+            result.net_expectancy,
+            result.max_drawdown_pct,
+            result.stale_trade_count,
+            result.duplicate_pending_count,
+            result.signal_events,
+            result.sharpe_ratio,
+            result.fishing_result.as_ref(),
+            result.pyramid_result.as_ref(),
+            min_zone_dist,
+            &self.gate_config,
+        );
+        result.promotion_verdict = if result.promotion_criteria.iter().all(|c| c.passed) {
+            PromotionVerdict::Approved
+        } else {
+            PromotionVerdict::Denied
+        };
+
+        result
+    }
+
     /// Generate a human-readable Markdown promotion report.
     pub fn generate_markdown_report(result: &ReplayResult) -> String {
         let mut report = String::new();
 
-        report.push_str("# Liquidation Cascade Hunter — Replay Promotion Report\n\n");
+        report.push_str(&format!(
+            "# {} — Replay Promotion Report\n\n",
+            result.strategy_name
+        ));
 
         report.push_str("## Summary\n\n");
         report.push_str(&format!(
@@ -2292,7 +2865,9 @@ mod tests {
         let report = ReplayPipeline::generate_markdown_report(&result);
 
         // Report must contain key sections
-        assert!(report.contains("# Liquidation Cascade Hunter"));
+        assert!(report.contains("# liquidation-cascade-hunter — Replay Promotion Report") 
+            || report.contains("# Liquidation Cascade Hunter"), 
+            "Report should contain strategy name header");
         assert!(report.contains("## Summary"));
         assert!(report.contains("## Performance Metrics"));
         assert!(report.contains("## Promotion Criteria"));
@@ -4033,7 +4608,9 @@ mod tests {
 
         // Step 9: Verify report generation
         let report = ReplayPipeline::generate_markdown_report(&result);
-        assert!(report.contains("Liquidation Cascade Hunter"));
+        assert!(report.contains("liquidation-cascade-hunter") 
+            || report.contains("Liquidation Cascade Hunter"),
+            "Report should contain strategy name");
         assert!(report.contains("Verdict"));
         assert!(report.contains("Summary"));
     }
@@ -4366,6 +4943,132 @@ mod tests {
         assert!(pyr.tranche_count <= 4, "Pyramiding must respect 4-tranche limit");
 
         // Promotion gate must have all 12 criteria
+        assert_eq!(result.promotion_criteria.len(), 12);
+    }
+
+    // ── Generic strategy replay tests ──────────────────────────────────────
+
+    #[test]
+    fn test_generic_replay_with_cascade_strategy() {
+        let data = generate_trending_points("BTC", 50, 100_000.0, 1_770_000_000_000, 5000);
+        let params = LiquidationCascadeParams {
+            enabled: true,
+            paper_only: false,
+            ..LiquidationCascadeParams::default()
+        };
+        let gate = gate_config_default();
+        let pipeline = ReplayPipeline::new(params.clone(), gate);
+
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let result = pipeline.run_with_generic_strategy(
+            &mut strategy,
+            &data,
+            1000.0,
+            300,
+        );
+
+        assert_eq!(result.strategy_name, "liquidation-cascade-continuation");
+        assert_eq!(result.data_points_replayed, 50);
+        assert!((result.start_balance - 1000.0).abs() < f64::EPSILON);
+        assert_eq!(result.promotion_criteria.len(), 12);
+    }
+
+    #[test]
+    fn test_generic_replay_produces_valid_metrics() {
+        let data = generate_trending_points("SOL", 30, 150.0, 1_770_000_000_000, 5000);
+        let params = LiquidationCascadeParams {
+            enabled: true,
+            paper_only: false,
+            ..LiquidationCascadeParams::default()
+        };
+        let gate = gate_config_default();
+        let pipeline = ReplayPipeline::new(params.clone(), gate);
+
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let result = pipeline.run_with_generic_strategy(
+            &mut strategy,
+            &data,
+            1000.0,
+            300,
+        );
+
+        // All metrics should be populated
+        assert!(result.sharpe_ratio.is_finite());
+        assert!(result.sortino_ratio.is_finite());
+        assert!(result.calmar_ratio.is_finite());
+        assert!(result.max_drawdown_pct >= 0.0);
+        assert!(result.net_expectancy.is_finite());
+        assert!(result.avg_mae_usd.is_finite());
+        assert!(result.avg_mfe_usd.is_finite());
+        assert!(result.avg_stop_efficiency.is_finite());
+    }
+
+    #[test]
+    fn test_generic_replay_with_fishing_and_pyramiding() {
+        let data = generate_trending_points("ETH", 40, 3000.0, 1_770_000_000_000, 5000);
+        let params = LiquidationCascadeParams {
+            enabled: true,
+            paper_only: false,
+            ..LiquidationCascadeParams::default()
+        };
+        let gate = gate_config_default();
+        let pipeline = ReplayPipeline::new(params.clone(), gate);
+
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let fishing_config = FishingLadderConfig::default();
+        let pyramid_config = PyramidConfig::default();
+
+        let result = pipeline.run_generic_with_fishing_and_pyramiding(
+            &mut strategy,
+            &data,
+            1000.0,
+            300,
+            &fishing_config,
+            &pyramid_config,
+        );
+
+        assert_eq!(result.promotion_criteria.len(), 12);
+        // Fishing or pyramid result should be present if zones existed in data
+        // (depends on data content)
+    }
+
+    #[test]
+    fn test_generic_replay_strategy_name_matches() {
+        let data = generate_trending_points("BTC", 10, 50_000.0, 1_770_000_000_000, 5000);
+        let params = LiquidationCascadeParams::default();
+        let gate = gate_config_default();
+        let pipeline = ReplayPipeline::new(params.clone(), gate);
+
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let result = pipeline.run_with_generic_strategy(
+            &mut strategy,
+            &data,
+            1000.0,
+            300,
+        );
+
+        // The result should use strategy.name(), not a hardcoded string
+        assert_eq!(result.strategy_name, "liquidation-cascade-continuation");
+    }
+
+    #[test]
+    fn test_generic_replay_empty_data() {
+        let data: Vec<ReplayDataPoint> = vec![];
+        let params = LiquidationCascadeParams::default();
+        let gate = gate_config_default();
+        let pipeline = ReplayPipeline::new(params.clone(), gate);
+
+        let mut strategy = LiquidationCascadeHunter::new(params);
+        let result = pipeline.run_with_generic_strategy(
+            &mut strategy,
+            &data,
+            1000.0,
+            300,
+        );
+
+        assert_eq!(result.trade_count, 0);
+        assert_eq!(result.data_points_replayed, 0);
+        assert!((result.final_balance - 1000.0).abs() < f64::EPSILON);
         assert_eq!(result.promotion_criteria.len(), 12);
     }
 }

@@ -37,7 +37,7 @@ mod strategy;
 
 use clap::Parser;
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 
 #[derive(Parser, Debug)]
@@ -141,6 +141,19 @@ struct Args {
     /// Number of expanding walk-forward windows (default: 5, only used with --walk-forward-mode expanding)
     #[arg(long, default_value_t = 5)]
     walk_forward_windows: usize,
+
+    /// Liquidation replay mode -- replay captured liquidation zone snapshots through strategies
+    /// with fishing + pyramiding + 12-criterion promotion gate evaluation.
+    #[arg(long, default_value_t = false)]
+    liquidation_replay: bool,
+
+    /// Directory containing captured liquidation zone snapshots (default: data/liquidation-zones/)
+    #[arg(long, default_value = "data/liquidation-zones/")]
+    snapshot_dir: PathBuf,
+
+    /// Starting balance for liquidation replay in USD (default: 1000)
+    #[arg(long, default_value_t = 1000.0)]
+    starting_balance: f64,
 }
 
 #[tokio::main]
@@ -227,6 +240,7 @@ async fn main() -> anyhow::Result<()> {
         ("--paper", args.paper),
         ("--hl-paper", args.hl_paper),
         ("--backtest", args.backtest),
+        ("--liquidation-replay", args.liquidation_replay),
     ];
     let active_modes: Vec<&str> = mode_flags
         .iter()
@@ -328,6 +342,15 @@ async fn main() -> anyhow::Result<()> {
             args.borrow_rate,
             &args.walk_forward_mode,
             args.walk_forward_windows,
+        ).await;
+    }
+    if args.liquidation_replay {
+        tracing::warn!("LIQUIDATION REPLAY -- replaying captured snapshots through strategy");
+        return run_liquidation_replay(
+            config,
+            args.strategy.as_deref(),
+            &args.snapshot_dir,
+            args.starting_balance,
         ).await;
     }
 
@@ -651,6 +674,195 @@ async fn run_backtest(
     Ok(())
 }
 
+/// Run the liquidation replay pipeline.
+///
+/// Loads captured liquidation zone snapshots, converts them to replay data points,
+/// builds the specified strategy via `create_strategy_from_config`, runs the replay
+/// pipeline with fishing + pyramiding, evaluates the 12-criterion promotion gate,
+/// and writes results to JSON and Markdown files.
+async fn run_liquidation_replay(
+    config: config::Config,
+    strategy_name: Option<&str>,
+    snapshot_dir: &Path,
+    starting_balance: f64,
+) -> anyhow::Result<()> {
+    use chrono::Utc;
+    use crate::fishing::FishingLadderConfig;
+    use crate::pyramiding::PyramidConfig;
+    use crate::replay::{PromotionGateConfig, ReplayPipeline};
+
+    // Resolve strategy name(s) to replay
+    let liquidation_strategies = [
+        "liquidation-cascade-continuation",
+        "sweep-reclaim",
+        "liquidity-memory-fisher",
+        "liquidation-zone-arbiter",
+    ];
+
+    // Map short aliases to canonical names
+    let alias_map: &[(&str, &str)] = &[
+        ("cascade-continuation", "liquidation-cascade-continuation"),
+        ("liquidation-cascade-hunter", "liquidation-cascade-continuation"),
+    ];
+
+    let strategy_names: Vec<String> = if let Some(name) = strategy_name {
+        if name == "all" {
+            liquidation_strategies.iter().map(|s| s.to_string()).collect()
+        } else {
+            // Check if it's an alias
+            let canonical = alias_map
+                .iter()
+                .find(|(alias, _)| *alias == name)
+                .map(|(_, canonical)| *canonical)
+                .unwrap_or(name);
+            vec![canonical.to_string()]
+        }
+    } else {
+        // Default: cascade-continuation
+        vec!["liquidation-cascade-continuation".to_string()]
+    };
+
+    // Validate strategy names
+    let available = crate::strategy::available_strategies();
+    for name in &strategy_names {
+        if !available.contains(&name.as_str()) {
+            anyhow::bail!(
+                "Unknown liquidation strategy '{}'. Valid: {}",
+                name,
+                liquidation_strategies.join(", ")
+            );
+        }
+    }
+
+    tracing::info!("Liquidation replay: {} strategy/strategies", strategy_names.len());
+    tracing::info!("Snapshot directory: {}", snapshot_dir.display());
+    tracing::info!("Starting balance: ${:.0}", starting_balance);
+
+    // Load snapshots
+    let snapshots = ReplayPipeline::load_snapshots(snapshot_dir)?;
+    if snapshots.is_empty() {
+        anyhow::bail!(
+            "No liquidation zone snapshots found in {}",
+            snapshot_dir.display()
+        );
+    }
+    tracing::info!("Loaded {} snapshots", snapshots.len());
+
+    // Convert to replay data points
+    let data_points = ReplayPipeline::snapshots_to_replay_points(&snapshots);
+    tracing::info!("Converted to {} replay data points", data_points.len());
+
+    // Create output directory
+    let output_dir = "data/liquidation-replay-results";
+    std::fs::create_dir_all(output_dir)?;
+
+    // Default configs
+    let fishing_config = FishingLadderConfig::default();
+    let pyramid_config = PyramidConfig::default();
+    let gate_config = PromotionGateConfig {
+        starting_balance,
+        ..PromotionGateConfig::default()
+    };
+
+    // Run replay for each strategy
+    let mut all_results = Vec::new();
+
+    for strategy_name in &strategy_names {
+        tracing::info!("--- Running replay for strategy: {} ---", strategy_name);
+
+        // Create strategy from config
+        let sub_table = config.strategy.get_sub_table(strategy_name);
+        let params = config.strategy.get_params(strategy_name).unwrap_or_else(|_| {
+            crate::strategy::StrategyParams {
+                direction_bias: "neutral".to_string(),
+                momentum_threshold_pct: 0.15,
+                lookback_count: 60,
+                scale_in_clips: 1,
+                clip_size_usd: 100.0,
+                max_hold_secs: 1800,
+                take_profit_pct: 2.5,
+                stop_loss_pct: 1.0,
+                trailing_stop_pct: 0.8,
+                trailing_activation_pct: 1.5,
+                cooldown_after_loss_secs: 300,
+                use_native_tp_sl: true,
+            }
+        });
+
+        let mut strategy = crate::strategy::create_strategy_from_config(
+            strategy_name,
+            sub_table,
+            params,
+        )?;
+
+        // Create the replay pipeline
+        let cascade_params = crate::strategy::LiquidationCascadeParams::default();
+        let pipeline = ReplayPipeline::new(cascade_params, gate_config.clone());
+
+        // Run with generic strategy + fishing + pyramiding
+        let result = pipeline.run_generic_with_fishing_and_pyramiding(
+            strategy.as_mut(),
+            &data_points,
+            starting_balance,
+            300, // stale_data_threshold_secs
+            &fishing_config,
+            &pyramid_config,
+        );
+
+        // Generate timestamp for filenames
+        let timestamp = Utc::now().format("%Y%m%d_%H%M%S");
+        let safe_name = strategy_name.replace('-', "_");
+        let json_path = format!("{}/{}_{}.json", output_dir, safe_name, timestamp);
+        let md_path = format!("{}/{}_{}.md", output_dir, safe_name, timestamp);
+
+        // Write JSON report
+        ReplayPipeline::write_json_report(&result, Path::new(&json_path))?;
+        tracing::info!("JSON report: {}", json_path);
+
+        // Write Markdown report
+        ReplayPipeline::write_markdown_report(&result, Path::new(&md_path))?;
+        tracing::info!("Markdown report: {}", md_path);
+
+        // Print summary to stdout
+        println!("\n=== Liquidation Replay: {} ===", strategy_name);
+        println!("Data points: {}", result.data_points_replayed);
+        println!("Trades: {} ({}W / {}L)", result.trade_count, result.win_count, result.loss_count);
+        println!("Win rate: {:.1}%", result.win_rate_pct);
+        println!("Net PnL: ${:.2}", result.net_pnl);
+        println!("Sharpe: {:.4}  |  Sortino: {:.4}  |  Calmar: {:.4}",
+            result.sharpe_ratio, result.sortino_ratio, result.calmar_ratio);
+        println!("Max drawdown: ${:.2} ({:.2}%)", result.max_drawdown_usd, result.max_drawdown_pct);
+        println!("Fishing fill rate: {:.1}%", result.fishing_fill_rate * 100.0);
+        println!("Promotion verdict: {:?}", result.promotion_verdict);
+
+        let pass_count = result.promotion_criteria.iter().filter(|c| c.passed).count();
+        println!("Gate: {}/12 criteria passed", pass_count);
+        for c in &result.promotion_criteria {
+            let status = if c.passed { "✅" } else { "❌" };
+            println!("  {} {} — {} {} (threshold: {} {})",
+                status, c.description, c.actual_value, c.unit, c.threshold_value, c.unit);
+        }
+
+        all_results.push((strategy_name.clone(), result));
+    }
+
+    // Print cross-strategy comparison if multiple strategies were run
+    if all_results.len() > 1 {
+        println!("\n=== Strategy Comparison ===");
+        println!("{:<35} {:>8} {:>8} {:>8} {:>10} {:>8}",
+            "Strategy", "Trades", "WinRate", "Sharpe", "NetPnL", "Gate");
+        for (name, result) in &all_results {
+            let pass_count = result.promotion_criteria.iter().filter(|c| c.passed).count();
+            println!("{:<35} {:>8} {:>7.1}% {:>8.4} {:>10.2} {:>5}/12",
+                name, result.trade_count, result.win_rate_pct,
+                result.sharpe_ratio, result.net_pnl, pass_count);
+        }
+    }
+
+    tracing::info!("Liquidation replay complete");
+    Ok(())
+}
+
 /// Parse a backtest time string (ISO 8601 full or date-only) to milliseconds.
 fn parse_backtest_time(input: Option<&str>, label: &str) -> anyhow::Result<i64> {
     let s = input.ok_or_else(|| anyhow::anyhow!("--backtest-{} is required in backtest mode", label))?;
@@ -678,6 +890,7 @@ fn parse_backtest_time(input: Option<&str>, label: &str) -> anyhow::Result<i64> 
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use std::path::PathBuf;
 
     use super::Args;
 
@@ -905,5 +1118,96 @@ mod tests {
         ]).unwrap();
         assert_eq!(args.walk_forward_mode, "expanding");
         assert_eq!(args.walk_forward_windows, 7);
+    }
+
+    // ── Liquidation replay CLI flag tests ────────────────────────────────
+
+    #[test]
+    fn test_liquidation_replay_flag_parsed() {
+        let args = Args::try_parse_from(["zekt", "--liquidation-replay"]);
+        assert!(args.is_ok(), "Failed to parse --liquidation-replay: {:?}", args.err());
+        assert!(args.unwrap().liquidation_replay);
+    }
+
+    #[test]
+    fn test_liquidation_replay_default_snapshot_dir() {
+        let args = Args::try_parse_from(["zekt", "--liquidation-replay"]).unwrap();
+        assert_eq!(args.snapshot_dir, PathBuf::from("data/liquidation-zones/"));
+    }
+
+    #[test]
+    fn test_liquidation_replay_custom_snapshot_dir() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--snapshot-dir", "data/custom-snapshots/",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        assert_eq!(args.snapshot_dir, PathBuf::from("data/custom-snapshots/"));
+    }
+
+    #[test]
+    fn test_liquidation_replay_default_starting_balance() {
+        let args = Args::try_parse_from(["zekt", "--liquidation-replay"]).unwrap();
+        assert!((args.starting_balance - 1000.0).abs() < f64::EPSILON,
+            "Default starting balance should be 1000, got {}", args.starting_balance);
+    }
+
+    #[test]
+    fn test_liquidation_replay_custom_starting_balance() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--starting-balance", "5000",
+        ]).unwrap();
+        assert!((args.starting_balance - 5000.0).abs() < f64::EPSILON,
+            "Custom starting balance should be 5000, got {}", args.starting_balance);
+    }
+
+    #[test]
+    fn test_liquidation_replay_with_strategy() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--strategy", "sweep-reclaim",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        assert_eq!(args.strategy.as_deref(), Some("sweep-reclaim"));
+    }
+
+    #[test]
+    fn test_liquidation_replay_with_strategy_all() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--strategy", "all",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        assert_eq!(args.strategy.as_deref(), Some("all"));
+    }
+
+    #[test]
+    fn test_liquidation_replay_conflicts_with_backtest() {
+        let args = Args::try_parse_from(["zekt", "--liquidation-replay", "--backtest"]).unwrap();
+        assert!(args.liquidation_replay);
+        assert!(args.backtest);
+        // The runtime mode-exclusivity check in main() handles this
+    }
+
+    #[test]
+    fn test_liquidation_replay_conflicts_with_paper() {
+        let args = Args::try_parse_from(["zekt", "--liquidation-replay", "--paper"]).unwrap();
+        assert!(args.liquidation_replay);
+        assert!(args.paper);
+    }
+
+    #[test]
+    fn test_liquidation_replay_all_flags_together() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--strategy", "cascade-continuation",
+            "--snapshot-dir", "data/my-snapshots",
+            "--starting-balance", "2500",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        assert_eq!(args.strategy.as_deref(), Some("cascade-continuation"));
+        assert_eq!(args.snapshot_dir, PathBuf::from("data/my-snapshots"));
+        assert!((args.starting_balance - 2500.0).abs() < f64::EPSILON);
     }
 }
