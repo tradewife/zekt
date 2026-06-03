@@ -2,13 +2,13 @@
 
 ## What This Is
 
-A **strategy research and validation platform** for Solana perpetual futures (Flash Trade). The system discovers profitable trading patterns from Hyperliquid wallets, reverse-engineers them from fill-level data (the Bulk.Trade methodology), and validates whether those patterns hold under rigorous testing before any execution. Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence. Single Rust crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
+A **liquidation zone exploitation engine** for Solana perpetual futures (Flash Trade). The system discovers profitable trading patterns from Hyperliquid wallets, reverse-engineers them from fill-level data (the Bulk.Trade methodology), and validates whether those patterns hold under rigorous testing before any execution. Rust binary for trading infrastructure + Python analysis pipeline for wallet intelligence. Single Rust crate, standalone workspace. Targets Solana mainnet via Flash Trade's public REST API.
 
 **Pipeline:** Research on Hyperliquid (rich data via QuickNode HyperCore API) → Validate rigorously → Execute on Flash Trade (Solana perps). Semi-automated: discovery, analysis, and backtesting run without human intervention; paper trading and live execution require human approval.
 
-**16 strategies:** momentum-scalper, lp-consumption, mean-reversion, trend-follower, funding-capture, blueprint-scalper, blueprint-mean-revert, blueprint-cluster-002 through 009, blueprint-hft-market-maker, liquidation-cascade-hunter. All implement the `Strategy` trait in `strategy.rs`. Strategy blueprints are generated from fill-level analysis of profitable HL wallets (see `analysis/` directory).
+**19 strategies:** momentum-scalper, lp-consumption, mean-reversion, trend-follower, funding-capture, blueprint-scalper, blueprint-mean-revert, blueprint-cluster-002 through 009, blueprint-hft-market-maker, liquidation-cascade-hunter, sweep-reclaim, liquidity-memory-fisher, liquidation-zone-arbiter. All implement the `Strategy` trait in `strategy.rs`. Strategy blueprints are generated from fill-level analysis of profitable HL wallets (see `analysis/` directory).
 
-**Validation status (M10):** After exhaustive 90-day walk-forward validation — 294K parameter combinations, 315 leverage/sizing grid cells, 3 portfolio allocation strategies — **no current blueprint strategy passes the six-criterion promotion gate**. All promising short-window signals were overfit artifacts. Fee dominance (fee-to-gross >100%) overwhelms any remaining edge. The correct outcome is "reject all candidates." No strategy has been promoted to paper or live trading.
+**Validation status:** After exhaustive 90-day walk-forward validation — 294K parameter combinations, 315 leverage/sizing grid cells, 3 portfolio allocation strategies — **no current blueprint strategy passes the six-criterion promotion gate**. All promising short-window signals were overfit artifacts. Liquidation zone strategies have been validated against 72h captured data with confidence sweep completed — no strategy promoted to live paper trading yet. Data resolution and multi-source corroboration are the remaining gaps. A durable capture service runs under systemd, capturing BTC/ETH/SOL zone data from HL + Imperial with a 75-wallet watchlist.
 
 ## Recommended Pipeline
 ```
@@ -24,10 +24,11 @@ A **strategy research and validation platform** for Solana perpetual futures (Fl
 ## Build & Run
 ```bash
 cargo build --release                          # Build Rust binary
-cargo test                                     # Run 828 Rust unit tests
+cargo test                                     # Run 1,254 Rust unit tests
 
 # Python analysis tests
 python -m pytest analysis/tests/ -v            # Run 132 Python analysis module tests
+python -m pytest scripts/tests/ -v             # Run 210 Python scripts tests
 
 # Full pipeline orchestration (alpha-scanner + copy-trader + whale-watcher + paper)
 cargo run --bin pipeline -- --paper-balance 1000 --duration-hours 48
@@ -48,6 +49,9 @@ cargo run --bin pipeline -- --help              # All options
 ./target/release/zekt --paper --strategies momentum-scalper,lp-consumption \
   --markets SOL,BTC,ETH --paper-balance 1000
 
+# Liquidation zone replay against captured data
+./target/release/zekt --liquidation-replay --data-dir data/liquidation-snapshots
+
 # Dry run (single API preview, then exit)
 ./target/release/zekt --dry-run
 
@@ -66,9 +70,9 @@ cargo run --bin analyze-wallet -- --wallets data/wallets-hl.json --output data/r
 
 ### Rust (Trading Infrastructure)
 ```
-main.rs         CLI (clap) + graceful shutdown (ctrlc) -- routes to backtest, paper, dry-run, or live mode
+main.rs         CLI (clap) + graceful shutdown (ctrlc) -- routes to backtest, paper, liquidation-replay, dry-run, or live mode
 config.rs       TOML config (agent, flash, strategy, risk, backtest sections + strategy sub-tables)
-strategy.rs     Strategy trait + 16 implementations + factory function (194 tests)
+strategy.rs     Strategy trait + 19 implementations + factory function (194 tests)
 signal.rs       MomentumDetector, MomentumSnapshot, PoolSnapshot, Signal/ExitReason types
 backtest.rs     Hyperliquid candle fetcher + BacktestEngine (walk-forward, slippage, regime filter, 42 tests)
 flash_api.rs    REST client for Flash Trade API (prices, positions, tx builder)
@@ -83,7 +87,10 @@ paper.rs        Paper trading -- single + MultiPaperEngine (strategy x market ma
 imperial.rs     ImperialClient -- REST client for Imperial API (Solana perps venue comparison) (53 tests)
 route_cost.rs   RouteCostOracle -- cross-venue fee/spread comparison for optimal execution routing (27 tests)
 liquidation.rs  LiquidationZoneCapture -- multi-source liquidation zone data model with confidence scoring + snapshot persistence (101 tests)
-replay.rs       ReplayPipeline -- replay validation for strategies with promotion gate (45 tests)
+replay.rs       ReplayPipeline -- replay validation for strategies with 12-criterion promotion gate (45+ tests)
+liquidity_memory.rs  Durable zone memory -- historical zone classifications, touch tracking, aging
+fishing.rs      Fishing order simulator -- fill rate, adverse selection, expectancy
+pyramiding.rs   Bounded pyramiding engine -- multi-entry position scaling with risk limits
 src/bin/
   pipeline.rs             Orchestrator: launches alpha-scanner + copy-trader + whale-watcher + paper (14 tests)
   scrape-leaderboards.rs  CLI: discover profitable wallets via QuickNode HyperCore API + leaderboards (22 tests)
@@ -124,7 +131,7 @@ fn parameters(&self) -> &StrategyParams;
 fn push_price(&mut self, price: f64, timestamp_ms: i64);
 fn snapshot(&self) -> MomentumSnapshot;
 ```
-Strategies are created via `create_strategy_from_config(name, sub_table, fallback_params)`. Available names: `["momentum-scalper", "lp-consumption", "mean-reversion", "trend-follower", "funding-capture", "blueprint-scalper", "blueprint-mean-revert", "blueprint-cluster-002", "blueprint-cluster-003", "blueprint-cluster-004", "blueprint-cluster-005", "blueprint-cluster-006", "blueprint-cluster-007", "blueprint-cluster-008", "blueprint-cluster-009", "blueprint-hft-market-maker", "liquidation-cascade-hunter"]` (see `available_strategies()`).
+Strategies are created via `create_strategy_from_config(name, sub_table, fallback_params)`. Available names: `["momentum-scalper", "lp-consumption", "mean-reversion", "trend-follower", "funding-capture", "blueprint-scalper", "blueprint-mean-revert", "blueprint-cluster-002", "blueprint-cluster-003", "blueprint-cluster-004", "blueprint-cluster-005", "blueprint-cluster-006", "blueprint-cluster-007", "blueprint-cluster-008", "blueprint-cluster-009", "blueprint-hft-market-maker", "liquidation-cascade-hunter", "sweep-reclaim", "liquidity-memory-fisher", "liquidation-zone-arbiter"]` (see `available_strategies()`).
 
 ## Key Dependencies
 
@@ -253,11 +260,11 @@ See `config/perps.toml` for the full schema with defaults.
 ## Testing
 
 ### Rust Tests
-828 unit tests across all modules. Run with `cargo test`.
+1,254 unit tests across all modules. Run with `cargo test`.
 - `strategy.rs`: 194 tests (entry/exit for each strategy, parameter validation, factory)
 - `liquidation.rs`: 101 tests (zone capture, multi-source fusion, confidence scoring, snapshot persistence, retention)
 - `imperial.rs`: 53 tests (ImperialClient, venue comparison, fee parsing, endpoint coverage)
-- `replay.rs`: 45 tests (replay validation, promotion gate, strategy replay, threshold checks)
+- `replay.rs`: 45+ tests (replay validation, 12-criterion promotion gate, strategy replay, threshold checks)
 - `backtest.rs`: 42 tests (candle parsing, position PnL, fee accrual, synthetic replay, walk-forward, slippage, regime)
 - `funding_capture.rs`: 40 tests (entry/exit, parameter validation, funding tracking, pipeline)
 - `route_cost.rs`: 27 tests (cross-venue fee comparison, spread analysis, optimal routing)
@@ -273,7 +280,7 @@ See `config/perps.toml` for the full schema with defaults.
 - `src/bin/scan-markets.rs`: 18 tests (market ranking, pool data)
 - `src/bin/pipeline.rs`: 14 tests (CLI args, report generation, managed child process)
 - `src/bin/scrape-dextrabot.rs`: 8 tests (Dextrabot API integration)
-- Other modules: ~24 tests (pnl_tracker, hl_info, signal, executor, engine, flash_api)
+- Other modules: ~24 tests (pnl_tracker, hl_info, signal, executor, engine, flash_api, liquidity_memory, fishing, pyramiding)
 
 ### Python Tests
 Run with `python -m pytest analysis/tests/ -v`. 132 tests total.
