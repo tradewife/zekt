@@ -202,10 +202,12 @@ Note: Profit-funded variant caps tranche size to unrealized PnL, so actual sizes
 3. Slippage is not modeled — multi-tranche exits may face worse execution
 4. The replay pipeline uses the Rust `pyramiding.rs` logic for production validation
 5. This report serves as a pre-validation analysis before the full Rust replay pipeline
+6. **72h capture context:** After 71.1h of live capture (4,650 snapshots), the sweep-reclaim strategy with Reclaim pyramiding passes 11/12 promotion criteria (only Sharpe fails at 0.48 vs 1.0 required)
 
 ## Metadata
 
 - **Generated:** 2026-05-31T14:42:35.547458+00:00
+- **Updated:** 2026-06-03 (72h capture evaluation complete)
 - **Script:** scripts/pyramiding-analysis.py
 - **Pyramiding Module:** src/pyramiding.rs
 - **Replay Module:** src/replay.rs

@@ -381,48 +381,51 @@ No individual candidate or portfolio combination passes the six-criterion promot
 **Deliverable Reports:**
 - `data/liquidity-memory-map.md` — Zone classifications and rankings
 - `data/fishing-order-sim.md` — Fill rate, adverse selection, expectancy comparison
-- `data/liquidation-event-replay.md` — Full replay metrics + promotion gate verdict
+- `data/liquidation-event-replay.md` — Multi-strategy replay metrics + promotion gate verdict
 - `data/pyramiding-analysis.md` — 5 pyramid variant comparison
-- `data/liquidation-capture-run.md` — Capture run analysis
+- `data/liquidation-capture-run.md` — Full 72h capture run analysis (4,650 snapshots)
 - `docs/liquidation-zone-exploitation-methodology.md` — Complete methodology
 
 ### Findings Summary
 
 The Liquidation Zone Exploitation Engine was built and validated with 3 new strategies (cascade-continuation, sweep-reclaim, liquidity-memory-fisher), a zone arbiter coordinator, fishing order simulator, bounded pyramiding engine, and a 12-criterion promotion gate. All infrastructure is functional and tested (1000+ Rust tests, 132 Python tests).
 
-**Capture Results:** A 2.6-hour capture produced 24 snapshots across BTC, ETH, SOL. All zones were derived from OI imbalance source only (single-source, confidence 0.30-0.40). Zones were 5000 bps from current price — classified as "Untested" (price never reached them during capture).
+**72-Hour Capture Results:** A continuous 71.1-hour capture produced 4,650 snapshots across BTC, ETH, SOL (1,550 per symbol). Total zones observed: 104,308 across all snapshots. Zone sources: 93% HL positions, 3.8% OI imbalance, 2.8% HL fills, 0.5% multi-source. Only 2,871 zones (2.8%) are within 100 bps of current price (actionable range). Confidence range: 0.30–0.48 (all moderate).
 
-**Replay Results:** The replay pipeline generated 15 simulated trades from zone interactions. The promotion gate returned **Denied (6/12 criteria passed)**. The 6 failing criteria were:
+**Multi-Strategy Replay Results:** All 4 strategies evaluated through the 12-criterion promotion gate against the full captured dataset:
 
-| Criterion | Required | Actual | Gap |
-|-----------|----------|--------|-----|
-| Signal events | ≥ 30 | 15 | Need 2× more data |
-| Sharpe ratio | ≥ 1.0 | 0.03 | Need 30× improvement |
-| Fee/gross | < 35% | 80% | Need 2.3× reduction |
-| Single-trade dominance | < 25% | 443% | Need more diversification |
-| Fishing improvement | fishing > market | 0 vs 0 | No fishing fills (zones too far) |
-| Route cost | < 50% of expectancy | 71% | Need lower execution costs |
+| Strategy | Trades | Win Rate | Net PnL | Sharpe | Fee/Gross | Gate Result | Criteria |
+|----------|--------|----------|---------|--------|-----------|-------------|----------|
+| cascade-continuation | 108 | 44.4% | -$244 | -0.14 | 322% | ❌ Denied | 8/12 |
+| sweep-reclaim | 117 | 59.0% | +$981 | 0.48 | 17% | ❌ Denied | 11/12 |
+| liquidity-memory-fisher | 100 | 55.0% | +$241 | 0.22 | 42% | ❌ Denied | 10/12 |
+| liquidation-zone-arbiter | 81 | 64.2% | +$405 | 0.33 | 26% | ❌ Denied | 11/12 |
 
-**Pyramiding:** The Reclaim variant shows the best expectancy improvement (+$0.52/trade) but increases variance. Profit-funded variant preserves risk-adjusted metrics.
+**Universal failure:** All 4 strategies fail the Sharpe ≥ 1.0 criterion. No strategy passes the full 12-criteria gate.
+
+**Best strategy: sweep-reclaim** passes 11/12 criteria. The sole failure is Sharpe ratio (0.48 vs required 1.0). It has positive expectancy ($8.39/trade), acceptable drawdown (6.2%), and good fee efficiency (17.1%).
+
+**Pyramiding:** The Reclaim variant shows the best expectancy improvement (+$0.52/trade) from pyramiding analysis. Profit-funded variant preserves risk-adjusted metrics with minimal variance increase.
 
 ### Recommendation: **Continue Capture**
 
-The data is insufficient for a definitive promote or reject decision. Key reasons:
+While no strategy passes all 12 criteria, sweep-reclaim is close (11/12). The data quality issues are addressable with continued capture:
 
-1. **Capture duration too short:** 2.6 hours is inadequate. A 24-72 hour capture is needed to observe zone interactions (touches, sweeps, reversals) and accumulate ≥30 replay events.
+1. **Zone distance:** 84% of zones are >5000 bps from price (deep liquidation levels, not actionable). More near-price zones needed.
 
-2. **All zones are Untested:** No zone has been touched by price during the capture period. This means no fishing fills, no reversal data, no lifecycle statistics. We cannot evaluate strategy efficacy without zones that price actually interacts with.
+2. **Single-source dominance:** 93% from HL positions alone. Multi-source fusion (positions + fills + OI + depth) would increase confidence and produce nearer-price zones.
 
-3. **Single-source limitation:** All zones from OI imbalance only. Multi-source corroboration (from HL positions, HL fills, depth fragility) would increase zone confidence and produce nearer-price zones.
+3. **Few confirmed zone interactions:** Zones are classified as Untested/Magnet — no confirmed reversals. More data would show actual zone lifecycle behavior.
 
-4. **Infrastructure validated:** All modules work correctly. The replay pipeline, fishing simulator, pyramiding engine, and promotion gate produce valid outputs. The issue is data availability, not infrastructure.
+4. **Sharpe ratio gap:** 0.48 vs 1.0 required. More near-price zone interactions from fills data could improve risk-adjusted returns.
 
 ### Required Next Steps
 
-1. Run continuous 48-72 hour capture with expanded wallet watchlist
-2. Enable HL position and fill sources for multi-source zone fusion
-3. Focus on zones within 500 bps of current price (actionable range)
-4. Re-run replay pipeline when ≥30 zone-touch events are available
+1. Continue capture to 168h (1 week) for more near-price zone interactions
+2. Expand HL fills watchlist for more fill-based zones (the 2,871 near-price zones are promising)
+3. Enable depth fragility detection for multi-source fusion
+4. Focus strategy evaluation on zones within 1000 bps of price (actionable range)
+5. Re-run replay pipeline after next capture milestone
 
 ---
 

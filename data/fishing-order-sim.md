@@ -1,6 +1,6 @@
 # Fishing Order Simulation Report
 
-**Generated:** 2026-05-31T15:08:44.424205+00:00
+**Generated:** 2026-06-03T07:03:43.006604+00:00
 **Assertion:** VAL-REPORTS-003
 
 ## Overview
@@ -14,27 +14,27 @@ market entry expectancy.
 
 | Metric | Value |
 |--------|-------|
-| Total Orders Placed | 9 |
-| Filled Orders | 0 (0.0%) |
-| Fully Filled | 0 |
-| Partially Filled | 0 |
-| Fill Rate | 0.0000 |
-| Adverse Selection Rate | 0.0000 |
-| Missed Winners | 8 |
-| Missed Losers | 1 |
-| SL Hits | 0 |
-| TP Hits | 0 |
-| Orders Cancelled (Decay) | 0 |
+| Total Orders Placed | 177 |
+| Filled Orders | 7 (4.0%) |
+| Fully Filled | 4 |
+| Partially Filled | 3 |
+| Fill Rate | 0.0395 |
+| Adverse Selection Rate | 0.2857 |
+| Missed Winners | 87 |
+| Missed Losers | 83 |
+| SL Hits | 2 |
+| TP Hits | 5 |
+| Orders Cancelled (Decay) | 1 |
 | Orders Cancelled (Cascade) | 0 |
-| Expired Orders | 3 |
+| Expired Orders | 58 |
 
 ## Per-Symbol Results
 
 | Symbol | Orders | Filled | Fill Rate | Adv. Sel. Rate | Gross PnL (Fish) | Net PnL (Fish) | Fees (Fish) |
 |--------|--------|--------|-----------|----------------|-------------------|----------------|-------------|
-| BTC | 3 | 0 | 0.0000 | 0.0000 | $0.00 | $0.00 | $0.00 |
-| ETH | 3 | 0 | 0.0000 | 0.0000 | $0.00 | $0.00 | $0.00 |
-| SOL | 3 | 0 | 0.0000 | 0.0000 | $0.00 | $0.00 | $0.00 |
+| BTC | 63 | 2 | 0.0317 | 0.0000 | $12.17 | $12.09 | $0.08 |
+| ETH | 60 | 1 | 0.0167 | 0.0000 | $7.50 | $7.45 | $0.05 |
+| SOL | 54 | 4 | 0.0741 | 0.5000 | $4.85 | $4.54 | $0.31 |
 
 ## Order Placement Statistics
 
@@ -49,10 +49,10 @@ market entry expectancy.
 
 | Metric | Value |
 |--------|-------|
-| Adverse Fills | 0 / 0 (0.0%) |
-| SL Hits (Adverse Outcomes) | 0 |
-| TP Hits (Favorable Outcomes) | 0 |
-| SL/TP Ratio | 0.00 |
+| Adverse Fills | 2 / 7 (28.6%) |
+| SL Hits (Adverse Outcomes) | 2 |
+| TP Hits (Favorable Outcomes) | 5 |
+| SL/TP Ratio | 0.40 |
 
 Adverse selection occurs when a passive limit order is filled but price continues 
 to move against the position. A high adverse selection rate (>50%) indicates the zones 
@@ -62,43 +62,43 @@ are not providing genuine support/resistance but are merely being swept through 
 
 | Metric | Fishing Entry | Market Entry | Delta |
 |--------|--------------|--------------|-------|
-| BTC Expectancy | $0.0000 | $0.0000 | $+0.0000 |
-| ETH Expectancy | $0.0000 | $0.0000 | $+0.0000 |
-| SOL Expectancy | $0.0000 | $0.0000 | $+0.0000 |
-| **Aggregate** | **$0.0000** | **$0.0000** | **$+0.0000** |
+| BTC Expectancy | $6.0459 | $-3.3601 | $+9.4060 |
+| ETH Expectancy | $7.4500 | $5.7128 | $+1.7372 |
+| SOL Expectancy | $1.1342 | $0.3113 | $+0.8230 |
+| **Aggregate** | **$3.4400** | **$0.0343** | **$+3.4057** |
 
-**Verdict: Market entry outperforms fishing entry.** The adverse selection cost and 
-missed fills from passive execution outweigh the entry price improvement.
+**Verdict: Fishing entry outperforms market entry.** The passive limit order approach 
+provides $3.4057 better expectancy per fill on aggregate.
 
 ## Fee Impact Analysis
 
 | Entry Type | Gross PnL | Fees | Net PnL | Fee/Gross |
 |-----------|-----------|------|---------|-----------|
-| Fishing | $0.00 | $0.00 | $0.00 | 999.0% |
-| Market | $0.00 | $0.00 | $0.00 | 999.0% |
+| Fishing | $24.52 | $0.44 | $24.08 | 1.8% |
+| Market | $1.59 | $1.35 | $0.24 | 84.9% |
 
 ## SL/TP Hit Rates
 
-- **SL Hit Rate:** 0.0% (0 / 0 fills)
-- **TP Hit Rate:** 0.0% (0 / 0 fills)
-- **Net SL/TP Ratio:** 0.00
+- **SL Hit Rate:** 28.6% (2 / 7 fills)
+- **TP Hit Rate:** 71.4% (5 / 7 fills)
+- **Net SL/TP Ratio:** 0.40
 
 ## Missed Fills Analysis
 
 | Category | Count | Description |
 |----------|-------|-------------|
-| Missed Winners | 8 | Price passed through level but no order placed |
-| Missed Losers | 1 | Price passed through level, would have been adverse |
-| Missed Win/Loss Ratio | 8.00 | Higher = more missed opportunity |
+| Missed Winners | 87 | Price passed through level but no order placed |
+| Missed Losers | 83 | Price passed through level, would have been adverse |
+| Missed Win/Loss Ratio | 1.05 | Higher = more missed opportunity |
 
 ## Simulation Caveats
 
-1. **Limited capture data:** Only 24 zones from 8 capture cycles over ~2.6 hours
-2. **Single-source zones:** All zones from OI imbalance only (no multi-source corroboration)
-3. **Synthetic fills:** Fill probabilities are simulated, not from actual order book data
-4. **No slippage model:** Post-fill slippage not included in the simulation
-5. **Fixed fee rates:** Actual maker/taker rates vary by venue and volume tier
-6. **Zone quality:** All zones at moderate confidence (0.30-0.40) — no high-confidence zones
+1. **Capture data:** 60 unique zones from 4650 snapshots over 71.3 hours
+2. **Near-price zones:** 1 zones within 500 bps of current price (actionable for fishing)
+3. **Multi-source zones:** 1 zones corroborated by multiple data sources
+4. **Synthetic fills:** Fill probabilities are simulated, not from actual order book data
+5. **No slippage model:** Post-fill slippage not included in the simulation
+6. **Fixed fee rates:** Actual maker/taker rates vary by venue and volume tier
 
 ---
 *Report generated by `scripts/generate_validation_reports.py`*
