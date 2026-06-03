@@ -4,7 +4,7 @@
 **Mission ID:** 47feb079-05f0-4377-9ae2-96a201a9c09e
 **Status:** Complete (M1–M3)
 **Git Commit:** `231cc2eb76ad8db328f78b7466d002aca8ec3459`
-**Recommendation:** **REJECT ALL CANDIDATES** — no strategy-market pair passes the promotion gate.
+**Recommendation:** **REJECT ALL CANDIDATES** — no strategy-market pair passes the promotion gate. Liquidation zone strategies also rejected: zero trades from real Rust strategy logic.
 
 ---
 
@@ -377,55 +377,75 @@ No individual candidate or portfolio combination passes the six-criterion promot
 
 ## 11. Liquidation Zone Exploitation Engine (M4)
 
-**Status:** Complete — **Final Recommendation: Continue Capture**
+**Status:** Complete — **Final Recommendation: REJECT**
 **Deliverable Reports:**
 - `data/liquidity-memory-map.md` — Zone classifications and rankings
 - `data/fishing-order-sim.md` — Fill rate, adverse selection, expectancy comparison
-- `data/liquidation-event-replay.md` — Multi-strategy replay metrics + promotion gate verdict
+- `data/liquidation-event-replay.md` — Python-based multi-strategy replay metrics + promotion gate verdict
+- `data/liquidation-replay-comparison.md` — **Rust binary replay comparison (definitive results)**
+- `data/liquidation-replay-results/` — Per-strategy JSON + Markdown results from Rust binary
 - `data/pyramiding-analysis.md` — 5 pyramid variant comparison
-- `data/liquidation-capture-run.md` — Full 72h capture run analysis (4,650 snapshots)
+- `data/liquidation-capture-run.md` — Full 72h capture run analysis (4,740 snapshots)
 - `docs/liquidation-zone-exploitation-methodology.md` — Complete methodology
 
 ### Findings Summary
 
 The Liquidation Zone Exploitation Engine was built and validated with 3 new strategies (cascade-continuation, sweep-reclaim, liquidity-memory-fisher), a zone arbiter coordinator, fishing order simulator, bounded pyramiding engine, and a 12-criterion promotion gate. All infrastructure is functional and tested (1000+ Rust tests, 132 Python tests).
 
-**72-Hour Capture Results:** A continuous 71.1-hour capture produced 4,650 snapshots across BTC, ETH, SOL (1,550 per symbol). Total zones observed: 104,308 across all snapshots. Zone sources: 93% HL positions, 3.8% OI imbalance, 2.8% HL fills, 0.5% multi-source. Only 2,871 zones (2.8%) are within 100 bps of current price (actionable range). Confidence range: 0.30–0.48 (all moderate).
+**72-Hour Capture Results:** A continuous 72-hour capture produced 4,740 snapshots across BTC, ETH, SOL (1,580 per symbol). Total zones observed: ~104,000 across all snapshots. Zone sources: 93% HL positions, 3.7% OI imbalance, 2.8% HL fills, 0.5% multi-source. Only 134 zones (2.8%) are within 200 bps of current price (actionable range). Confidence range: 0.30–0.47 (all below strategy thresholds).
 
-**Multi-Strategy Replay Results:** All 4 strategies evaluated through the 12-criterion promotion gate against the full captured dataset:
+### Rust Binary Replay Results (Definitive)
 
-| Strategy | Trades | Win Rate | Net PnL | Sharpe | Fee/Gross | Gate Result | Criteria |
-|----------|--------|----------|---------|--------|-----------|-------------|----------|
-| cascade-continuation | 108 | 44.4% | -$244 | -0.14 | 322% | ❌ Denied | 8/12 |
-| sweep-reclaim | 117 | 59.0% | +$981 | 0.48 | 17% | ❌ Denied | 11/12 |
-| liquidity-memory-fisher | 100 | 55.0% | +$241 | 0.22 | 42% | ❌ Denied | 10/12 |
-| liquidation-zone-arbiter | 81 | 64.2% | +$405 | 0.33 | 26% | ❌ Denied | 11/12 |
+All 4 strategies were run through the **actual Rust binary** using `--liquidation-replay` mode against the full 72h captured dataset. This uses the real strategy implementations with their strict multi-gate entry logic — not simulation.
 
-**Universal failure:** All 4 strategies fail the Sharpe ≥ 1.0 criterion. No strategy passes the full 12-criteria gate.
+| Strategy | Data Points | Trades | Win Rate | Net PnL | Sharpe | Gate |
+|----------|-------------|--------|----------|---------|--------|------|
+| cascade-continuation | 4,734 | **0** | 0.0% | $0.00 | 0.0000 | ❌ Denied (6/12) |
+| sweep-reclaim | 4,740 | **0** | 0.0% | $0.00 | 0.0000 | ❌ Denied (6/12) |
+| liquidity-memory-fisher | 4,740 | **0** | 0.0% | $0.00 | 0.0000 | ❌ Denied (6/12) |
+| liquidation-zone-arbiter | 4,740 | **0** | 0.0% | $0.00 | 0.0000 | ❌ Denied (6/12) |
 
-**Best strategy: sweep-reclaim** passes 11/12 criteria. The sole failure is Sharpe ratio (0.48 vs required 1.0). It has positive expectancy ($8.39/trade), acceptable drawdown (6.2%), and good fee efficiency (17.1%).
+**All 4 strategies produce zero trades.** The real strategy implementations correctly enforce strict entry gates that the captured data cannot satisfy.
 
-**Pyramiding:** The Reclaim variant shows the best expectancy improvement (+$0.52/trade) from pyramiding analysis. Profit-funded variant preserves risk-adjusted metrics with minimal variance increase.
+### Root Cause: Zone Confidence Below Thresholds
 
-### Recommendation: **Continue Capture**
+No captured zone achieves the minimum confidence required by any strategy:
 
-While no strategy passes all 12 criteria, sweep-reclaim is close (11/12). The data quality issues are addressable with continued capture:
+| Parameter | Required | Captured Max | Gap |
+|-----------|----------|--------------|-----|
+| Confidence (cascade) | ≥ 0.50 | 0.47 | -0.03 |
+| Confidence (sweep-reclaim) | ≥ 0.60 | 0.47 | -0.13 |
+| Confidence (fisher) | ≥ 0.50 | 0.47 | -0.03 |
+| Multi-source corroboration | ≥ 2 sources | 0.5% of zones | Critical |
 
-1. **Zone distance:** 84% of zones are >5000 bps from price (deep liquidation levels, not actionable). More near-price zones needed.
+Near-price zones (134, within 200 bps) all come from HL fills as single-source, with confidence 0.41–0.43. The only path to confidence ≥ 0.5 is multi-source corroboration, but only 0.5% of zones have 2+ sources.
 
-2. **Single-source dominance:** 93% from HL positions alone. Multi-source fusion (positions + fills + OI + depth) would increase confidence and produce nearer-price zones.
+### Python Simulation vs Rust Binary
 
-3. **Few confirmed zone interactions:** Zones are classified as Untested/Magnet — no confirmed reversals. More data would show actual zone lifecycle behavior.
+An earlier Python-based simulation (`data/liquidation-event-replay.md`) produced non-zero results (108-117 trades per strategy) by bypassing the actual strategy entry gates. The Python simulation used synthetic strategy logic rather than the real Rust implementations. The Rust binary is the authoritative result.
 
-4. **Sharpe ratio gap:** 0.48 vs 1.0 required. More near-price zone interactions from fills data could improve risk-adjusted returns.
+| Metric | Python Simulation | Rust Binary (Definitive) |
+|--------|------------------|--------------------------|
+| Best strategy trades | 117 (sweep-reclaim) | **0** (all strategies) |
+| Best net PnL | +$981 | **$0** |
+| Best Sharpe | 0.48 | **0.00** |
+| Best gate result | 11/12 | **6/12** |
 
-### Required Next Steps
+### Recommendation: **REJECT**
 
-1. Continue capture to 168h (1 week) for more near-price zone interactions
-2. Expand HL fills watchlist for more fill-based zones (the 2,871 near-price zones are promising)
-3. Enable depth fragility detection for multi-source fusion
-4. Focus strategy evaluation on zones within 1000 bps of price (actionable range)
-5. Re-run replay pipeline after next capture milestone
+The Rust binary replay definitively shows that no liquidation-zone strategy produces any trades with the current captured data quality. The strategies correctly refuse to trade when zone confidence is below their safety thresholds.
+
+1. **No strategy is promotable** — zero signal generation across all 4 strategies
+2. **Zone confidence is the universal blocker** — max confidence (0.47) is below all thresholds (0.5-0.6)
+3. **Multi-source corroboration is insufficient** — only 0.5% of zones have 2+ sources
+4. **The architecture is sound** — strategies correctly enforce safety gates; the problem is data quality, not strategy logic
+
+### Required Changes Before Re-evaluation
+
+1. **Improve multi-source fusion**: Capture pipeline must produce zones corroborated by 2+ sources (e.g., positions + fills, fills + OI) to achieve confidence ≥ 0.5
+2. **Expand HL fills watchlist**: All 134 near-price zones come from HL fills; more fills wallets = more near-price zones = more potential multi-source fusion
+3. **Add depth fragility source**: Currently contributing 0% of zones; could corroborate near-price fill zones
+4. **Longer capture**: Continue to 168h+ for more zone interactions and potential multi-source events
 
 ---
 

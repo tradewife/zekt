@@ -1,0 +1,59 @@
+# liquidation-zone-arbiter — Replay Promotion Report
+
+## Summary
+
+- **Strategy:** liquidation-zone-arbiter
+- **Verdict:** Denied
+- **Data Points Replayed:** 4740
+- **Starting Balance:** $1000.00
+- **Final Balance:** $1000.00
+- **Net PnL:** $0.00
+- **Baseline PnL:** $0.00 (no-trade)
+- **PnL vs Baseline:** $0.00
+
+## Performance Metrics
+
+| Metric | Value |
+|---|---|
+| Trades | 0 |
+| Wins / Losses | 0 / 0 |
+| Win Rate | 0.0% |
+| Gross PnL | $-0.00 |
+| Total Fees | $-0.00 |
+| Net PnL | $0.00 |
+| Sharpe Ratio | 0.0000 |
+| Sortino Ratio | 0.0000 |
+| Calmar Ratio | 0.0000 |
+| Max Drawdown | $0.00 (0.00%) |
+| Net Expectancy | $0.0000 |
+| Avg MAE | $0.0000 |
+| Avg MFE | $0.0000 |
+| Avg Stop Efficiency | 0.0000 |
+| Fishing Fill Rate | 100.00% |
+| Zone-Touch Win Rate | 0.0% (0 / 0) |
+| Avg Post-Liq Drift | $0.0000 |
+| Avg Time-to-Reversal | 0.0s |
+| Avg Time-to-Next-Zone | 0.0s |
+| Single-Trade Dependency | ✅ OK |
+| Avg Hold Time | 0.0s |
+| Stale Trades | 0 |
+| Duplicate Pendings | 0 |
+| Signal Events | 0 |
+
+## Promotion Criteria
+
+| Criterion | Status | Actual | Threshold |
+|---|---|---|---|
+| Positive net expectancy after route costs | ❌ FAIL | 0.0000 USD | > 0 USD |
+| Max drawdown within policy limit | ✅ PASS | 0.00 pct | ≤ 10.0 pct |
+| Zero stale-data trades | ✅ PASS | 0 count | = 0 count |
+| Zero duplicate pending trades | ✅ PASS | 0 count | = 0 count |
+| Minimum 30 signal events for statistical validity | ❌ FAIL | 0 count | ≥ 30 count |
+| Sharpe ratio ≥ 1.0 threshold | ❌ FAIL | 0.0000 ratio | ≥ 1.0 ratio |
+| Fee/gross ratio < 35% | ✅ PASS | 0.00 pct | < 35.0 pct |
+| No single event contributes > 25% of total profit | ✅ PASS | ok pct | ≤ 25% pct |
+| Fishing orders improve expectancy or reduce drawdown | ✅ PASS | 0.0500 (delta) delta | positive delta delta |
+| Pyramiding improves risk-adjusted return | ❌ FAIL | -239.8920 USD unrealized USD | positive unrealized PnL USD |
+| Route cost does not consume edge | ❌ FAIL | 0.00 pct | < 50.0 pct |
+| Liquidation distance safe at proposed leverage | ❌ FAIL | 0.0 bps | > 3333 bps (leverage 3.0x) bps |
+
