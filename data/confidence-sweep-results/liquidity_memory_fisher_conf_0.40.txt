@@ -1,0 +1,42 @@
+[2m2026-06-03T09:57:19.494030Z[0m [32m INFO[0m === Zekt Momentum Scalper v0.3 (Flash Trade) ===
+[2m2026-06-03T09:57:19.494074Z[0m [32m INFO[0m Config: config/perps.toml
+[2m2026-06-03T09:57:19.494080Z[0m [32m INFO[0m Market: SOL
+[2m2026-06-03T09:57:19.494083Z[0m [32m INFO[0m Strategy: liquidity-memory-fisher
+[2m2026-06-03T09:57:19.494116Z[0m [33m WARN[0m LIQUIDATION REPLAY -- replaying captured snapshots through strategy
+[2m2026-06-03T09:57:19.494120Z[0m [32m INFO[0m Param overrides: 2 key(s)
+[2m2026-06-03T09:57:19.494123Z[0m [32m INFO[0m   enabled = true
+[2m2026-06-03T09:57:19.494126Z[0m [32m INFO[0m   min_confidence = 0.4
+[2m2026-06-03T09:57:19.494132Z[0m [32m INFO[0m Liquidation replay: 1 strategy/strategies
+[2m2026-06-03T09:57:19.494134Z[0m [32m INFO[0m Snapshot directory: data/liquidation-zones/
+[2m2026-06-03T09:57:19.494137Z[0m [32m INFO[0m Starting balance: $1000
+[2m2026-06-03T09:57:19.589957Z[0m [32m INFO[0m Loaded 4833 liquidation zone snapshots from "data/liquidation-zones/"
+[2m2026-06-03T09:57:19.589984Z[0m [32m INFO[0m Loaded 4833 snapshots
+[2m2026-06-03T09:57:19.609269Z[0m [32m INFO[0m Converted to 4833 replay data points
+[2m2026-06-03T09:57:19.609311Z[0m [32m INFO[0m --- Running replay for strategy: liquidity-memory-fisher ---
+[2m2026-06-03T09:57:19.631598Z[0m [32m INFO[0m Added none tranche 0 to ETH long: $250.00 @ 2023.75
+[2m2026-06-03T09:57:19.632533Z[0m [32m INFO[0m JSON report: data/liquidation-replay-results/liquidity_memory_fisher_20260603_095719.json
+[2m2026-06-03T09:57:19.632623Z[0m [32m INFO[0m Markdown report: data/liquidation-replay-results/liquidity_memory_fisher_20260603_095719.md
+
+=== Liquidation Replay: liquidity-memory-fisher ===
+Data points: 4833
+Trades: 0 (0W / 0L)
+Win rate: 0.0%
+Net PnL: $0.00
+Sharpe: 0.0000  |  Sortino: 0.0000  |  Calmar: 0.0000
+Max drawdown: $0.00 (0.00%)
+Fishing fill rate: 100.0%
+Promotion verdict: Denied
+Gate: 6/12 criteria passed
+  ❌ Positive net expectancy after route costs — 0.0000 USD (threshold: > 0 USD)
+  ✅ Max drawdown within policy limit — 0.00 pct (threshold: ≤ 10.0 pct)
+  ✅ Zero stale-data trades — 0 count (threshold: = 0 count)
+  ✅ Zero duplicate pending trades — 0 count (threshold: = 0 count)
+  ❌ Minimum 30 signal events for statistical validity — 0 count (threshold: ≥ 30 count)
+  ❌ Sharpe ratio ≥ 1.0 threshold — 0.0000 ratio (threshold: ≥ 1.0 ratio)
+  ✅ Fee/gross ratio < 35% — 0.00 pct (threshold: < 35.0 pct)
+  ✅ No single event contributes > 25% of total profit — ok pct (threshold: ≤ 25% pct)
+  ✅ Fishing orders improve expectancy or reduce drawdown — 0.0500 (delta) delta (threshold: positive delta delta)
+  ❌ Pyramiding improves risk-adjusted return — -239.8920 USD unrealized USD (threshold: positive unrealized PnL USD)
+  ❌ Route cost does not consume edge — 0.00 pct (threshold: < 50.0 pct)
+  ❌ Liquidation distance safe at proposed leverage — 0.0 bps (threshold: > 3333 bps (leverage 3.0x) bps)
+[2m2026-06-03T09:57:19.632678Z[0m [32m INFO[0m Liquidation replay complete

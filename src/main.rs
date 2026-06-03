@@ -192,8 +192,17 @@ async fn main() -> anyhow::Result<()> {
     let strategy_name = config.strategy.resolve_active(args.strategy.as_deref());
     tracing::info!("Strategy: {}", strategy_name);
 
-    // Validate strategy name first
-    if !crate::strategy::available_strategies().contains(&strategy_name.as_str()) {
+    // Liquidation replay aliases (resolved later in run_liquidation_replay)
+    let liquidation_aliases = [
+        "cascade-continuation",
+    ];
+
+    // Validate strategy name first (skip for liquidation-replay aliases)
+    let is_liquidation_alias = args.liquidation_replay
+        && liquidation_aliases.contains(&strategy_name.as_str());
+    if !is_liquidation_alias
+        && !crate::strategy::available_strategies().contains(&strategy_name.as_str())
+    {
         let available = crate::strategy::available_strategies().join(", ");
         tracing::error!(
             "Unknown strategy '{}'. Available strategies: {}",
@@ -225,13 +234,15 @@ async fn main() -> anyhow::Result<()> {
                 use_native_tp_sl: true,
             }
         });
-    if let Err(e) = crate::strategy::create_strategy_from_config(
-        &strategy_name,
-        sub_table,
-        fallback_params,
-    ) {
-        tracing::error!("Invalid strategy parameters: {}", e);
-        std::process::exit(1);
+    if !is_liquidation_alias {
+        if let Err(e) = crate::strategy::create_strategy_from_config(
+            &strategy_name,
+            sub_table,
+            fallback_params,
+        ) {
+            tracing::error!("Invalid strategy parameters: {}", e);
+            std::process::exit(1);
+        }
     }
 
     // Mutually-exclusive mode flags
@@ -345,12 +356,23 @@ async fn main() -> anyhow::Result<()> {
         ).await;
     }
     if args.liquidation_replay {
+        // Validate param-override JSON if provided
+        if let Some(ref json_str) = args.param_override
+            && serde_json::from_str::<serde_json::Value>(json_str).is_err()
+        {
+                anyhow::bail!(
+                    "Invalid --param-override JSON: '{}'. Must be a valid JSON object, e.g. '{{\"confidence_min\": 0.30}}'",
+                    json_str
+                );
+            }
+
         tracing::warn!("LIQUIDATION REPLAY -- replaying captured snapshots through strategy");
         return run_liquidation_replay(
             config,
             args.strategy.as_deref(),
             &args.snapshot_dir,
             args.starting_balance,
+            args.param_override.as_deref(),
         ).await;
     }
 
@@ -685,11 +707,25 @@ async fn run_liquidation_replay(
     strategy_name: Option<&str>,
     snapshot_dir: &Path,
     starting_balance: f64,
+    param_override_json: Option<&str>,
 ) -> anyhow::Result<()> {
     use chrono::Utc;
     use crate::fishing::FishingLadderConfig;
     use crate::pyramiding::PyramidConfig;
     use crate::replay::{PromotionGateConfig, ReplayPipeline};
+
+    // Parse param-override JSON into a HashMap
+    let param_overrides: HashMap<String, serde_json::Value> = param_override_json
+        .map(serde_json::from_str)
+        .transpose()?
+        .unwrap_or_default();
+
+    if !param_overrides.is_empty() {
+        tracing::info!("Param overrides: {} key(s)", param_overrides.len());
+        for (k, v) in &param_overrides {
+            tracing::info!("  {} = {}", k, v);
+        }
+    }
 
     // Resolve strategy name(s) to replay
     let liquidation_strategies = [
@@ -770,8 +806,13 @@ async fn run_liquidation_replay(
     for strategy_name in &strategy_names {
         tracing::info!("--- Running replay for strategy: {} ---", strategy_name);
 
-        // Create strategy from config
+        // Create strategy from config, applying param overrides by merging into TOML sub-table
         let sub_table = config.strategy.get_sub_table(strategy_name);
+        let merged_table = if !param_overrides.is_empty() {
+            Some(merge_json_overrides_into_toml(sub_table, &param_overrides))
+        } else {
+            sub_table.cloned()
+        };
         let params = config.strategy.get_params(strategy_name).unwrap_or_else(|_| {
             crate::strategy::StrategyParams {
                 direction_bias: "neutral".to_string(),
@@ -791,7 +832,7 @@ async fn run_liquidation_replay(
 
         let mut strategy = crate::strategy::create_strategy_from_config(
             strategy_name,
-            sub_table,
+            merged_table.as_ref(),
             params,
         )?;
 
@@ -887,9 +928,59 @@ fn parse_backtest_time(input: Option<&str>, label: &str) -> anyhow::Result<i64> 
     )
 }
 
+/// Convert a `serde_json::Value` to a `toml::Value`.
+///
+/// Used to merge `--param-override` JSON into TOML config sub-tables.
+fn json_value_to_toml_value(val: &serde_json::Value) -> toml::Value {
+    match val {
+        serde_json::Value::Null => toml::Value::String("null".to_string()),
+        serde_json::Value::Bool(b) => toml::Value::Boolean(*b),
+        serde_json::Value::Number(n) => {
+            if let Some(i) = n.as_i64() {
+                toml::Value::Integer(i)
+            } else if let Some(f) = n.as_f64() {
+                toml::Value::Float(f)
+            } else {
+                toml::Value::String(n.to_string())
+            }
+        }
+        serde_json::Value::String(s) => toml::Value::String(s.clone()),
+        serde_json::Value::Array(arr) => {
+            toml::Value::Array(arr.iter().map(json_value_to_toml_value).collect())
+        }
+        serde_json::Value::Object(obj) => {
+            let mut table = toml::map::Map::new();
+            for (k, v) in obj {
+                table.insert(k.clone(), json_value_to_toml_value(v));
+            }
+            toml::Value::Table(table)
+        }
+    }
+}
+
+/// Merge JSON overrides into an optional TOML sub-table.
+///
+/// Takes the existing sub-table (if any), inserts all JSON override key/value pairs,
+/// and returns the merged `toml::Value`. Used to apply `--param-override` to
+/// liquidation replay strategy configs.
+fn merge_json_overrides_into_toml(
+    sub_table: Option<&toml::Value>,
+    overrides: &HashMap<String, serde_json::Value>,
+) -> toml::Value {
+    let mut table = match sub_table {
+        Some(toml::Value::Table(t)) => t.clone(),
+        _ => toml::map::Map::new(),
+    };
+    for (key, value) in overrides {
+        table.insert(key.clone(), json_value_to_toml_value(value));
+    }
+    toml::Value::Table(table)
+}
+
 #[cfg(test)]
 mod tests {
     use clap::Parser;
+    use std::collections::HashMap;
     use std::path::PathBuf;
 
     use super::Args;
@@ -1209,5 +1300,93 @@ mod tests {
         assert_eq!(args.strategy.as_deref(), Some("cascade-continuation"));
         assert_eq!(args.snapshot_dir, PathBuf::from("data/my-snapshots"));
         assert!((args.starting_balance - 2500.0).abs() < f64::EPSILON);
+    }
+
+    // ── --param-override + --liquidation-replay tests ───────────────────
+
+    #[test]
+    fn test_liquidation_replay_with_param_override() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--param-override", "{\"confidence_min\": 0.30}",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        let json = args.param_override.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["confidence_min"], 0.30);
+    }
+
+    #[test]
+    fn test_liquidation_replay_with_param_override_and_strategy() {
+        let args = Args::try_parse_from([
+            "zekt", "--liquidation-replay",
+            "--strategy", "sweep-reclaim",
+            "--param-override", "{\"min_confidence\": 0.25, \"spread_max_pct\": 1.0}",
+        ]).unwrap();
+        assert!(args.liquidation_replay);
+        assert_eq!(args.strategy.as_deref(), Some("sweep-reclaim"));
+        let json = args.param_override.unwrap();
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["min_confidence"], 0.25);
+        assert_eq!(parsed["spread_max_pct"], 1.0);
+    }
+
+    #[test]
+    fn test_json_to_toml_conversion() {
+        use super::json_value_to_toml_value;
+
+        let json_bool = serde_json::Value::Bool(true);
+        assert_eq!(json_value_to_toml_value(&json_bool), toml::Value::Boolean(true));
+
+        let json_int = serde_json::json!(42);
+        assert_eq!(json_value_to_toml_value(&json_int), toml::Value::Integer(42));
+
+        let json_float = serde_json::json!(0.30);
+        assert_eq!(json_value_to_toml_value(&json_float), toml::Value::Float(0.30));
+
+        let json_str = serde_json::json!("hello");
+        assert_eq!(json_value_to_toml_value(&json_str), toml::Value::String("hello".to_string()));
+    }
+
+    #[test]
+    fn test_merge_json_overrides_into_toml_empty() {
+        use super::merge_json_overrides_into_toml;
+
+        let overrides = HashMap::new();
+        let result = merge_json_overrides_into_toml(None, &overrides);
+        // Should return an empty table
+        assert!(result.as_table().unwrap().is_empty());
+    }
+
+    #[test]
+    fn test_merge_json_overrides_into_toml_with_values() {
+        use super::merge_json_overrides_into_toml;
+
+        let mut overrides = HashMap::new();
+        overrides.insert("confidence_min".to_string(), serde_json::json!(0.30));
+        overrides.insert("enabled".to_string(), serde_json::json!(true));
+
+        let result = merge_json_overrides_into_toml(None, &overrides);
+        let table = result.as_table().unwrap();
+        assert_eq!(table.get("confidence_min").unwrap().as_float(), Some(0.30));
+        assert_eq!(table.get("enabled").unwrap().as_bool(), Some(true));
+    }
+
+    #[test]
+    fn test_merge_json_overrides_preserves_existing() {
+        use super::merge_json_overrides_into_toml;
+
+        let mut base_table = toml::map::Map::new();
+        base_table.insert("existing_key".to_string(), toml::Value::String("kept".to_string()));
+        base_table.insert("confidence_min".to_string(), toml::Value::Float(0.6));
+        let base = toml::Value::Table(base_table);
+
+        let mut overrides = HashMap::new();
+        overrides.insert("confidence_min".to_string(), serde_json::json!(0.30));
+
+        let result = merge_json_overrides_into_toml(Some(&base), &overrides);
+        let table = result.as_table().unwrap();
+        assert_eq!(table.get("existing_key").unwrap().as_str(), Some("kept"));
+        assert_eq!(table.get("confidence_min").unwrap().as_float(), Some(0.30));
     }
 }

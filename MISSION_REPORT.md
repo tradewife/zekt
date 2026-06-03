@@ -449,7 +449,62 @@ The Rust binary replay definitively shows that no liquidation-zone strategy prod
 
 ---
 
-## 12. Git History
+## 12. Confidence Threshold Sweep (Post-M4)
+
+**Date:** 2026-06-03
+**Deliverable:** `data/confidence-sweep.md` (full report)
+**Data:** 4,848 snapshots (expanded from original 4,740)
+**Scripts:** `scripts/confidence-sweep.sh`
+
+### Purpose
+
+The previous replay run at default confidence thresholds (0.5–0.6) produced 0 trades because the max captured zone confidence was 0.47. This sweep relaxed confidence thresholds to [0.10–0.45] and relaxed additional strategy gates to find where trades start producing.
+
+### Key Discoveries
+
+1. **`enabled: true` is required** — All 4 liquidation strategies default to `enabled: false`. Without this override, the strategy immediately returns `NoSignal`.
+
+2. **Distance gate is a major limiter** — Most liquidation zones are 16–50% from the current price, but the default `max_distance_to_zone_pct` is 5%. Increasing to 50% unlocked 3 additional trades for cascade-continuation.
+
+3. **Cascade cancel blocks fisher** — The fisher's `cascade_cancel_enabled: true` default cancels all fishing orders whenever liquidation zones exist (which is always in the captured data). Disabling it allowed the fisher to produce 4 trades.
+
+4. **Sweep-reclaim requires price sweep patterns** — Even with ALL gates disabled, sweep-reclaim produces 0 trades. Its multi-phase state machine requires price to cross a zone and then show reversal velocity, which the slowly-changing replay data doesn't exhibit.
+
+### Sweep Results (Best Per Strategy)
+
+| Strategy | Confidence | Additional Overrides | Trades | Win Rate | Net PnL | Sharpe | Gate |
+|----------|-----------|---------------------|--------|----------|---------|--------|------|
+| cascade-continuation | 0.30 | dist=50%, enabled=true | 5 | 40% | -$3,521 | -0.44 | 5/12 ❌ |
+| liquidity-memory-fisher | 0.25 | cascade_cancel=false, enabled=true | 4 | 50% | -$144 | -0.04 | 5/12 ❌ |
+| sweep-reclaim | 0.05 | all gates disabled | 0 | — | $0 | 0.00 | 6/12 ❌ |
+| liquidation-zone-arbiter | 0.05 | all gates disabled | 0 | — | $0 | 0.00 | 6/12 ❌ |
+
+### Assessment
+
+**Confidence relaxation alone is insufficient.** Even at the lowest thresholds with multiple gates disabled:
+- Only 2 of 4 strategies produce any trades
+- Maximum 5 trades across 4,848 data points (0.1% signal rate)
+- Neither producing strategy achieves positive net expectancy
+- The fisher is closest to breakeven (Sharpe -0.04, -$36/trade average)
+
+The fundamental issue remains data quality: single-source zones with confidence 0.30–0.47, with most zones far from the current price. Confidence relaxation exposes the strategies to lower-quality signals, but the low signal count makes statistical validation impossible.
+
+### Updated Recommendation: **REJECT**
+
+The confidence sweep confirms that the liquidation zone strategies cannot produce a statistically meaningful number of trades with the current captured data. Even when relaxed to accept the lowest-quality zones:
+- Best trade count: 5 (need ≥ 30 for statistical validity)
+- Best Sharpe: -0.04 (need ≥ 1.0)
+- Best net PnL: -$144 (need > $0)
+
+**No strategy is promotable.** The path forward requires:
+1. Multi-source zone fusion to achieve confidence ≥ 0.5
+2. Longer capture (168h+) for more zone interactions
+3. Expanded HL fills watchlist for more near-price zones
+4. Consider replay pipeline improvements to inject synthetic sweep events for sweep-reclaim validation
+
+---
+
+## 13. Git History
 
 | Commit | Description |
 |--------|-------------|
